@@ -4,7 +4,9 @@
 
 #import <objc/message.h>
 #import <objc/runtime.h>
-#import <SystemConfiguration/SystemConfiguration.h>
+#import <Network/Network.h>
+
+#include <atomic>
 
 static IMP OriginalLegacyQuality;
 static IMP OriginalSetUserSelectableFormats;
@@ -13,6 +15,30 @@ static IMP OriginalQualityHandleTap;
 static NSMutableDictionary<NSString *, NSValue *> *YTKACEStreamingOriginals;
 static const void *YTKACERedesignedQualityControllerKey =
     &YTKACERedesignedQualityControllerKey;
+static std::atomic_bool YTKACECellularNetwork(false);
+static nw_path_monitor_t YTKACENetworkPathMonitor;
+static dispatch_queue_t YTKACENetworkPathQueue;
+
+static void YTKACEStartNetworkPathMonitor(void) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        YTKACENetworkPathMonitor = nw_path_monitor_create();
+        YTKACENetworkPathQueue = dispatch_queue_create(
+            "com.itzzace.ytkace.network-path", DISPATCH_QUEUE_SERIAL);
+        nw_path_monitor_set_update_handler(YTKACENetworkPathMonitor,
+            ^(nw_path_t path) {
+                BOOL onCellular = nw_path_get_status(path) ==
+                        nw_path_status_satisfied &&
+                    nw_path_uses_interface_type(path,
+                                                nw_interface_type_cellular);
+                YTKACECellularNetwork.store(onCellular,
+                                             std::memory_order_relaxed);
+            });
+        nw_path_monitor_set_queue(YTKACENetworkPathMonitor,
+                                  YTKACENetworkPathQueue);
+        nw_path_monitor_start(YTKACENetworkPathMonitor);
+    });
+}
 
 static NSString *YTKACEStreamingKey(Class cls, SEL selector) {
     return [NSString stringWithFormat:@"%@|%@", NSStringFromClass(cls),
@@ -57,16 +83,7 @@ static NSArray<NSString *> *YTKACEQualityLabels(void) {
 }
 
 static NSInteger YTKACEQualityIndex(void) {
-    SCNetworkReachabilityRef reachability =
-        SCNetworkReachabilityCreateWithName(NULL, "youtube.com");
-    SCNetworkReachabilityFlags flags = 0;
-    BOOL hasFlags = reachability != NULL &&
-        SCNetworkReachabilityGetFlags(reachability, &flags);
-    if (reachability != NULL) {
-        CFRelease(reachability);
-    }
-    BOOL onCellular = hasFlags &&
-        (flags & kSCNetworkReachabilityFlagsIsWWAN) != 0;
+    BOOL onCellular = YTKACECellularNetwork.load(std::memory_order_relaxed);
     BOOL onWiFi = !onCellular;
     NSString *key = onWiFi ? @"YTKACE.Preference.Playback.WiFiQuality" : @"YTKACE.Preference.Playback.CellularQuality";
     id value = YTKACEPreferenceObject(key);
@@ -339,6 +356,7 @@ static void YTKACEInstallBoolSetter(NSString *className,
 }
 
 void YTKACEInstallStreamingHooks(void) {
+    YTKACEStartNetworkPathMonitor();
     if (YTKACEStreamingOriginals == nil) {
         YTKACEStreamingOriginals = [NSMutableDictionary dictionary];
     }
