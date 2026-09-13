@@ -1,3 +1,5 @@
+YTKACE_PROJECT_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
+
 ARCHS = arm64
 TARGET = iphone:clang:latest:16.0
 THEOS_PACKAGE_SCHEME ?= rootless
@@ -11,6 +13,7 @@ YTKACE_FILES = \
 	Tweak/Runtime/Hooking.mm \
 	Tweak/Runtime/Preferences.mm \
 	Tweak/Runtime/Localization.mm \
+	Tweak/Runtime/TelemetryAudit.mm \
 	Tweak/UI/Assets.mm \
 	Tweak/UI/Notice.mm \
 	Tweak/UI/OverlayButtonHost.mm \
@@ -68,28 +71,29 @@ YTKACE_FILES = \
 	Tweak/Settings/YTKACESettingsPages.mm \
 	Tweak/Settings/YTKACESettingsSearch.mm \
 	Tweak/Settings/YTKACETabEditorController.mm \
-	Tweak/Settings/YTKACEDownloadsController.mm
+	Tweak/Settings/YTKACEDownloadsController.mm \
+	Tweak/Settings/YTKACETelemetryAuditController.mm
 
 YTKACE_CFLAGS = -fobjc-arc -Wall -Wextra -Werror=return-type
 YTKACE_CFLAGS += -DYTKACE_COMBINED_SABR=1
 YTKACE_CFLAGS += -Wno-module-import-in-extern-c
-YTKACE_CFLAGS += -I$(THEOS_PROJECT_DIR)/Vendor/FFmpeg/include
+YTKACE_CFLAGS += -I"$(YTKACE_PROJECT_DIR)/Vendor/FFmpeg/include"
 YTKACE_CCFLAGS = -std=c++17
 YTKACE_FRAMEWORKS = Foundation UIKit AVFoundation AVKit AudioToolbox Photos QuartzCore MediaPlayer Security SystemConfiguration UniformTypeIdentifiers VideoToolbox CoreMedia
 YTKACE_LIBRARIES = z
 YTKACE_LDFLAGS = -Wl,-install_name,@rpath/YTKACE.dylib
-YTKACE_LDFLAGS += $(THEOS_PROJECT_DIR)/Vendor/FFmpeg/lib/libavformat.a
-YTKACE_LDFLAGS += $(THEOS_PROJECT_DIR)/Vendor/FFmpeg/lib/libavcodec.a
-YTKACE_LDFLAGS += $(THEOS_PROJECT_DIR)/Vendor/FFmpeg/lib/libavutil.a
+YTKACE_LDFLAGS += "$(YTKACE_PROJECT_DIR)/Vendor/FFmpeg/lib/libavformat.a"
+YTKACE_LDFLAGS += "$(YTKACE_PROJECT_DIR)/Vendor/FFmpeg/lib/libavcodec.a"
+YTKACE_LDFLAGS += "$(YTKACE_PROJECT_DIR)/Vendor/FFmpeg/lib/libavutil.a"
 YTKACE_INSTALL_PATH = /Library/MobileSubstrate/DynamicLibraries
 
 include $(THEOS_MAKE_PATH)/library.mk
 
 after-all::
-	@mkdir -p "$(THEOS_PROJECT_DIR)/dist"
-	@cp "$(THEOS_OBJ_DIR)/YTKACE.dylib" "$(THEOS_PROJECT_DIR)/dist/YTKACE.dylib"
+	@mkdir -p "$(YTKACE_PROJECT_DIR)/dist"
+	@cp "$(THEOS_OBJ_DIR)/YTKACE.dylib" "$(YTKACE_PROJECT_DIR)/dist/YTKACE.dylib"
 
 after-stage::
 	@mkdir -p "$(THEOS_STAGING_DIR)/Library/MobileSubstrate/DynamicLibraries"
-	@cp -R "$(THEOS_PROJECT_DIR)/Resources/YTKACE.bundle" "$(THEOS_STAGING_DIR)/Library/MobileSubstrate/DynamicLibraries/YTKACE.bundle"
-	@cp "$(THEOS_PROJECT_DIR)/YTKACE.plist" "$(THEOS_STAGING_DIR)/Library/MobileSubstrate/DynamicLibraries/YTKACE.plist"
+	@cp -R "$(YTKACE_PROJECT_DIR)/Resources/YTKACE.bundle" "$(THEOS_STAGING_DIR)/Library/MobileSubstrate/DynamicLibraries/YTKACE.bundle"
+	@cp "$(YTKACE_PROJECT_DIR)/YTKACE.plist" "$(THEOS_STAGING_DIR)/Library/MobileSubstrate/DynamicLibraries/YTKACE.plist"

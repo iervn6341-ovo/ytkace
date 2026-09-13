@@ -55,6 +55,7 @@ void YTKACEInstallCopyCommentHooks(void);
 void YTKACEInstallProfilePictureHooks(void);
 void YTKACEInstallPostImageSaverHooks(void);
 void YTKACEInstallNativeShareHooks(void);
+FOUNDATION_EXPORT void YTKACEInstallTelemetryAudit(void);
 void YTKACEProfileConsiderDisplayView(UIView *view, id node);
 void YTKACEScheduleFirstLaunch(void);
 

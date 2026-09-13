@@ -2,6 +2,7 @@
 #import "../YTKACE.h"
 #import "YTKACEDownloadsController.h"
 #import "YTKACESettingsPages.h"
+#import "YTKACETelemetryAuditController.h"
 #import "../Runtime/Preferences.h"
 #import "../Runtime/Localization.h"
 #import "../UI/Assets.h"
@@ -315,7 +316,7 @@ UIViewController *YTKACEMakeDownloadLogController(void) {
         case 0: return 1;
         case 1: return 4;
         case 2: return 5;
-        case 3: return 2;
+        case 3: return 3;
         case 4: return 2;
         default: return 0;
     }
@@ -489,12 +490,14 @@ UIViewController *YTKACEMakeDownloadLogController(void) {
     }
 
     if (indexPath.section == 3) {
-        NSArray *titles = @[YTKACELocalized(@"Navigation"), YTKACELocalized(@"Other")];
+        NSArray *titles = @[YTKACELocalized(@"Navigation"), YTKACELocalized(@"Other"),
+                            YTKACELocalized(@"Telemetry Audit")];
         NSArray *details = @[
             YTKACELocalized(@"Top bar buttons, logo, and cast"),
-            YTKACELocalized(@"Appearance, privacy, and compatibility")
+            YTKACELocalized(@"Appearance, privacy, and compatibility"),
+            YTKACELocalized(@"Inspect outbound request metadata locally")
         ];
-        NSArray *symbols = @[@"rectangle.topthird.inset.filled", @"ellipsis.circle"];
+        NSArray *symbols = @[@"rectangle.topthird.inset.filled", @"ellipsis.circle", @"waveform.path.ecg"];
         UITableViewCell *cell = [self baseCellForTableView:tableView style:UITableViewCellStyleSubtitle];
         cell.textLabel.text = titles[(NSUInteger)indexPath.row];
         cell.detailTextLabel.text = details[(NSUInteger)indexPath.row];
@@ -567,7 +570,8 @@ UIViewController *YTKACEMakeDownloadLogController(void) {
     } else if (indexPath.section == 3) {
         NSArray *builders = @[
             [^UIViewController *{ return YTKACEMakeNavigationOptionsController(); } copy],
-            [^UIViewController *{ return YTKACEMakeMiscOptionsController(); } copy]
+            [^UIViewController *{ return YTKACEMakeMiscOptionsController(); } copy],
+            [^UIViewController *{ return YTKACEMakeTelemetryAuditController(); } copy]
         ];
         UIViewController *(^builder)(void) = builders[(NSUInteger)indexPath.row];
         controller = builder();
