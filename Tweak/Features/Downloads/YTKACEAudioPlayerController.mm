@@ -72,6 +72,14 @@ static NSString *YTKACEAudioTime(NSTimeInterval value) {
 
 - (void)viewDidLoad {
     [super viewDidLoad];
+    if (@available(iOS 17.0, *)) {
+        __weak YTKACEAudioPlayerController *weakSelf = self;
+        [self registerForTraitChanges:@[UITraitUserInterfaceStyle.class]
+            withHandler:^(__unused id<UITraitEnvironment> environment,
+                          __unused UITraitCollection *previousCollection) {
+                [weakSelf applyTheme];
+            }];
+    }
     [self buildPlayer];
     [self buildQueue];
     [self buildOptions];
@@ -92,13 +100,17 @@ static NSString *YTKACEAudioTime(NSTimeInterval value) {
     [self.session play];
 }
 
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
 - (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
     [super traitCollectionDidChange:previousTraitCollection];
+    if (@available(iOS 17.0, *)) return;
     if (previousTraitCollection == nil ||
         [self.traitCollection hasDifferentColorAppearanceComparedToTraitCollection:previousTraitCollection]) {
         [self applyTheme];
     }
 }
+#pragma clang diagnostic pop
 
 - (void)dealloc {
     [NSNotificationCenter.defaultCenter removeObserver:self];

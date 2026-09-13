@@ -180,17 +180,29 @@ static void YTKACESaveVideoToPhotos(NSURL *url) {
     [self.cardView addSubview:self.durationLabel];
     [self.cardView addSubview:self.nameLabel];
     [self.cardView addSubview:self.metadataLabel];
+    if (@available(iOS 17.0, *)) {
+        __weak YTKACEDownloadCell *weakSelf = self;
+        [self registerForTraitChanges:@[UITraitUserInterfaceStyle.class]
+            withHandler:^(__unused id<UITraitEnvironment> environment,
+                          __unused UITraitCollection *previousCollection) {
+                [weakSelf applyTheme];
+            }];
+    }
     [self applyTheme];
     return self;
 }
 
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
 - (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
     [super traitCollectionDidChange:previousTraitCollection];
+    if (@available(iOS 17.0, *)) return;
     if (previousTraitCollection == nil ||
         [self.traitCollection hasDifferentColorAppearanceComparedToTraitCollection:previousTraitCollection]) {
         [self applyTheme];
     }
 }
+#pragma clang diagnostic pop
 
 - (UILabel *)badgeLabel {
     UILabel *label = [UILabel new];
@@ -347,6 +359,15 @@ static void YTKACEStoreMode(NSString *field, NSInteger segment, NSInteger mode) 
 
 - (void)viewDidLoad {
     [super viewDidLoad];
+    if (@available(iOS 17.0, *)) {
+        __weak YTKACEDownloadsController *weakSelf = self;
+        [self registerForTraitChanges:@[UITraitUserInterfaceStyle.class]
+            withHandler:^(__unused id<UITraitEnvironment> environment,
+                          __unused UITraitCollection *previousCollection) {
+                [weakSelf applyTheme];
+                [weakSelf.collectionView reloadData];
+            }];
+    }
     self.view.accessibilityIdentifier = @"YTKACEDownloadsRoot";
     self.title = YTKACELocalized(@"Downloads");
     self.metadataCache = [NSCache new];
@@ -457,14 +478,18 @@ static void YTKACEStoreMode(NSString *field, NSInteger segment, NSInteger mode) 
     [self updateMiniPlayer];
 }
 
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
 - (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
     [super traitCollectionDidChange:previousTraitCollection];
+    if (@available(iOS 17.0, *)) return;
     if (previousTraitCollection == nil ||
         [self.traitCollection hasDifferentColorAppearanceComparedToTraitCollection:previousTraitCollection]) {
         [self applyTheme];
         [self.collectionView reloadData];
     }
 }
+#pragma clang diagnostic pop
 
 - (void)dealloc {
     [NSNotificationCenter.defaultCenter removeObserver:self];
