@@ -1,6 +1,7 @@
 #import "Preferences.h"
 #import "Localization.h"
 #import "../Features/Downloads/SABRDownloader.h"
+#import "../Features/Ads/PlaybackAdsHooks.h"
 
 #import <UIKit/UIKit.h>
 
@@ -56,6 +57,7 @@ void YTKACERegisterDefaults(void) {
     [YTKACEDefaults() registerDefaults:@{
         YTKACEMasterEnabledKey: @YES,
         YTKACENoAdsKey: @YES,
+        YTKACEAdBlockingModeKey: @(YTKACEAdBlockingModeUYouEnhanced),
         YTKACEOLEDKey: @NO,
         YTKACEDownloadKey: @NO,
         YTKACEBackgroundPlaybackKey: @YES,

@@ -14,6 +14,7 @@
 #import "../Features/Downloads/YTKACEMediaImporter.h"
 #import "../Features/SponsorBlock/SponsorPreferences.h"
 #import "../Features/SponsorBlock/DeArrow.h"
+#import "../Features/Ads/PlaybackAdsHooks.h"
 
 #import <objc/runtime.h>
 #import <objc/message.h>
@@ -319,6 +320,7 @@ static UIColor *YTKACESettingsCellBackground(void) {
 BOOL YTKACEPreferenceNeedsRestart(NSString *key) {
     return [@[
         YTKACEOLEDKey,
+        YTKACEAdBlockingModeKey,
         @"YTKACE.Preference.Navigation.PremiumLogo",
         @"YTKACE.Preference.Navigation.LogoHidden",
         @"YTKACE.Preference.App.LayoutIdiom",
@@ -1494,6 +1496,11 @@ static NSDictionary *YTKACEPlayerDefinition(void) {
                 @"YTKACE.Preference.Playback.RemoteSkip",
                 @[@"Off", @"10 seconds", @"15 seconds", @"30 seconds"], @[@0, @10, @15, @30], 0),
             YTKACEToggle(@"Remove Ads", YTKACENoAdsKey, @"", @""),
+            YTKACEPickerDetail(@"Video Ad Blocking Strategy",
+                @"Compare video ad blocking methods. Feed filtering is unchanged. Restart YouTube after changing.",
+                YTKACEAdBlockingModeKey,
+                @[@"YTKACE", @"uYouEnhanced Lite (Experimental)"],
+                @[@0, @1], (NSUInteger)YTKACEPlaybackAdBlockingMode()),
             YTKACEPickerDetail(@"Playback Fix",
                 @"Try this if videos won't load or keep buffering. Restart YouTube after changing.",
                 @"YTKACE.Preference.Playback.FixMode",

@@ -27,6 +27,7 @@
 #import "../../Runtime/Hooking.h"
 #import "../../Runtime/Preferences.h"
 #import "../Downloads/DownloadLog.h"
+#import "../Ads/PlaybackAdsHooks.h"
 #include "PlaybackRecoveryPolicy.hpp"
 
 #import <Foundation/Foundation.h>
@@ -207,11 +208,13 @@ static void YTKACEHandleError(id receiver, SEL selector, id error) {
     const NSInteger mode = YTKACEPlaybackFixMode();
     // Keep the error visible in macOS Console without exposing stream URLs,
     // credentials, or server response bodies.
-    NSLog(@"[YTKACE Playback] mode=%ld domain=%@ code=%ld",
+    NSLog(@"[YTKACE Playback] mode=%ld domain=%@ code=%ld adMode=%ld ads=%d",
           (long)mode, failure.domain ?: NSStringFromClass([error class]),
-          (long)failure.code);
-    YTKACEDownloadLog(@"fix", @"handleError mode=%ld domain=%@ code=%ld",
-        (long)mode, failure.domain ?: @"unknown", (long)failure.code);
+          (long)failure.code, (long)YTKACEPlaybackAdBlockingMode(),
+          YTKACEFeatureEnabled(YTKACENoAdsKey));
+    YTKACEDownloadLog(@"fix", @"handleError mode=%ld domain=%@ code=%ld adMode=%ld ads=%d",
+        (long)mode, failure.domain ?: @"unknown", (long)failure.code,
+        (long)YTKACEPlaybackAdBlockingMode(), YTKACEFeatureEnabled(YTKACENoAdsKey));
     id player = YTKACERecoveryPlayer(receiver);
     NSString *videoID = YTKACERecoveryVideoID(player);
 

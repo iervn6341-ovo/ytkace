@@ -18,6 +18,7 @@ YTKACE_FILES = \
 	Tweak/UI/Notice.mm \
 	Tweak/UI/OverlayButtonHost.mm \
 	Tweak/Features/Ads/AdsHooks.mm \
+	Tweak/Features/Ads/PlaybackAdsHooks.mm \
 	Tweak/Features/Ads/PromoHooks.mm \
 	Tweak/Features/SponsorBlock/SponsorClient.mm \
 	Tweak/Features/SponsorBlock/SponsorPreferences.mm \

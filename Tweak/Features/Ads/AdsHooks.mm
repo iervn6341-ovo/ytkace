@@ -1,31 +1,13 @@
 #import "../../YTKACE.h"
 #import "../../Runtime/Hooking.h"
 #import "../../Runtime/Preferences.h"
+#import "PlaybackAdsHooks.h"
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
 
 static IMP OriginalShouldBlockUpgradeDialog;
-static IMP OriginalAdShieldSignals;
-static IMP OriginalAdShieldSignalsWithoutIDFA;
-static IMP OriginalDataSignals;
-static IMP OriginalDataSignalsWithoutIDFA;
-static IMP OriginalAdsDecorateContext;
-static IMP OriginalAccountAdsDecorateContext;
-static IMP OriginalPlayerAdsArray;
-static IMP OriginalAdSlotsArray;
-static IMP OriginalAdPlacementsArray;
-static IMP OriginalAdBreakParams;
-static IMP OriginalAdNextParams;
-static IMP OriginalAdParams;
-static IMP OriginalEnableSkippableAd;
-static IMP OriginalMDXSessionImplAdPlaying;
-static IMP OriginalMDXSessionAdPlaying;
-static IMP OriginalIsPlayingAd;
-static IMP OriginalIsPlayingAdSurvey;
-static IMP OriginalIsPlayingAdIntro;
-static IMP OriginalCreateAdsPlaybackCoordinator;
 static IMP OriginalReelContentModel;
 static IMP OriginalInfiniteReelContentModel;
 static IMP OriginalReelShouldDisplay;
@@ -61,140 +43,6 @@ static BOOL YTKACEShouldBlockUpgradeDialog(id receiver, SEL selector) {
     return YTKACEFeatureEnabled(YTKACENoAdsKey)
         ? YES
         : YTKACECallBooleanGetter(OriginalShouldBlockUpgradeDialog, receiver, selector);
-}
-
-static id YTKACEEmptyDictionary(IMP original, id receiver, SEL selector) {
-    return YTKACEFeatureEnabled(YTKACENoAdsKey)
-        ? @{}
-        : YTKACECallObjectGetter(original, receiver, selector);
-}
-
-static id YTKACEAdShieldSignals(id receiver, SEL selector) {
-    return YTKACEEmptyDictionary(OriginalAdShieldSignals, receiver, selector);
-}
-
-static id YTKACEAdShieldSignalsWithoutIDFA(id receiver, SEL selector) {
-    return YTKACEEmptyDictionary(OriginalAdShieldSignalsWithoutIDFA, receiver, selector);
-}
-
-static id YTKACEDataSignals(id receiver, SEL selector) {
-    return YTKACEEmptyDictionary(OriginalDataSignals, receiver, selector);
-}
-
-static id YTKACEDataSignalsWithoutIDFA(id receiver, SEL selector) {
-    return YTKACEEmptyDictionary(OriginalDataSignalsWithoutIDFA, receiver, selector);
-}
-
-static void YTKACEAdsDecorateContext(id receiver, SEL selector, id context) {
-    // Preserve native request metadata. Ad removal happens on player responses;
-    // skipping request decorators can leave newer clients with incomplete fields.
-    if (OriginalAdsDecorateContext != NULL) {
-        ((void (*)(id, SEL, id))OriginalAdsDecorateContext)(receiver, selector, context);
-    }
-}
-
-static void YTKACEAccountAdsDecorateContext(id receiver, SEL selector, id context) {
-    if (OriginalAccountAdsDecorateContext != NULL) {
-        ((void (*)(id, SEL, id))OriginalAccountAdsDecorateContext)(
-            receiver,
-            selector,
-            context
-        );
-    }
-}
-
-static id YTKACEPlayerAdsArray(id receiver, SEL selector) {
-    return YTKACEFeatureEnabled(YTKACENoAdsKey)
-        ? [NSMutableArray array]
-        : YTKACECallObjectGetter(OriginalPlayerAdsArray, receiver, selector);
-}
-
-static id YTKACEAdSlotsArray(id receiver, SEL selector) {
-    return YTKACEFeatureEnabled(YTKACENoAdsKey)
-        ? [NSMutableArray array]
-        : YTKACECallObjectGetter(OriginalAdSlotsArray, receiver, selector);
-}
-
-static id YTKACEAdPlacementsArray(id receiver, SEL selector) {
-    return YTKACEFeatureEnabled(YTKACENoAdsKey)
-        ? [NSMutableArray array]
-        : YTKACECallObjectGetter(OriginalAdPlacementsArray, receiver, selector);
-}
-
-static id YTKACENilParameter(IMP original, id receiver, SEL selector) {
-    return YTKACEFeatureEnabled(YTKACENoAdsKey)
-        ? nil
-        : YTKACECallObjectGetter(original, receiver, selector);
-}
-
-static id YTKACEAdBreakParams(id receiver, SEL selector) {
-    return YTKACENilParameter(OriginalAdBreakParams, receiver, selector);
-}
-
-static id YTKACEAdNextParams(id receiver, SEL selector) {
-    return YTKACENilParameter(OriginalAdNextParams, receiver, selector);
-}
-
-static id YTKACEAdParams(id receiver, SEL selector) {
-    return YTKACENilParameter(OriginalAdParams, receiver, selector);
-}
-
-static BOOL YTKACEEnableSkippableAd(id receiver, SEL selector) {
-    return YTKACEFeatureEnabled(YTKACENoAdsKey)
-        ? YES
-        : YTKACECallBooleanGetter(OriginalEnableSkippableAd, receiver, selector);
-}
-
-static void YTKACEMDXSessionImplAdPlaying(id receiver,
-                                          SEL selector,
-                                          uintptr_t value) {
-    if (!YTKACEFeatureEnabled(YTKACENoAdsKey) &&
-        OriginalMDXSessionImplAdPlaying != NULL) {
-        ((void (*)(id, SEL, uintptr_t))OriginalMDXSessionImplAdPlaying)(
-            receiver,
-            selector,
-            value
-        );
-    }
-}
-
-static void YTKACEMDXSessionAdPlaying(id receiver,
-                                      SEL selector,
-                                      uintptr_t value) {
-    if (!YTKACEFeatureEnabled(YTKACENoAdsKey) && OriginalMDXSessionAdPlaying != NULL) {
-        ((void (*)(id, SEL, uintptr_t))OriginalMDXSessionAdPlaying)(
-            receiver,
-            selector,
-            value
-        );
-    }
-}
-
-static BOOL YTKACENotPlayingAd(IMP original, id receiver, SEL selector) {
-    return YTKACEFeatureEnabled(YTKACENoAdsKey)
-        ? NO
-        : YTKACECallBooleanGetter(original, receiver, selector);
-}
-
-static BOOL YTKACEIsPlayingAd(id receiver, SEL selector) {
-    return YTKACENotPlayingAd(OriginalIsPlayingAd, receiver, selector);
-}
-
-static BOOL YTKACEIsPlayingAdSurvey(id receiver, SEL selector) {
-    return YTKACENotPlayingAd(OriginalIsPlayingAdSurvey, receiver, selector);
-}
-
-static BOOL YTKACEIsPlayingAdIntro(id receiver, SEL selector) {
-    return YTKACENotPlayingAd(OriginalIsPlayingAdIntro, receiver, selector);
-}
-
-static id YTKACENoAdsPlaybackCoordinator(id receiver, SEL selector) {
-    id coordinator = YTKACECallObjectGetter(
-        OriginalCreateAdsPlaybackCoordinator,
-        receiver,
-        selector
-    );
-    return YTKACEFeatureEnabled(YTKACENoAdsKey) ? nil : coordinator;
 }
 
 static id YTKACEFilterReelModel(IMP original,
@@ -622,34 +470,6 @@ static BOOL YTKACEHasShoppingCompanionAdRenderer(id receiver, SEL selector) {
     );
 }
 
-static void YTKACEInstallObjectHookOrMethod(NSString *className,
-                                            NSString *selectorName,
-                                            IMP replacement,
-                                            IMP *originalStorage) {
-    if (!YTKACEInstallInstanceHook(
-            className,
-            selectorName,
-            replacement,
-            originalStorage
-        )) {
-        YTKACEAddInstanceMethod(className, selectorName, replacement, "@@:");
-    }
-}
-
-static void YTKACEInstallBooleanHookOrMethod(NSString *className,
-                                             NSString *selectorName,
-                                             IMP replacement,
-                                             IMP *originalStorage) {
-    if (!YTKACEInstallInstanceHook(
-            className,
-            selectorName,
-            replacement,
-            originalStorage
-        )) {
-        YTKACEAddInstanceMethod(className, selectorName, replacement, "B@:");
-    }
-}
-
 static void YTKACEAdCellLayoutSubviews(UIView *receiver, SEL selector) {
     if (OriginalAdCellLayout != NULL) {
         ((void (*)(id, SEL))OriginalAdCellLayout)(receiver, selector);
@@ -815,84 +635,7 @@ void YTKACEInstallAdsHooks(void) {
                               @"shouldBlockUpgradeDialog",
                               (IMP)YTKACEShouldBlockUpgradeDialog,
                               &OriginalShouldBlockUpgradeDialog);
-    YTKACEInstallClassHook(@"YTAdShieldUtils",
-                           @"spamSignalsDictionary",
-                           (IMP)YTKACEAdShieldSignals,
-                           &OriginalAdShieldSignals);
-    YTKACEInstallClassHook(@"YTAdShieldUtils",
-                           @"spamSignalsDictionaryWithoutIDFA",
-                           (IMP)YTKACEAdShieldSignalsWithoutIDFA,
-                           &OriginalAdShieldSignalsWithoutIDFA);
-    YTKACEInstallClassHook(@"YTDataUtils",
-                           @"spamSignalsDictionary",
-                           (IMP)YTKACEDataSignals,
-                           &OriginalDataSignals);
-    YTKACEInstallClassHook(@"YTDataUtils",
-                           @"spamSignalsDictionaryWithoutIDFA",
-                           (IMP)YTKACEDataSignalsWithoutIDFA,
-                           &OriginalDataSignalsWithoutIDFA);
-    YTKACEInstallInstanceHook(@"YTAdsInnerTubeContextDecorator",
-                              @"decorateContext:",
-                              (IMP)YTKACEAdsDecorateContext,
-                              &OriginalAdsDecorateContext);
-    YTKACEInstallInstanceHook(@"YTAccountScopedAdsInnerTubeContextDecorator",
-                              @"decorateContext:",
-                              (IMP)YTKACEAccountAdsDecorateContext,
-                              &OriginalAccountAdsDecorateContext);
-
-    YTKACEInstallObjectHookOrMethod(@"YTIPlayerResponse",
-                                    @"playerAdsArray",
-                                    (IMP)YTKACEPlayerAdsArray,
-                                    &OriginalPlayerAdsArray);
-    YTKACEInstallObjectHookOrMethod(@"YTIPlayerResponse",
-                                    @"adSlotsArray",
-                                    (IMP)YTKACEAdSlotsArray,
-                                    &OriginalAdSlotsArray);
-    YTKACEInstallObjectHookOrMethod(@"YTIPlayerResponse",
-                                    @"adPlacementsArray",
-                                    (IMP)YTKACEAdPlacementsArray,
-                                    &OriginalAdPlacementsArray);
-    YTKACEInstallInstanceHook(@"YTIPlayerResponse",
-                              @"adBreakParams",
-                              (IMP)YTKACEAdBreakParams,
-                              &OriginalAdBreakParams);
-    YTKACEInstallInstanceHook(@"YTIPlayerResponse",
-                              @"adNextParams",
-                              (IMP)YTKACEAdNextParams,
-                              &OriginalAdNextParams);
-    YTKACEInstallInstanceHook(@"YTIPlayerResponse",
-                              @"adParams",
-                              (IMP)YTKACEAdParams,
-                              &OriginalAdParams);
-    YTKACEInstallBooleanHookOrMethod(@"YTIClientMdxGlobalConfig",
-                                     @"enableSkippableAd",
-                                     (IMP)YTKACEEnableSkippableAd,
-                                     &OriginalEnableSkippableAd);
-
-    YTKACEInstallInstanceHook(@"MDXSessionImpl",
-                              @"adPlaying:",
-                              (IMP)YTKACEMDXSessionImplAdPlaying,
-                              &OriginalMDXSessionImplAdPlaying);
-    YTKACEInstallInstanceHook(@"MDXSession",
-                              @"adPlaying:",
-                              (IMP)YTKACEMDXSessionAdPlaying,
-                              &OriginalMDXSessionAdPlaying);
-    YTKACEInstallInstanceHook(@"YTLocalPlaybackController",
-                              @"isPlayingAd",
-                              (IMP)YTKACEIsPlayingAd,
-                              &OriginalIsPlayingAd);
-    YTKACEInstallInstanceHook(@"YTLocalPlaybackController",
-                              @"isPlayingAdSurvey",
-                              (IMP)YTKACEIsPlayingAdSurvey,
-                              &OriginalIsPlayingAdSurvey);
-    YTKACEInstallInstanceHook(@"YTLocalPlaybackController",
-                              @"isPlayingAdIntro",
-                              (IMP)YTKACEIsPlayingAdIntro,
-                              &OriginalIsPlayingAdIntro);
-    YTKACEInstallInstanceHook(@"YTLocalPlaybackController",
-                              @"createAdsPlaybackCoordinator",
-                              (IMP)YTKACENoAdsPlaybackCoordinator,
-                              &OriginalCreateAdsPlaybackCoordinator);
+    YTKACEInstallPlaybackAdsHooks();
 
     YTKACEInstallInstanceHook(@"YTReelDataSource",
                               @"makeContentModelForEntry:",

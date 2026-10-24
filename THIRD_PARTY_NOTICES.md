@@ -14,6 +14,10 @@ SponsorBlock and DeArrow community data is provided by the SponsorBlock service 
 
 Hide AI Channels uses the AiSList blocklist and warnlist from [aisloplist.com](https://aisloplist.com), maintained by the AiSList community at [Override92/AiSList](https://github.com/Override92/AiSList) and licensed under [CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/). The lists are downloaded unmodified and only read to match channels in the feed and search. The list locations and the idea of matching channel handles in feed data came from the [Morphe](https://github.com/MorpheApp/morphe-patches) AiSList patch. No Morphe code is used.
 
+## uYouEnhanced video ad-blocking strategy
+
+The experimental video policy in `Tweak/Features/Ads/PlaybackAdsHooks.mm` is an independently implemented runtime-hook equivalent of the `uYouAdBlockingWorkaroundLite` behavior in [uYouEnhanced](https://github.com/iervn6341-ovo/uYouEnhanced-build/blob/b3c38c03f7a0229fd3c5e4c83204fcbef34b7c04/Sources/uYouPlus.xm), credited there to PoomSmart. It follows that named strategy, not the additional overlapping hooks in `uYouPlusPatches.xm` or any closed-source uYou binary. It does not copy or inject `uYou.dylib`, and it is not a guarantee of identical behavior to an existing signed IPA. The YTKACE strategy remains selectable for comparison.
+
 ## SABR reference
 
 The download path implements YouTube's SABR streaming protocol. It was written for YTKACE, developed against an iPad on iOS 16. Protocol understanding came in part from reading [LuanRT/googlevideo](https://github.com/LuanRT/googlevideo), an MIT-licensed library implementing UMP and SABR. No code from that project is included.

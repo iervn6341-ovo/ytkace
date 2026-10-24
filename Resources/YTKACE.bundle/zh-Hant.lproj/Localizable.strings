@@ -1,4 +1,7 @@
 /* YTKACE localisation - zh-Hant */
+"Video Ad Blocking Strategy" = "影片去廣告策略";
+"uYouEnhanced Lite (Experimental)" = "uYouEnhanced Lite（實驗性）";
+"Compare video ad blocking methods. Feed filtering is unchanged. Restart YouTube after changing." = "比較影片去廣告方式；動態消息過濾維持不變。更改後請重新啟動 YouTube。";
 "--:--" = "--:--";
 "ABOUT" = "關於";
 "ACTION BAR" = "操作列";
