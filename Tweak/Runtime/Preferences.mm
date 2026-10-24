@@ -128,7 +128,7 @@ void YTKACERegisterDefaults(void) {
         @"YTKACE.Preference.Shorts.SearchKept": @NO,
         @"YTKACE.Preference.Shorts.ChannelsKept": @NO,
         @"YTKACE.Preference.Playback.HLSMode": @NO,
-        @"YTKACE.Preference.Playback.Fix": @NO,
+        @"YTKACE.Preference.Playback.Fix": @YES,
         @"YTKACE.Preference.Shorts.LimitCount": @20,
         @"YTKACE.Preference.Tabs.FrostedHidden": @NO,
         @"YTKACE.Preference.Tabs.GlassMinimize": @NO,

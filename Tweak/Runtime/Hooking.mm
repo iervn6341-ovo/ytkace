@@ -23,6 +23,13 @@ static NSMutableSet<NSString *> *YTKACEHookKeys(void) {
     return keys;
 }
 
+static NSMutableDictionary<NSString *, NSValue *> *YTKACEHookOriginals(void) {
+    static NSMutableDictionary<NSString *, NSValue *> *originals;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{ originals = [NSMutableDictionary dictionary]; });
+    return originals;
+}
+
 static BOOL YTKACEInstallHook(NSString *className,
                               NSString *selectorName,
                               BOOL classMethod,
@@ -54,7 +61,14 @@ static BOOL YTKACEInstallHook(NSString *className,
                      selectorName];
 
     @synchronized (YTKACEHookLock()) {
-        if ([YTKACEHookKeys() containsObject:key]) {
+        // Different modules can hook the same selector (for example Liquid
+        // Glass and sideload compatibility both decorate NSBundle metadata).
+        // Deduplicate by replacement, retaining each original to avoid cycles
+        // when a previously installed replacement is registered again.
+        NSString *registration = [key stringByAppendingFormat:@"|%p", (void *)replacement];
+        NSValue *installed = YTKACEHookOriginals()[registration];
+        if (installed != nil) {
+            if (originalStorage != NULL) *originalStorage = (IMP)installed.pointerValue;
             return YES;
         }
 
@@ -74,6 +88,7 @@ static BOOL YTKACEInstallHook(NSString *className,
             *originalStorage = original;
         }
         [YTKACEHookKeys() addObject:key];
+        YTKACEHookOriginals()[registration] = [NSValue valueWithPointer:(void *)original];
         return YES;
     }
 }

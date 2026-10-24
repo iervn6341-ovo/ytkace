@@ -86,14 +86,15 @@ static id YTKACEDataSignalsWithoutIDFA(id receiver, SEL selector) {
 }
 
 static void YTKACEAdsDecorateContext(id receiver, SEL selector, id context) {
-    if (!YTKACEFeatureEnabled(YTKACENoAdsKey) && OriginalAdsDecorateContext != NULL) {
+    // Preserve native request metadata. Ad removal happens on player responses;
+    // skipping request decorators can leave newer clients with incomplete fields.
+    if (OriginalAdsDecorateContext != NULL) {
         ((void (*)(id, SEL, id))OriginalAdsDecorateContext)(receiver, selector, context);
     }
 }
 
 static void YTKACEAccountAdsDecorateContext(id receiver, SEL selector, id context) {
-    if (!YTKACEFeatureEnabled(YTKACENoAdsKey) &&
-        OriginalAccountAdsDecorateContext != NULL) {
+    if (OriginalAccountAdsDecorateContext != NULL) {
         ((void (*)(id, SEL, id))OriginalAccountAdsDecorateContext)(
             receiver,
             selector,

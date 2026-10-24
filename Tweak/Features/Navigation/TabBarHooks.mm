@@ -1351,7 +1351,10 @@ NSInteger YTKACETabBarGlassMode(void) {
     NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
     id value = [defaults objectForKey:YTKACETabBarGlassModeKey];
     if ([value respondsToSelector:@selector(integerValue)]) return [value integerValue];
-    return [defaults boolForKey:@"YTKACE.Preference.Tabs.Glass"] ? 1 : 0;
+    id legacy = [defaults objectForKey:@"YTKACE.Preference.Tabs.Glass"];
+    if (legacy != nil) return [legacy boolValue] ? 1 : 0;
+    // Own-glass mode uses UIGlassEffect and works without YouTube's server flag.
+    return NSClassFromString(@"UIGlassEffect") != Nil ? 1 : 0;
 }
 
 BOOL YTKACETabBarOwnGlass(void) {
