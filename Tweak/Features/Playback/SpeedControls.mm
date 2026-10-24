@@ -163,22 +163,9 @@ static NSString *YTKACESpeedText(double rate) {
 }
 
 static UIImage *YTKACESpeedButtonImage(BOOL plus) {
-    CGSize size = CGSizeMake(22.0, 22.0);
-    UIGraphicsBeginImageContextWithOptions(size, NO, 0.0);
-    CGContextRef context = UIGraphicsGetCurrentContext();
-    CGContextSetStrokeColorWithColor(context, UIColor.whiteColor.CGColor);
-    CGContextSetLineWidth(context, 2.0);
-    CGContextAddEllipseInRect(context, CGRectInset((CGRect){CGPointZero, size}, 1.5, 1.5));
-    CGContextMoveToPoint(context, 6.5, 11.0);
-    CGContextAddLineToPoint(context, 15.5, 11.0);
-    if (plus) {
-        CGContextMoveToPoint(context, 11.0, 6.5);
-        CGContextAddLineToPoint(context, 11.0, 15.5);
-    }
-    CGContextStrokePath(context);
-    UIImage *image = UIGraphicsGetImageFromCurrentImageContext();
-    UIGraphicsEndImageContext();
-    return [image imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+    return [UIImage systemImageNamed:plus ? @"plus" : @"minus"
+        withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:24.0
+            weight:UIImageSymbolWeightRegular]];
 }
 
 @interface YTKACESpeedCoordinator : NSObject
@@ -794,16 +781,11 @@ void YTKACEInstallSpeedHooks(void) {
                forState:UIControlStateNormal];
         [value setImage:nil forState:UIControlStateNormal];
         [value setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
-        value.titleLabel.font = [UIFont systemFontOfSize:17.0 weight:UIFontWeightSemibold];
-        for (NSLayoutConstraint *constraint in value.constraints) {
-            if (constraint.firstAttribute == NSLayoutAttributeWidth) {
-                constraint.active = NO;
-            }
-        }
-        [value.widthAnchor constraintGreaterThanOrEqualToConstant:52.0].active = YES;
-        value.titleLabel.adjustsFontSizeToFitWidth = NO;
-        value.titleLabel.lineBreakMode = NSLineBreakByClipping;
-        [value sizeToFit];
+        value.titleLabel.font = [UIFont systemFontOfSize:13.0 weight:UIFontWeightMedium];
+        value.titleLabel.numberOfLines = 1;
+        value.titleLabel.adjustsFontSizeToFitWidth = YES;
+        value.titleLabel.minimumScaleFactor = 0.75;
+        value.titleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
 
         BOOL hidden = !YTKACEFeatureEnabled(YTKACESpeedKey);
         minus.hidden = hidden || YTKACESpeedMenuStyle();

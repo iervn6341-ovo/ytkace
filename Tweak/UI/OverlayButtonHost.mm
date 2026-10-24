@@ -2,6 +2,8 @@
 #import "../YTKACE.h"
 #import "../Runtime/Hooking.h"
 #import "../Runtime/Preferences.h"
+#import "../Runtime/Localization.h"
+#include "OverlayLayoutPolicy.hpp"
 
 #import <math.h>
 #import <objc/runtime.h>
@@ -14,10 +16,11 @@ static IMP OriginalVideoSetOverlayVisible;
 static IMP OriginalVideoSetControlsVisible;
 static IMP OriginalControlsSetHidden;
 static const void *YTKACEOverlayStackAssociation = &YTKACEOverlayStackAssociation;
-static const void *YTKACEOverlayTrailingAssociation = &YTKACEOverlayTrailingAssociation;
-static const void *YTKACEOverlayAlignmentAssociation = &YTKACEOverlayAlignmentAssociation;
+static const void *YTKACEPlayerImageAssociation = &YTKACEPlayerImageAssociation;
+static const void *YTKACEOverflowSignatureAssociation = &YTKACEOverflowSignatureAssociation;
+static const void *YTKACEPlayerActionAssociation = &YTKACEPlayerActionAssociation;
+static NSString *const YTKACEOverflowIdentifier = @"YTKACE More Player Controls";
 static NSMutableArray<NSDictionary *> *YTKACEOverlayConfigurators;
-static BOOL YTKACENativeControlsVisible = YES;
 
 static void YTKACEFindSettingsControlInView(UIView *view,
                                             UIView *excluded,
@@ -83,85 +86,11 @@ static UIView *YTKACEFindSettingsControl(UIView *overlay, UIView *excluded) {
     CGFloat bestScore = -CGFLOAT_MAX;
     YTKACEFindSettingsControlInView(overlay, excluded, overlay,
                                     &best, &bestScore);
-    if (best == nil && overlay.window != nil) {
-        YTKACEFindSettingsControlInView(overlay.window, excluded, overlay,
-                                        &best, &bestScore);
-    }
     return best;
 }
 
-static NSMutableDictionary *YTKACEAlignmentState(UIView *overlay) {
-    NSMutableDictionary *state = objc_getAssociatedObject(
-        overlay, YTKACEOverlayAlignmentAssociation);
-    if (state == nil) {
-        state = [NSMutableDictionary dictionary];
-        objc_setAssociatedObject(overlay, YTKACEOverlayAlignmentAssociation,
-                                 state, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }
-    return state;
-}
-
-static BOOL YTKACEAlignOverlayStack(UIView *overlay, UIStackView *stack) {
-    NSLayoutConstraint *trailing = objc_getAssociatedObject(
-        overlay, YTKACEOverlayTrailingAssociation);
-    if (trailing == nil) return NO;
-
-    NSMutableDictionary *state = YTKACEAlignmentState(overlay);
-    CGSize size = overlay.bounds.size;
-    CGSize oldSize = [state[@"size"] CGSizeValue];
-    if (fabs(size.width - oldSize.width) > 1.0 ||
-        fabs(size.height - oldSize.height) > 1.0) {
-        [state removeAllObjects];
-        state[@"size"] = [NSValue valueWithCGSize:size];
-    }
-    UIWindow *window = overlay.window;
-    CGSize windowSize = window != nil ? window.bounds.size : CGSizeZero;
-    BOOL fillsLandscapeWindow = windowSize.width > windowSize.height &&
-        CGRectGetWidth(overlay.bounds) >= windowSize.width * 0.94;
-    CGFloat constant = fillsLandscapeWindow ? -20.0 : -8.0;
-    NSNumber *previous = state[@"constant"];
-    BOOL hasGearAlignment = [state[@"hasGearAlignment"] boolValue];
-    UIView *gear = YTKACEOverflowControl(overlay) ?:
-        YTKACEFindSettingsControl(overlay, stack);
-    if (gear != nil) {
-        CGRect frame = [gear.superview convertRect:gear.frame toView:overlay];
-        CGFloat safeTrailing = CGRectGetMaxX(overlay.safeAreaLayoutGuide.layoutFrame);
-        CGFloat center = CGRectGetMidX(frame);
-        if (isfinite(center) && center > 0.0 && safeTrailing > 0.0) {
-            constant = MIN(20.0, MAX(-160.0,
-                center + 20.0 - safeTrailing));
-            hasGearAlignment = YES;
-            state[@"hasGearAlignment"] = @YES;
-        }
-    } else if (hasGearAlignment && previous != nil) {
-        constant = previous.doubleValue;
-    }
-
-    NSUInteger stable = [state[@"stable"] unsignedIntegerValue];
-    if (previous != nil && fabs(previous.doubleValue - constant) < 0.5) {
-        stable += 1;
-    } else {
-        stable = 1;
-    }
-    state[@"constant"] = @(constant);
-    state[@"stable"] = @(stable);
-    [UIView performWithoutAnimation:^{
-        trailing.constant = constant;
-    }];
-
-    BOOL ready = hasGearAlignment || stable >= 2;
-    state[@"ready"] = @(ready);
-    if (!ready) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [overlay setNeedsLayout];
-        });
-    }
-    return ready;
-}
-
 static BOOL YTKACEKeepControlsVisible(void) {
-    return YTKACEFeatureEnabled(@"YTKACE.Preference.Overlay.AlwaysShowControls") ||
-        YTKACEFeatureEnabled(@"YTKACE.Preference.Overlay.AlwaysShowControls");
+    return YTKACEFeatureEnabled(@"YTKACE.Preference.Overlay.AlwaysShowControls");
 }
 
 static void YTKACESetHostedControlsHidden(UIView *view, BOOL hidden) {
@@ -189,7 +118,6 @@ static void YTKACESetHostedControlsHidden(UIView *view, BOOL hidden) {
 }
 
 static void YTKACEUpdateHostedVisibility(UIView *receiver, BOOL visible) {
-    YTKACENativeControlsVisible = visible;
     YTKACESetHostedControlsHidden(receiver, !visible);
 }
 
@@ -243,31 +171,81 @@ static UIStackView *YTKACEStackForOverlay(UIView *overlay) {
     stack.axis = UILayoutConstraintAxisHorizontal;
     stack.alignment = UIStackViewAlignmentCenter;
     stack.distribution = UIStackViewDistributionFill;
-    stack.spacing = 7.0;
+    stack.spacing = 4.0;
     stack.layoutMargins = UIEdgeInsetsZero;
     stack.layoutMarginsRelativeArrangement = YES;
     stack.backgroundColor = UIColor.clearColor;
-    stack.alpha = YTKACENativeControlsVisible ? 1.0 : 0.0;
-    stack.userInteractionEnabled = YTKACENativeControlsVisible;
-    stack.translatesAutoresizingMaskIntoConstraints = NO;
+    SEL visibility = NSSelectorFromString(@"isOverlayVisible");
+    BOOL visible = ![overlay respondsToSelector:visibility] ||
+        ((BOOL (*)(id, SEL))objc_msgSend)(overlay, visibility);
+    stack.alpha = visible ? 1.0 : 0.0;
+    stack.userInteractionEnabled = visible;
+    stack.clipsToBounds = YES;
+    stack.translatesAutoresizingMaskIntoConstraints = YES;
     stack.accessibilityIdentifier = @"YTKACEOverlayControls";
 
     [overlay addSubview:stack];
-    NSLayoutConstraint *trailing =
-        [stack.trailingAnchor constraintEqualToAnchor:overlay.safeAreaLayoutGuide.trailingAnchor
-                                             constant:-10.0];
-    [NSLayoutConstraint activateConstraints:@[
-        trailing,
-        [stack.topAnchor constraintEqualToAnchor:overlay.safeAreaLayoutGuide.topAnchor constant:50.0],
-        [stack.heightAnchor constraintEqualToConstant:40.0]
-    ]];
-    objc_setAssociatedObject(overlay, YTKACEOverlayTrailingAssociation,
-                             trailing, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(overlay,
                              YTKACEOverlayStackAssociation,
                              stack,
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     return stack;
+}
+
+static UIImage *YTKACEPlayerGlyph(UIImage *image) {
+    if (image == nil || image.size.width <= 0 || image.size.height <= 0) return image;
+    if (MAX(image.size.width, image.size.height) <= 24.0) return image;
+    UIImage *cached = objc_getAssociatedObject(image, YTKACEPlayerImageAssociation);
+    if (cached != nil) return cached;
+    CGFloat scale = 24.0 / MAX(image.size.width, image.size.height);
+    CGSize size = CGSizeMake(image.size.width * scale, image.size.height * scale);
+    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:size];
+    cached = [[renderer imageWithActions:^(__unused UIGraphicsImageRendererContext *context) {
+        [image drawInRect:(CGRect){CGPointZero, size}];
+    }] imageWithRenderingMode:image.renderingMode];
+    objc_setAssociatedObject(image, YTKACEPlayerImageAssociation,
+                             cached, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    return cached;
+}
+
+static UIButton *YTKACENativePlayerButton(UIView *overlay, NSString *identifier,
+                                         NSString *symbolName) {
+    UIImageSymbolConfiguration *configuration = [UIImageSymbolConfiguration
+        configurationWithPointSize:24.0 weight:UIImageSymbolWeightRegular];
+    UIImage *image = YTKACEPlayerGlyph([UIImage systemImageNamed:symbolName withConfiguration:configuration]);
+    UIButton *button = nil;
+    SEL factory = NSSelectorFromString(@"buttonWithImage:accessibilityLabel:verticalContentPadding:");
+    if ([overlay respondsToSelector:factory]) {
+        id candidate = ((id (*)(id, SEL, id, id, CGFloat))objc_msgSend)(
+            overlay, factory, image, identifier, 10.0);
+        if ([candidate isKindOfClass:UIButton.class]) button = candidate;
+    }
+    if (button == nil) {
+        Class nativeClass = NSClassFromString(@"YTQTMButton");
+        SEL iconFactory = NSSelectorFromString(@"iconButton");
+        if ([nativeClass respondsToSelector:iconFactory]) {
+            id candidate = ((id (*)(id, SEL))objc_msgSend)(nativeClass, iconFactory);
+            if ([candidate isKindOfClass:UIButton.class]) button = candidate;
+        }
+    }
+    if (button == nil) button = [UIButton buttonWithType:UIButtonTypeSystem];
+    button.accessibilityIdentifier = identifier;
+    button.accessibilityLabel = identifier;
+    button.tintColor = UIColor.whiteColor;
+    [button setImage:image forState:UIControlStateNormal];
+    [button setPreferredSymbolConfiguration:configuration forImageInState:UIControlStateNormal];
+    button.imageView.contentMode = UIViewContentModeScaleAspectFit;
+    button.clipsToBounds = YES;
+    button.translatesAutoresizingMaskIntoConstraints = NO;
+    [button.widthAnchor constraintEqualToConstant:44.0].active = YES;
+    [button.heightAnchor constraintEqualToConstant:44.0].active = YES;
+    SEL sizing = NSSelectorFromString(@"setSizeWithPaddingAndInsets:");
+    if ([button respondsToSelector:sizing]) ((void (*)(id, SEL, BOOL))objc_msgSend)(button, sizing, NO);
+    SEL hitTarget = NSSelectorFromString(@"setMinHitTargetSize:");
+    if ([button respondsToSelector:hitTarget]) ((void (*)(id, SEL, CGFloat))objc_msgSend)(button, hitTarget, 44.0);
+    SEL feedback = NSSelectorFromString(@"enableNewTouchFeedback");
+    if ([button respondsToSelector:feedback]) ((void (*)(id, SEL))objc_msgSend)(button, feedback);
+    return button;
 }
 
 UIButton *YTKACEOverlayButton(UIStackView *stack,
@@ -282,26 +260,109 @@ UIButton *YTKACEOverlayButton(UIStackView *stack,
         }
     }
 
-    UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
-    button.accessibilityIdentifier = identifier;
-    button.accessibilityLabel = identifier;
-    button.tintColor = UIColor.whiteColor;
-    if (@available(iOS 13.0, *)) {
-        UIImageSymbolConfiguration *configuration =
-            [UIImageSymbolConfiguration configurationWithPointSize:21.0
-                                                            weight:UIImageSymbolWeightMedium];
-        [button setPreferredSymbolConfiguration:configuration
-                                forImageInState:UIControlStateNormal];
-        [button setImage:[UIImage systemImageNamed:symbolName
-                                  withConfiguration:configuration]
-                forState:UIControlStateNormal];
-    }
-    button.imageView.contentMode = UIViewContentModeScaleAspectFit;
+    UIButton *button = YTKACENativePlayerButton(stack.superview, identifier, symbolName);
     [button addTarget:target action:action forControlEvents:UIControlEventTouchUpInside];
-    [button.widthAnchor constraintEqualToConstant:40.0].active = YES;
-    [button.heightAnchor constraintEqualToConstant:40.0].active = YES;
+    __weak id weakTarget = target;
+    void (^invoke)(UIButton *) = ^(UIButton *sender) {
+        id strongTarget = weakTarget;
+        if (strongTarget != nil) [sender sendAction:action to:strongTarget forEvent:nil];
+    };
+    objc_setAssociatedObject(button, YTKACEPlayerActionAssociation,
+                             invoke, OBJC_ASSOCIATION_COPY_NONATOMIC);
     [stack addArrangedSubview:button];
     return button;
+}
+
+static void YTKACEAvoidNativeControls(UIView *view, UIView *overlay,
+                                      UIStackView *stack, CGRect band,
+                                      CGFloat *left) {
+    if (view == stack || view.hidden || view.alpha < 0.05) return;
+    if ([view isKindOfClass:UIControl.class]) {
+        CGRect frame = [view convertRect:view.bounds toView:overlay];
+        // Ignore full-player tap-catcher buttons, not actual transport controls.
+        if (CGRectGetWidth(frame) <= 100 && CGRectGetHeight(frame) <= 100 &&
+            CGRectIntersectsRect(frame, band)) *left = MAX(*left, CGRectGetMaxX(frame) + 4.0);
+    }
+    for (UIView *child in view.subviews) YTKACEAvoidNativeControls(child, overlay, stack, band, left);
+}
+
+static void YTKACELayoutPlayerButtons(UIView *overlay, UIStackView *stack) {
+    NSMutableArray<UIButton *> *wanted = [NSMutableArray array];
+    UIButton *more = nil;
+    for (UIView *view in stack.arrangedSubviews) {
+        if (![view isKindOfClass:UIButton.class]) continue;
+        UIButton *button = (UIButton *)view;
+        if ([button.accessibilityIdentifier isEqualToString:YTKACEOverflowIdentifier]) {
+            more = button;
+            more.hidden = YES;
+            continue;
+        }
+        for (NSNumber *state in @[@(UIControlStateNormal), @(UIControlStateSelected), @(UIControlStateHighlighted)]) {
+            UIImage *image = [button imageForState:state.unsignedIntegerValue];
+            UIImage *glyph = YTKACEPlayerGlyph(image);
+            if (image != glyph) [button setImage:glyph forState:state.unsignedIntegerValue];
+        }
+        if (!button.hidden) [wanted addObject:button];
+    }
+    CGRect safe = UIEdgeInsetsInsetRect(overlay.bounds, overlay.safeAreaInsets);
+    CGFloat left = CGRectGetMinX(safe) + 8.0;
+    CGFloat right = CGRectGetMaxX(safe) - 8.0;
+    CGFloat top = CGRectGetMinY(safe) + 50.0;
+    UIView *gear = YTKACEOverflowControl(overlay) ?: YTKACEFindSettingsControl(overlay, stack);
+    if (gear != nil) {
+        CGRect frame = [gear convertRect:gear.bounds toView:overlay];
+        top = MAX(CGRectGetMinY(safe) + 4.0, CGRectGetMaxY(frame) + 4.0);
+        right = MIN(right, CGRectGetMidX(frame) + 22.0);
+    }
+    CGRect band = CGRectMake(left, top, MAX(0, right - left), 44.0);
+    YTKACEAvoidNativeControls(overlay, overlay, stack, band, &left);
+    auto plan = ytkace::planOverlay(left, right, top, CGRectGetMaxY(safe) - 8.0, wanted.count);
+    stack.hidden = !plan.fits;
+    if (!plan.fits) return;
+    for (NSUInteger index = plan.inlineCount; index < wanted.count; ++index) wanted[index].hidden = YES;
+    if (plan.overflowCount != 0) {
+        if (more == nil) {
+            more = YTKACENativePlayerButton(overlay, YTKACEOverflowIdentifier, @"ellipsis");
+            more.accessibilityLabel = YTKACELocalized(@"More player controls");
+            more.showsMenuAsPrimaryAction = YES;
+            [stack addArrangedSubview:more];
+        }
+        if (stack.arrangedSubviews.lastObject != more) {
+            [stack removeArrangedSubview:more];
+            [stack addArrangedSubview:more];
+        }
+        NSMutableArray<UIAction *> *actions = [NSMutableArray array];
+        NSMutableArray *signature = [NSMutableArray array];
+        __weak UIButton *weakMore = more;
+        for (NSUInteger index = plan.inlineCount; index < wanted.count; ++index) {
+            UIButton *button = wanted[index];
+            NSString *label = button.accessibilityLabel ?: button.accessibilityIdentifier;
+            if ([label hasPrefix:@"YTKACE "]) label = [label substringFromIndex:7];
+            NSString *title = YTKACELocalized(label ?: @"");
+            if (button.currentTitle.length != 0) title = [title stringByAppendingFormat:@" · %@", button.currentTitle];
+            [signature addObject:@[button.accessibilityIdentifier ?: @"", title, @(button.enabled), @(button.selected)]];
+            __weak UIButton *weakButton = button;
+            UIAction *action = [UIAction actionWithTitle:title image:button.currentImage identifier:nil handler:^(__unused UIAction *item) {
+                UIButton *source = weakMore;
+                UIButton *original = weakButton;
+                if (source == nil || original == nil || !original.enabled) return;
+                // Invoke only the feature action, not YTQTMButton's internal
+                // feedback targets. A visible sender keeps iPad popovers valid.
+                void (^invoke)(UIButton *) = objc_getAssociatedObject(original, YTKACEPlayerActionAssociation);
+                if (invoke != nil) invoke(source);
+            }];
+            action.attributes = button.enabled ? 0 : UIMenuElementAttributesDisabled;
+            action.state = button.selected ? UIMenuElementStateOn : UIMenuElementStateOff;
+            [actions addObject:action];
+        }
+        if (![signature isEqual:objc_getAssociatedObject(more, YTKACEOverflowSignatureAssociation)]) {
+            more.menu = [UIMenu menuWithTitle:@"" children:actions];
+            objc_setAssociatedObject(more, YTKACEOverflowSignatureAssociation,
+                                     [signature copy], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        more.hidden = NO;
+    }
+    stack.frame = CGRectMake(plan.x, plan.y, plan.width, 44.0);
 }
 
 static void YTKACEControlsOverlayLayout(UIView *receiver, SEL selector) {
@@ -318,16 +379,7 @@ static void YTKACEControlsOverlayLayout(UIView *receiver, SEL selector) {
         YTKACEOverlayConfigurator configurator = entry[@"block"];
         configurator(receiver, stack);
     }
-    BOOL aligned = YTKACEAlignOverlayStack(receiver, stack);
-
-    BOOL visible = NO;
-    for (UIView *view in stack.arrangedSubviews) {
-        if (!view.hidden) {
-            visible = YES;
-            break;
-        }
-    }
-    stack.hidden = !visible || !aligned;
+    YTKACELayoutPlayerButtons(receiver, stack);
 }
 
 void YTKACERegisterOverlayConfigurator(NSString *identifier,
