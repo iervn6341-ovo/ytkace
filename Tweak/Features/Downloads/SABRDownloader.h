@@ -20,7 +20,10 @@ typedef void (^YTKACENativeRequestCompletion)(
     NSError * _Nullable error);
 
 FOUNDATION_EXPORT void YTKACESABRSetPoToken(id _Nullable token);
+FOUNDATION_EXPORT void YTKACESABRSetStandaloneClient(NSString *identifier,
+    NSData * _Nullable clientInfo, NSDictionary<NSString *, NSString *> * _Nullable headers);
 FOUNDATION_EXPORT NSString *_Nullable YTKACESABRPoTokenString(void);
+FOUNDATION_EXPORT NSUInteger YTKACESABRPoTokenLength(void);
 FOUNDATION_EXPORT void YTKACESABRSetNativeHeaders(
     NSDictionary<NSString *, NSString *> *headers);
 FOUNDATION_EXPORT void YTKACESABRSetNativeRequest(NSURLRequest *request);
@@ -34,6 +37,14 @@ FOUNDATION_EXPORT void YTKACEPreparePlayerWithRoute(NSString *videoID,
                                                     YTKACEPlayerReloadCompletion completion);
 FOUNDATION_EXPORT void YTKACEPreparePlayer(NSString *videoID,
                                            YTKACEPlayerReloadCompletion completion);
+FOUNDATION_EXPORT BOOL YTKACEPlaybackTemplateReady(void);
+FOUNDATION_EXPORT void YTKACESABRRestoreSeed(void);
+FOUNDATION_EXPORT void YTKACERestorePlayerRequest(void);
+FOUNDATION_EXPORT void YTKACEInstallFeedDownloadHooks(void);
+FOUNDATION_EXPORT void YTKACEDiscardRestoredRequest(void);
+FOUNDATION_EXPORT void YTKACEResolvePlayerResponse(
+    NSString *videoID,
+    YTKACEPlayerReloadCompletion completion);
 FOUNDATION_EXPORT void YTKACEReloadPlayer(NSString * _Nullable videoID,
                                          NSString *token,
                                          YTKACEPlayerReloadCompletion completion);

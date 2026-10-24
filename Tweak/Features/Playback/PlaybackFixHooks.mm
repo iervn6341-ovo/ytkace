@@ -34,6 +34,9 @@
 #import <objc/runtime.h>
 
 static NSString *const YTKACEPlaybackFixKey = @"YTKACE.Preference.Playback.Fix";
+static const NSTimeInterval YTKACEStallGrace = 0.8;
+static const double YTKACEProgressEpsilon = 0.15;
+
 static NSString *const YTKACEPlaybackErrorDomain =
     @"com.google.ios.youtube.ErrorDomain.playback";
 
@@ -45,8 +48,19 @@ static IMP OriginalCurrentVideoMediaTime;
 static IMP OriginalSeekToTime;
 static IMP OriginalHandleError;
 
+NSInteger YTKACEPlaybackFixMode(void) {
+    if (!YTKACEMasterEnabled()) return 0;
+    id stored = YTKACEPreferenceObject(@"YTKACE.Preference.Playback.FixMode");
+    if ([stored respondsToSelector:@selector(integerValue)]) {
+        const NSInteger mode = [stored integerValue];
+        return mode >= 0 && mode <= 2 ? mode : 0;
+    }
+    if (YTKACEFeatureEnabled(@"YTKACE.Preference.Playback.HLSMode")) return 2;
+    return YTKACEFeatureEnabled(YTKACEPlaybackFixKey) ? 1 : 0;
+}
+
 static BOOL YTKACEPlaybackFixEnabled(void) {
-    return YTKACEFeatureEnabled(YTKACEPlaybackFixKey);
+    return YTKACEPlaybackFixMode() == 1;
 }
 
 static id YTKACEParentResponder(id overlay) {
@@ -82,6 +96,34 @@ static void YTKACESendRetryEvent(id overlay, NSString *stage) {
                       NSStringFromClass([responder class]));
 }
 
+static BOOL YTKACEReloadPlayer(id pvc, NSString *stage) {
+    SEL activeGetter = NSSelectorFromString(@"activeVideo");
+    if (pvc == nil || ![pvc respondsToSelector:activeGetter]) return NO;
+    id video = ((id (*)(id, SEL))objc_msgSend)(pvc, activeGetter);
+    SEL reloadSel = NSSelectorFromString(@"player:reloadWithContext:");
+    SEL mediaGetter = NSSelectorFromString(@"mediaPlayer");
+    Class contextClass = NSClassFromString(@"MLPlayerReloadContext");
+    SEL contextInit = NSSelectorFromString(
+        @"initWithStartPlayback:refreshStreamingData:");
+    if (video == nil || contextClass == Nil ||
+        ![video respondsToSelector:reloadSel] ||
+        ![video respondsToSelector:mediaGetter]) {
+        YTKACEDownloadLog(@"fix", @"%@ player reload unavailable on %@", stage,
+                          video == nil ? @"nil" : NSStringFromClass([video class]));
+        return NO;
+    }
+    id allocated = [contextClass alloc];
+    if (![allocated respondsToSelector:contextInit]) return NO;
+    id context = ((id (*)(id, SEL, BOOL, BOOL))objc_msgSend)(
+        allocated, contextInit, YES, YES);
+    if (context == nil) return NO;
+    id media = ((id (*)(id, SEL))objc_msgSend)(video, mediaGetter);
+    ((void (*)(id, SEL, id, id))objc_msgSend)(video, reloadSel, media, context);
+    YTKACEDownloadLog(@"fix", @"%@ player reload on %@", stage,
+                      NSStringFromClass([video class]));
+    return YES;
+}
+
 static void YTKACESeek(id player, double position, NSString *stage) {
     SEL seek = NSSelectorFromString(@"seekToTime:");
     if (![player respondsToSelector:seek]) {
@@ -92,15 +134,17 @@ static void YTKACESeek(id player, double position, NSString *stage) {
     YTKACEDownloadLog(@"fix", @"%@ seek %.2f", stage, position);
 }
 
-static void YTKACEReplay(id player, NSString *stage) {
-    SEL replay = NSSelectorFromString(@"replay");
-    if (![player respondsToSelector:replay]) {
-        YTKACEDownloadLog(@"fix", @"%@ replay unavailable on %@", stage,
-                          NSStringFromClass([player class]));
-        return;
+
+static void YTKACEScheduleCaptionRestore(id player) {
+    __weak id weakPlayer = player;
+    const double delays[] = { 0.6, 1.5, 3.0 };
+    for (size_t index = 0; index < sizeof(delays) / sizeof(delays[0]); index++) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                     (int64_t)(delays[index] * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            YTKACECaptionsRestore(weakPlayer);
+        });
     }
-    ((void (*)(id, SEL))objc_msgSend)(player, replay);
-    YTKACEDownloadLog(@"fix", @"%@ replay sent", stage);
 }
 
 static double YTKACEPosition(id player) {
@@ -131,6 +175,33 @@ static void YTKACECallOriginalHandleError(id receiver, SEL selector, id error) {
 }
 
 static void YTKACEHandleError(id receiver, SEL selector, id error) {
+    if (YTKACEPlaybackFixMode() == 2) {
+        NSError *hlsError = [error isKindOfClass:NSError.class] ? error : nil;
+        YTKACEDownloadLog(@"hls", @"player error domain=%@ code=%ld", hlsError.domain ?: @"-",
+                          (long)hlsError.code);
+        SEL parentGetter = NSSelectorFromString(@"parentViewController");
+        id pvc = [receiver respondsToSelector:parentGetter]
+            ? ((id (*)(id, SEL))objc_msgSend)(receiver, parentGetter) : nil;
+        SEL videoGetter = NSSelectorFromString(@"currentVideoID");
+        NSString *videoID = [pvc respondsToSelector:videoGetter]
+            ? ((id (*)(id, SEL))objc_msgSend)(pvc, videoGetter) : nil;
+        __weak id weakReceiver = receiver;
+        __weak id weakPlayer = pvc;
+        const BOOL started = [videoID isKindOfClass:NSString.class] &&
+            YTKACEHLSBeginFallback(videoID, ^(BOOL available) {
+                id strongReceiver = weakReceiver;
+                id strongPlayer = weakPlayer;
+                if (available && strongPlayer != nil && YTKACEReloadPlayer(strongPlayer, @"hls fallback")) {
+                    YTKACEDownloadLog(@"hls", @"fallback to vision video=%@", videoID);
+                    return;
+                }
+                YTKACEDownloadLog(@"hls", @"fallback unavailable video=%@", videoID);
+                if (strongReceiver != nil) YTKACECallOriginalHandleError(strongReceiver, selector, error);
+            });
+        if (started) return;
+        YTKACECallOriginalHandleError(receiver, selector, error);
+        return;
+    }
     if (!YTKACEPlaybackFixEnabled()) {
         YTKACECallOriginalHandleError(receiver, selector, error);
         return;
@@ -166,9 +237,20 @@ static void YTKACEHandleError(id receiver, SEL selector, id error) {
                           pvc == nil ? @"nil" : NSStringFromClass([pvc class]));
 
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                     (int64_t)(0.10 * NSEC_PER_SEC)),
+                                     (int64_t)(YTKACEStallGrace * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
-            YTKACESendRetryEvent(receiver, @"primary");
+            const double moved = YTKACEPosition(pvc);
+            if (moved > savedTime + YTKACEProgressEpsilon) {
+                gIsTimeToRetry = NO;
+                YTKACEDownloadLog(@"fix", @"still playing %.2f -> %.2f, no retry",
+                                  savedTime, moved);
+                return;
+            }
+            YTKACEDownloadLog(@"fix", @"stalled at %.2f, retrying", savedTime);
+            YTKACECaptionsSnapshot(pvc);
+            if (!YTKACEReloadPlayer(pvc, @"primary")) {
+                YTKACESendRetryEvent(receiver, @"primary");
+            }
 
             if (pvc) {
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
@@ -179,13 +261,13 @@ static void YTKACEHandleError(id receiver, SEL selector, id error) {
                     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
                                                  (int64_t)(0.10 * NSEC_PER_SEC)),
                                    dispatch_get_main_queue(), ^{
-                        YTKACEReplay(pvc, @"primary");
+                        YTKACEScheduleCaptionRestore(pvc);
 
                         if (!gEmergencyCheckRunning) {
                             gEmergencyCheckRunning = true;
 
                             dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                                         (int64_t)(1.00 * NSEC_PER_SEC)),
+                                                         (int64_t)(3.00 * NSEC_PER_SEC)),
                                            dispatch_get_main_queue(), ^{
                                 const double currentTime = YTKACEPosition(pvc);
                                 YTKACEDownloadLog(@"fix",
@@ -194,13 +276,15 @@ static void YTKACEHandleError(id receiver, SEL selector, id error) {
 
                                 if (currentTime <= savedTime + 0.05) {
                                     YTKACEDownloadLog(@"fix", @"still stalled");
-                                    YTKACESendRetryEvent(receiver, @"emergency");
+                                    if (!YTKACEReloadPlayer(pvc, @"emergency")) {
+                                        YTKACESendRetryEvent(receiver, @"emergency");
+                                    }
                                     YTKACESeek(pvc, savedTime, @"emergency");
 
                                     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
                                                                  (int64_t)(0.20 * NSEC_PER_SEC)),
                                                    dispatch_get_main_queue(), ^{
-                                        YTKACEReplay(pvc, @"emergency");
+                                        YTKACEScheduleCaptionRestore(pvc);
                                         gIsTimeToRetry = NO;
                                         YTKACEDownloadLog(@"fix", @"emergency done");
                                     });

@@ -29,7 +29,6 @@ static void YTKACEWriteImageDataToPhotos(NSData *data) {
                 if (success) {
                     YTKACEShowNotice(YTKACELocalized(@"Saved to Photos"));
                 } else {
-                    YTKACEDownloadLog(@"postimage", @"save failed %@", error);
                     YTKACEShowNotice(error.localizedDescription ?:
                         YTKACELocalized(@"The image could not be saved."));
                 }
@@ -93,7 +92,6 @@ static NSURL *YTKACEOriginalImageURL(NSURL *url) {
 - (void)saveTapped:(UIButton *)sender {
     id node = YTKACECurrentZoomNode;
     if (node == nil) {
-        YTKACEDownloadLog(@"postimage", @"no tracked zoom node");
         YTKACEShowNotice(YTKACELocalized(@"The image could not be saved."));
         return;
     }
@@ -103,29 +101,24 @@ static NSURL *YTKACEOriginalImageURL(NSURL *url) {
         ? ((id (*)(id, SEL))objc_msgSend)(node, urlGetter)
         : nil;
     if (url == nil) {
-        YTKACEDownloadLog(@"postimage", @"node has no URL yet");
         YTKACEShowNotice(YTKACELocalized(@"The image is still loading."));
         return;
     }
 
     NSURL *original = YTKACEOriginalImageURL(url);
-    YTKACEDownloadLog(@"postimage", @"fetch %@", original.lastPathComponent);
     sender.enabled = NO;
     NSURLSessionDataTask *task = [NSURLSession.sharedSession
         dataTaskWithURL:original
-      completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+      completionHandler:^(NSData *data, NSURLResponse *response,
+                          __unused NSError *error) {
         (void)response;
         dispatch_async(dispatch_get_main_queue(), ^{ sender.enabled = YES; });
         if (data.length == 0) {
-            YTKACEDownloadLog(@"postimage", @"fetch failed %@",
-                              error.localizedDescription ?: @"empty");
             dispatch_async(dispatch_get_main_queue(), ^{
                 YTKACEShowNotice(YTKACELocalized(@"The image could not be saved."));
             });
             return;
         }
-        YTKACEDownloadLog(@"postimage", @"fetched bytes=%lu",
-                          (unsigned long)data.length);
         YTKACEWriteImageDataToPhotos(data);
     }];
     [task resume];
@@ -176,9 +169,6 @@ static void YTKACEAttachSaveButton(UIView *container) {
         [button.widthAnchor constraintEqualToConstant:44.0],
         [button.heightAnchor constraintEqualToConstant:44.0]
     ]];
-    YTKACEDownloadLog(@"postimage", @"save button attached bounds=%.0fx%.0f",
-                      CGRectGetWidth(container.bounds),
-                      CGRectGetHeight(container.bounds));
 }
 
 static UIViewController *YTKACEOwningController(UIView *view) {
@@ -214,10 +204,115 @@ static void YTKACEZoomNodeDidEnterVisibleState(id receiver, SEL selector) {
     });
 }
 
+static NSString *const YTKACEPostCopyTextKey = @"YTKACE.Preference.Posts.CopyText";
+static const void *YTKACEPostCopyGestureKey = &YTKACEPostCopyGestureKey;
+
+static id YTKACENodeValue(id node, NSString *name) {
+    SEL selector = NSSelectorFromString(name);
+    return [node respondsToSelector:selector] ? ((id (*)(id, SEL))objc_msgSend)(node, selector) : nil;
+}
+
+static id YTKACEFindExpandableText(id node, NSUInteger depth) {
+    if (node == nil || depth > 12) return nil;
+    if ([NSStringFromClass([node class]) isEqualToString:@"ELMExpandableTextNode"]) return node;
+    for (id child in YTKACENodeValue(node, @"subnodes")) {
+        id found = YTKACEFindExpandableText(child, depth + 1);
+        if (found != nil) return found;
+    }
+    return nil;
+}
+
+static NSString *YTKACENodeText(id node, NSUInteger depth) {
+    if (node == nil || depth > 4) return nil;
+    NSString *text = [YTKACENodeValue(node, @"attributedText") string];
+    if (text.length != 0) return text;
+    for (id child in YTKACENodeValue(node, @"subnodes")) {
+        text = YTKACENodeText(child, depth + 1);
+        if (text.length != 0) return text;
+    }
+    return nil;
+}
+
+@interface YTKACEPostCopyHandler : NSObject <UIGestureRecognizerDelegate>
+@end
+
+@implementation YTKACEPostCopyHandler
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gesture shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other {
+    return YES;
+}
+
+- (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gesture {
+    if (!YTKACEMasterEnabled() || ![YTKACEPreferenceObject(YTKACEPostCopyTextKey) boolValue]) return NO;
+    UIView *window = gesture.view;
+    UIView *cell = [window hitTest:[gesture locationInView:window] withEvent:nil];
+    while (cell != nil && ![NSStringFromClass(cell.class) isEqualToString:@"_ASCollectionViewCell"]) cell = cell.superview;
+    return [NSStringFromClass([YTKACENodeValue(cell, @"node") class]) isEqualToString:@"YTCommentNode"];
+}
+
+- (void)pressed:(UILongPressGestureRecognizer *)gesture {
+    if (gesture.state != UIGestureRecognizerStateBegan) return;
+    UIView *window = gesture.view;
+    CGPoint point = [gesture locationInView:window];
+    UIView *cell = [window hitTest:point withEvent:nil];
+    while (cell != nil && ![NSStringFromClass(cell.class) isEqualToString:@"_ASCollectionViewCell"]) cell = cell.superview;
+    id cellNode = YTKACENodeValue(cell, @"node");
+    if (![NSStringFromClass([cellNode class]) isEqualToString:@"YTCommentNode"]) return;
+    id textNode = YTKACEFindExpandableText(cellNode, 0);
+    UIView *cellView = YTKACENodeValue(cellNode, @"view");
+    SEL boundsSel = NSSelectorFromString(@"bounds");
+    SEL convertSel = NSSelectorFromString(@"convertRect:toNode:");
+    if (textNode == nil || cellView == nil || ![textNode respondsToSelector:convertSel]) return;
+    CGRect bounds = ((CGRect (*)(id, SEL))objc_msgSend)(textNode, boundsSel);
+    CGRect frame = ((CGRect (*)(id, SEL, CGRect, id))objc_msgSend)(textNode, convertSel, bounds, cellNode);
+    frame = [cellView convertRect:CGRectInset(frame, -8.0, -8.0) toView:window];
+    if (!CGRectContainsPoint(frame, point)) return;
+    NSString *text = YTKACENodeText(textNode, 0);
+    if (text.length == 0) return;
+    [[UIImpactFeedbackGenerator.alloc initWithStyle:UIImpactFeedbackStyleMedium] impactOccurred];
+    UIAlertController *menu = [UIAlertController alertControllerWithTitle:nil message:nil
+                                                           preferredStyle:UIAlertControllerStyleActionSheet];
+    [menu addAction:[UIAlertAction actionWithTitle:YTKACELocalized(@"Copy Text") style:UIAlertActionStyleDefault
+                                           handler:^(__unused UIAlertAction *action) {
+        UIPasteboard.generalPasteboard.string = text;
+        [[UINotificationFeedbackGenerator new] notificationOccurred:UINotificationFeedbackTypeSuccess];
+    }]];
+    [menu addAction:[UIAlertAction actionWithTitle:YTKACELocalized(@"Cancel") style:UIAlertActionStyleCancel handler:nil]];
+    menu.popoverPresentationController.sourceView = window;
+    menu.popoverPresentationController.sourceRect = CGRectMake(point.x, point.y, 1.0, 1.0);
+    UIViewController *controller = ((UIWindow *)window).rootViewController;
+    while (controller.presentedViewController != nil) controller = controller.presentedViewController;
+    [controller presentViewController:menu animated:YES completion:nil];
+}
+@end
+
+static YTKACEPostCopyHandler *YTKACEPostCopy;
+
+static void YTKACEAttachPostCopyGestures(void) {
+    if (!YTKACEMasterEnabled() || ![YTKACEPreferenceObject(YTKACEPostCopyTextKey) boolValue]) return;
+    if (YTKACEPostCopy == nil) YTKACEPostCopy = [YTKACEPostCopyHandler new];
+    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+        if (![scene isKindOfClass:UIWindowScene.class]) continue;
+        for (UIWindow *window in ((UIWindowScene *)scene).windows) {
+            if (objc_getAssociatedObject(window, YTKACEPostCopyGestureKey) != nil) continue;
+            UILongPressGestureRecognizer *press = [[UILongPressGestureRecognizer alloc]
+                initWithTarget:YTKACEPostCopy action:@selector(pressed:)];
+            press.minimumPressDuration = 0.5;
+            press.delegate = YTKACEPostCopy;
+            [window addGestureRecognizer:press];
+            objc_setAssociatedObject(window, YTKACEPostCopyGestureKey, press, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+    }
+}
+
 void YTKACEInstallPostImageSaverHooks(void) {
-    const BOOL visible = YTKACEInstallInstanceHook(
+    for (NSNotificationName name in @[UIApplicationDidBecomeActiveNotification, YTKACEPreferencesDidChangeNotification]) {
+        [NSNotificationCenter.defaultCenter addObserverForName:name object:nil queue:NSOperationQueue.mainQueue
+                                                    usingBlock:^(__unused NSNotification *note) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)), dispatch_get_main_queue(),
+                           ^{ YTKACEAttachPostCopyGestures(); });
+        }];
+    }
+    YTKACEInstallInstanceHook(
         @"YTImageZoomNode", @"didEnterVisibleState",
         (IMP)YTKACEZoomNodeDidEnterVisibleState, &OriginalZoomNodeVisible);
-    YTKACEDownloadLog(@"postimage", @"hooks visible=%d enabled=%d", visible,
-                      YTKACEFeatureEnabled(YTKACEPostImageSaveKey));
 }

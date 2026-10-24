@@ -1,6 +1,7 @@
 #import "../../YTKACE.h"
 #import "../../Runtime/Hooking.h"
 #import "../../Runtime/Preferences.h"
+#import "../../UI/Notice.h"
 
 #import <AVFoundation/AVFoundation.h>
 #import <MediaPlayer/MediaPlayer.h>
@@ -50,6 +51,7 @@ static const void *YTKACESeekLabelAssociation = &YTKACESeekLabelAssociation;
 @property(nonatomic, assign) NSInteger seekDirection;
 - (void)handleEdgePan:(UIPanGestureRecognizer *)recognizer;
 - (void)handleHold:(UILongPressGestureRecognizer *)recognizer;
+- (void)handleTwoFingerTap:(UITapGestureRecognizer *)recognizer;
 @end
 
 @implementation YTKACEGestureCoordinator
@@ -81,6 +83,13 @@ static const void *YTKACESeekLabelAssociation = &YTKACESeekLabelAssociation;
         }
     }
     return nil;
+}
+
+static void YTKACEStyleGestureIndicator(UIView *indicator, CGFloat alpha, CGFloat radius, CGFloat glassRadius) {
+    indicator.layer.cornerRadius = glassRadius;
+    if (YTKACEApplyGlassBackground(indicator, YES)) return;
+    indicator.backgroundColor = [UIColor colorWithWhite:0.0 alpha:alpha];
+    indicator.layer.cornerRadius = radius;
 }
 
 - (UIView *)indicatorInView:(UIView *)view {
@@ -297,6 +306,7 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other 
     centerY = MIN(CGRectGetHeight(view.bounds) - dimensions.height * 0.5,
                   MAX(dimensions.height * 0.5, centerY));
     indicator.center = CGPointMake(CGRectGetMidX(view.bounds), centerY);
+    YTKACEStyleGestureIndicator(indicator, 0.65, 10.0, dimensions.height * 0.5);
 
     UIImageView *icon = objc_getAssociatedObject(view, YTKACEIndicatorIconAssociation);
     UIView *track = objc_getAssociatedObject(view, YTKACEIndicatorTrackAssociation);
@@ -483,6 +493,7 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other 
     }
 
     UIView *indicator = [self seekIndicatorInView:self.seekView];
+    YTKACEStyleGestureIndicator(indicator, 0.75, 12.0, 28.0);
     UIImageView *icon = objc_getAssociatedObject(self.seekView, YTKACESeekIconAssociation);
     UILabel *label = objc_getAssociatedObject(self.seekView, YTKACESeekLabelAssociation);
     NSString *symbol = self.seekDirection < 0 ? @"gobackward" : @"goforward";
@@ -495,6 +506,18 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other 
                                    CGRectGetMidY(self.seekView.bounds));
     [self.seekView bringSubviewToFront:indicator];
     [UIView animateWithDuration:0.2 animations:^{ indicator.alpha = 1.0; }];
+}
+
+- (void)handleTwoFingerTap:(UITapGestureRecognizer *)recognizer {
+    if (recognizer.state != UIGestureRecognizerStateEnded ||
+        !YTKACEFeatureEnabled(@"YTKACE.Preference.Gestures.TwoFingerTap")) return;
+    SEL toggle = NSSelectorFromString(@"didTogglePlayPause");
+    for (UIResponder *responder = recognizer.view; responder != nil; responder = responder.nextResponder) {
+        if ([responder respondsToSelector:toggle]) {
+            ((void (*)(id, SEL))objc_msgSend)(responder, toggle);
+            return;
+        }
+    }
 }
 
 - (void)handleHold:(UILongPressGestureRecognizer *)recognizer {
@@ -582,6 +605,13 @@ static void YTKACEAttachPlayerGestures(UIView *playerView,
     hold.cancelsTouchesInView = YES;
     hold.delegate = YTKACEGestureCoordinator.sharedCoordinator;
     [playerView addGestureRecognizer:hold];
+    UITapGestureRecognizer *twoFinger =
+        [[UITapGestureRecognizer alloc]
+            initWithTarget:YTKACEGestureCoordinator.sharedCoordinator
+                    action:@selector(handleTwoFingerTap:)];
+    twoFinger.numberOfTouchesRequired = 2;
+    twoFinger.cancelsTouchesInView = YES;
+    [playerView addGestureRecognizer:twoFinger];
     objc_setAssociatedObject(playerView,
                              YTKACELongPressAssociation,
                              hold,

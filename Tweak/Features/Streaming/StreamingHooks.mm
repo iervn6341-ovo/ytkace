@@ -1,12 +1,17 @@
 #import "../../YTKACE.h"
 #import "../../Runtime/Hooking.h"
 #import "../../Runtime/Preferences.h"
+#import "../Downloads/DownloadLog.h"
 
 #import <objc/message.h>
 #import <objc/runtime.h>
 #import <Network/Network.h>
 
 #include <atomic>
+#import <dlfcn.h>
+#import <mach-o/dyld.h>
+#import <mach-o/loader.h>
+#import <CoreGraphics/CoreGraphics.h>
 
 static IMP OriginalLegacyQuality;
 static IMP OriginalSetUserSelectableFormats;
@@ -111,6 +116,10 @@ static NSString *YTKACETargetQualityLabel(NSArray *formats, NSString *target) {
         if ([label isEqualToString:target]) {
             return label;
         }
+        if ([label rangeOfString:@"Premium"
+                         options:NSCaseInsensitiveSearch].location != NSNotFound) {
+            continue;
+        }
         NSInteger resolution = YTKACEResolution(label);
         NSInteger distance = labs(resolution - targetResolution);
         if (resolution > 0 && distance < nearestDistance) {
@@ -152,6 +161,20 @@ static void YTKACEApplyPreferredQuality(id controller) {
     }
 }
 
+BOOL YTKACEPlayerIsShorts(id player) {
+    SEL parentSelector = NSSelectorFromString(@"parentViewController");
+    id current = player;
+    for (NSUInteger depth = 0; current != nil && depth < 6; depth++) {
+        NSString *name = NSStringFromClass(object_getClass(current));
+        if ([name containsString:@"Reel"] || [name containsString:@"Shorts"]) {
+            return YES;
+        }
+        if (![current respondsToSelector:parentSelector]) break;
+        current = ((id (*)(id, SEL))objc_msgSend)(current, parentSelector);
+    }
+    return NO;
+}
+
 static void YTKACEDidLoadContentPlaybackData(id receiver,
                                               SEL selector,
                                               id playbackController,
@@ -164,11 +187,83 @@ static void YTKACEDidLoadContentPlaybackData(id receiver,
         YTKACEQualityIndex() == 0) {
         return;
     }
+    if (YTKACEPlayerIsShorts(receiver)) {
+        return;
+    }
     __weak id weakReceiver = receiver;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)NSEC_PER_SEC),
                    dispatch_get_main_queue(), ^{
         YTKACEApplyPreferredQuality(weakReceiver);
     });
+}
+
+
+
+
+static IMP OriginalAVEligibleForHDR;
+static IMP OriginalAVAvailableHDRModes;
+
+static BOOL YTKACECallerIsYouTube(const void *address) {
+    static const void *mainBase;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        for (uint32_t index = 0; index < _dyld_image_count(); index++) {
+            const struct mach_header *header = _dyld_get_image_header(index);
+            if (header != NULL && header->filetype == MH_EXECUTE) {
+                mainBase = header;
+                break;
+            }
+        }
+    });
+    Dl_info info;
+    return address != NULL && mainBase != NULL &&
+        dladdr(address, &info) != 0 && info.dli_fbase == mainBase;
+}
+
+static BOOL YTKACEHDRSuppressed(const void *caller) {
+    return YTKACEFeatureEnabled(@"YTKACE.Preference.Playback.HDRDisabled") &&
+        YTKACECallerIsYouTube(caller);
+}
+
+static BOOL YTKACEAVEligibleForHDR(id receiver, SEL selector) {
+    if (YTKACEHDRSuppressed(__builtin_return_address(0))) return NO;
+    return OriginalAVEligibleForHDR != NULL
+        ? ((BOOL (*)(id, SEL))OriginalAVEligibleForHDR)(receiver, selector) : NO;
+}
+
+static NSInteger YTKACEAVAvailableHDRModes(id receiver, SEL selector) {
+    if (YTKACEHDRSuppressed(__builtin_return_address(0))) return 0;
+    return OriginalAVAvailableHDRModes != NULL
+        ? ((NSInteger (*)(id, SEL))OriginalAVAvailableHDRModes)(receiver, selector) : 0;
+}
+
+
+static NSArray *YTKACEFormatsWithoutPremium(NSArray *formats) {
+    if (!YTKACEFeatureEnabled(@"YTKACE.Preference.Playback.PremiumQualityHidden") ||
+        ![formats isKindOfClass:NSArray.class]) {
+        return formats;
+    }
+    NSMutableArray *kept = [NSMutableArray array];
+    for (id format in formats) {
+        id label = YTKACEValue(format, @"qualityLabel");
+        if ([label isKindOfClass:NSString.class] &&
+            [label rangeOfString:@"Premium"
+                         options:NSCaseInsensitiveSearch].location != NSNotFound) {
+            continue;
+        }
+        [kept addObject:format];
+    }
+    return kept.count != 0 ? kept : formats;
+}
+
+static IMP OriginalRedesignedSetFormats;
+
+static void YTKACERedesignedSetFormats(id receiver, SEL selector, NSArray *formats) {
+    NSArray *selected = YTKACEFormatsWithoutPremium(formats);
+    if (OriginalRedesignedSetFormats != NULL) {
+        ((void (*)(id, SEL, id))OriginalRedesignedSetFormats)(receiver, selector,
+                                                              selected);
+    }
 }
 
 static void YTKACESetUserSelectableFormats(id receiver,
@@ -209,6 +304,7 @@ static void YTKACESetUserSelectableFormats(id receiver,
             }
         }
     }
+    selectedFormats = YTKACEFormatsWithoutPremium(selectedFormats);
     if (OriginalSetUserSelectableFormats != NULL) {
         ((void (*)(id, SEL, id))OriginalSetUserSelectableFormats)(
             receiver, selector, selectedFormats);
@@ -270,12 +366,28 @@ static void YTKACEQualityHandleTap(id receiver, SEL selector) {
     }
 }
 
+static BOOL YTKACEAutoplayIsQueueConfig(id receiver) {
+    NSString *name = NSStringFromClass(object_getClass(receiver));
+    return [name containsString:@"QueueConfig"] ||
+        [name containsString:@"GaplessPlaybackCoordinator"];
+}
+
 static BOOL YTKACEAutoplayValue(id receiver, SEL selector) {
-    if (YTKACEFeatureEnabled(@"YTKACE.Preference.Playback.AutoplayDisabled")) {
-        return NO;
+    const BOOL disabled =
+        YTKACEFeatureEnabled(@"YTKACE.Preference.Playback.AutoplayDisabled");
+    BOOL result;
+    if (disabled) {
+        result = NO;
+    } else if (YTKACEQueueHasItems() && YTKACEQueueOwnsCurrentVideo() &&
+               !YTKACEAutoplayIsQueueConfig(receiver)) {
+        result = NO;
+    } else {
+        IMP original = YTKACEStreamingOriginal(receiver, selector);
+        result = original != NULL
+            ? ((BOOL (*)(id, SEL))original)(receiver, selector) : NO;
     }
-    IMP original = YTKACEStreamingOriginal(receiver, selector);
-    return original != NULL ? ((BOOL (*)(id, SEL))original)(receiver, selector) : NO;
+
+    return result;
 }
 
 static void YTKACEAutoplaySetter(id receiver, SEL selector, BOOL enabled) {
@@ -316,7 +428,7 @@ static void YTKACEStoreStreamingOriginal(NSString *className,
     }
 }
 
-static void YTKACEInstallBoolGetter(NSString *className,
+static BOOL YTKACEInstallBoolGetter(NSString *className,
                                     NSString *selectorName,
                                     IMP replacement) {
     Class cls = NSClassFromString(className);
@@ -325,20 +437,22 @@ static void YTKACEInstallBoolGetter(NSString *className,
         NSSelectorFromString(selectorName)
     );
     if (method == NULL || method_getNumberOfArguments(method) != 2) {
-        return;
+        return NO;
     }
     char type[8] = {0};
     method_getReturnType(method, type, sizeof(type));
     if (type[0] != 'B' && type[0] != 'c') {
-        return;
+        return NO;
     }
     IMP original = NULL;
-    if (YTKACEInstallInstanceHook(className, selectorName, replacement, &original)) {
-        YTKACEStoreStreamingOriginal(className, selectorName, original);
+    if (!YTKACEInstallInstanceHook(className, selectorName, replacement, &original)) {
+        return NO;
     }
+    YTKACEStoreStreamingOriginal(className, selectorName, original);
+    return YES;
 }
 
-static void YTKACEInstallBoolSetter(NSString *className,
+static BOOL YTKACEInstallBoolSetter(NSString *className,
                                     NSString *selectorName,
                                     IMP replacement) {
     Class cls = NSClassFromString(className);
@@ -347,12 +461,14 @@ static void YTKACEInstallBoolSetter(NSString *className,
         NSSelectorFromString(selectorName)
     );
     if (method == NULL || method_getNumberOfArguments(method) != 3) {
-        return;
+        return NO;
     }
     IMP original = NULL;
-    if (YTKACEInstallInstanceHook(className, selectorName, replacement, &original)) {
-        YTKACEStoreStreamingOriginal(className, selectorName, original);
+    if (!YTKACEInstallInstanceHook(className, selectorName, replacement, &original)) {
+        return NO;
     }
+    YTKACEStoreStreamingOriginal(className, selectorName, original);
+    return YES;
 }
 
 void YTKACEInstallStreamingHooks(void) {
@@ -360,6 +476,13 @@ void YTKACEInstallStreamingHooks(void) {
     if (YTKACEStreamingOriginals == nil) {
         YTKACEStreamingOriginals = [NSMutableDictionary dictionary];
     }
+    YTKACEInstallClassHook(@"AVPlayer", @"eligibleForHDRPlayback",
+                           (IMP)YTKACEAVEligibleForHDR, &OriginalAVEligibleForHDR);
+    YTKACEInstallClassHook(@"AVPlayer", @"availableHDRModes",
+                           (IMP)YTKACEAVAvailableHDRModes, &OriginalAVAvailableHDRModes);
+    YTKACEInstallInstanceHook(
+        @"YTVideoQualitySwitchRedesignedController", @"setUserSelectableFormats:",
+        (IMP)YTKACERedesignedSetFormats, &OriginalRedesignedSetFormats);
 
     Class qualityClass = NSClassFromString(@"YTIMediaQualitySettingsHotConfig");
     Method qualityMethod = qualityClass == Nil ? NULL : class_getInstanceMethod(
@@ -392,6 +515,19 @@ void YTKACEInstallStreamingHooks(void) {
                               &OriginalQualityHandleTap);
 
     NSArray<NSString *> *autoplayClasses = @[
+        @"YTDefaultQueueConfig",
+        @"YTGaplessPlaybackCoordinator",
+        @"YTAdsControlFlowPlaybackCoordinator",
+        @"YTSettings",
+        @"YTSettingsImpl",
+        @"YTUserDefaults",
+        @"YTAutonavEndscreenController",
+        @"YTMainAppVideoPlayerOverlayViewController",
+        @"YTOverflowMenuView",
+        @"YTOverflowMenuViewController",
+        @"YTWatchFloatingMiniplayerViewController",
+        @"YTWatchMiniBarViewController",
+        @"YTAutoplayAutonavWatchFeedLayoutController",
         @"YTAutoplayAutonavController",
         @"YTAutonavController",
         @"YTLocalPlaybackController",
@@ -402,21 +538,33 @@ void YTKACEInstallStreamingHooks(void) {
         @"autonavEnabled",
         @"isAutoplayEnabled",
         @"autoplayEnabled",
+        @"isAutoplayEnabledForContent",
         @"shouldAutoplay",
         @"shouldStartAutoplay"
     ];
     NSArray<NSString *> *autoplaySetters = @[
         @"setAutonavEnabled:",
-        @"setAutoplayEnabled:"
+        @"setAutoplayEnabled:",
+        @"setIsAutoplayEnabled:"
     ];
+    NSUInteger autoplayBound = 0;
     for (NSString *className in autoplayClasses) {
+        if (NSClassFromString(className) == Nil) continue;
         for (NSString *selectorName in autoplayGetters) {
-            YTKACEInstallBoolGetter(className, selectorName, (IMP)YTKACEAutoplayValue);
+            if (YTKACEInstallBoolGetter(className, selectorName,
+                                        (IMP)YTKACEAutoplayValue)) {
+                autoplayBound++;
+            }
         }
         for (NSString *selectorName in autoplaySetters) {
-            YTKACEInstallBoolSetter(className, selectorName, (IMP)YTKACEAutoplaySetter);
+            if (YTKACEInstallBoolSetter(className, selectorName,
+                                        (IMP)YTKACEAutoplaySetter)) {
+                autoplayBound++;
+            }
         }
     }
+    YTKACEDownloadLog(@"autoplay", @"bound %lu hooks",
+                      (unsigned long)autoplayBound);
 
     NSArray<NSString *> *qualityClasses = @[
         @"YTUserDefaults",

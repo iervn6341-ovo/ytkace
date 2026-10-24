@@ -5,6 +5,8 @@
 #import "../../YTKACE.h"
 #import "../../Runtime/Hooking.h"
 #import "../../Runtime/Preferences.h"
+#import "../../UI/Notice.h"
+#import "../../Runtime/Localization.h"
 #import "../../UI/OverlayButtonHost.h"
 #import "../../UI/Assets.h"
 #import <objc/message.h>
@@ -40,11 +42,14 @@ static NSMutableDictionary<NSString *, NSArray *> *YTKACEPlayerRequests;
 static NSMutableDictionary<NSString *, id> *YTKACEPlaybackRequests;
 static NSInteger YTKACEPlayerHookAttempts;
 static NSString *YTKACELastCapturedVideoID;
+id YTKACELatestPlayerAuthorization;
 
 NSString *YTKACELastVideoID(void) {
     return [YTKACELastCapturedVideoID copy];
 }
 static NSString *YTKACERequestVideoID(id request);
+static void YTKACEPersistPlayerRequest(id request);
+static BOOL YTKACEUsingRestoredRequest;
 static id YTKACECopyObject(id object);
 
 static NSURLRequest *YTKACEURLRequestFromObject(id object) {
@@ -117,6 +122,7 @@ static void YTKACECaptureOnesieSession(id factory,
     state.factory = factory;
     state.playerRequest = YTKACECopyObject(playerRequest);
     state.authorization = YTKACECopyObject(authorization);
+    if (authorization != nil) YTKACELatestPlayerAuthorization = authorization;
     state.dataLoader = dataLoader;
     state.context = context;
     state.cryptor = cryptor;
@@ -133,9 +139,6 @@ static void YTKACECaptureOnesieSession(id factory,
         if (videoID.length != 0) YTKACEOnesieSessions[videoID] = state;
         YTKACEPruneOnesieSessions();
     }
-    YTKACEDownloadLog(@"native", @"session video=%@ rn=%ld mode=%@",
-        videoID ?: @"unknown", (long)requestNumber,
-        asynchronous ? @"async" : @"sync");
 }
 
 static YTKACEOnesieSessionState *YTKACEOnesieSessionForVideo(
@@ -219,6 +222,13 @@ static id YTKACEOnesieRequest(id receiver,
                               id cryptor,
                               NSInteger requestNumber,
                               NSError **error) {
+    if (YTKACEPlaybackFixMode() == 2) {
+        if (error != NULL) {
+            *error = [NSError errorWithDomain:@"YTKACEHLS" code:1
+                userInfo:@{NSLocalizedDescriptionKey: @"Onesie is off for HLS streams."}];
+        }
+        return nil;
+    }
     id result = OriginalOnesieRequest != NULL
         ? ((id (*)(id, SEL, id, id, id, id, NSInteger, NSError **))OriginalOnesieRequest)(
             receiver, selector, playerRequest, dataLoader, context, cryptor,
@@ -228,8 +238,6 @@ static id YTKACEOnesieRequest(id receiver,
     if (builtRequest != nil) {
         NSURLRequest *request = builtRequest;
         YTKACESABRSetNativeRequest(request);
-        YTKACEDownloadLog(@"native", @"request host=%@ bytes=%lu",
-            request.URL.host, (unsigned long)request.HTTPBody.length);
     }
     YTKACECaptureOnesieSession(receiver, playerRequest, nil, dataLoader,
         context, cryptor, requestNumber, NO);
@@ -245,13 +253,18 @@ static void YTKACEOnesieRequestAsync(id receiver,
                                      id cryptor,
                                      NSInteger requestNumber,
                                      void (^completion)(id, NSError *)) {
+    if (YTKACEPlaybackFixMode() == 2) {
+        if (completion != nil) {
+            completion(nil, [NSError errorWithDomain:@"YTKACEHLS" code:1
+                userInfo:@{NSLocalizedDescriptionKey: @"Onesie is off for HLS streams."}]);
+        }
+        return;
+    }
     void (^wrapped)(id, NSError *) = ^(id result, NSError *error) {
         NSURLRequest *builtRequest = YTKACEURLRequestFromObject(result);
         if (builtRequest != nil) {
             NSURLRequest *request = builtRequest;
             YTKACESABRSetNativeRequest(request);
-            YTKACEDownloadLog(@"native", @"request host=%@ bytes=%lu",
-                request.URL.host, (unsigned long)request.HTTPBody.length);
         }
         YTKACECaptureOnesieSession(receiver, playerRequest, authorization,
             dataLoader, context, cryptor, requestNumber, YES);
@@ -272,8 +285,6 @@ static void YTKACEOnesieRequestCompletion(id receiver,
     if (builtRequest != nil) {
         NSURLRequest *URLRequest = builtRequest;
         YTKACESABRSetNativeRequest(URLRequest);
-        YTKACEDownloadLog(@"native", @"request host=%@ bytes=%lu",
-            URLRequest.URL.host, (unsigned long)URLRequest.HTTPBody.length);
     }
     if (OriginalOnesieRequestCompletion != NULL) {
         ((void (*)(id, SEL, id, id))OriginalOnesieRequestCompletion)(
@@ -301,9 +312,6 @@ static id YTKACEHAMBuildURLRequest(id receiver, SEL selector) {
                 [nativeRequest setValue:nil forHTTPHeaderField:@"Content-Encoding"];
             }
             YTKACESABRSetNativeRequest(nativeRequest);
-            YTKACEDownloadLog(@"native-network", @"host=%@ raw=%lu encoded=%lu",
-                request.URL.host, (unsigned long)nativeRequest.HTTPBody.length,
-                (unsigned long)request.HTTPBody.length);
         }
     }
     return result;
@@ -364,13 +372,15 @@ static void YTKACECaptureService(id receiver, id request) {
     @synchronized (YTKACESABRDownloader.class) {
         YTKACELastPlayerService = receiver;
         YTKACELastPlayerRequest = requestCopy;
+        YTKACEUsingRestoredRequest = NO;
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
+            YTKACEPersistPlayerRequest(requestCopy ?: request);
+        });
         if (YTKACEPlayerRequests == nil) YTKACEPlayerRequests = [NSMutableDictionary dictionary];
         if (videoID.length != 0) {
             YTKACEPlayerRequests[videoID] = @[receiver, requestCopy ?: request];
         }
     }
-    YTKACEDownloadLog(@"reload", @"captured request video=%@ class=%@",
-        videoID ?: @"unknown", NSStringFromClass([request class]));
 }
 
 static NSMutableDictionary<NSString *, id> *YTKACEPlayerResponses;
@@ -461,6 +471,8 @@ void YTKACEStorePlayerResponse(NSString *videoID, id response) {
 
 id YTKACECachedPlayerResponse(NSString *videoID) {
     if (videoID.length == 0) return nil;
+    id original = YTKACEHLSOriginalResponse(videoID);
+    if (original != nil) return original;
     @synchronized (YTKACESABRDownloader.class) {
         return YTKACEPlayerResponses[videoID];
     }
@@ -468,8 +480,8 @@ id YTKACECachedPlayerResponse(NSString *videoID) {
 
 static id YTKACEObservedResponseBlock(id responseBlock) {
     if (responseBlock == nil) return nil;
-    void (^original)(id, id) = responseBlock;
-    return [^(id playerResponse, id cacheContext) {
+    void (^original)(id, void *) = responseBlock;
+    return [^(id playerResponse, void *cacheContext) {
         YTKACECachePlayerResponse(playerResponse);
         original(playerResponse, cacheContext);
     } copy];
@@ -532,6 +544,11 @@ static void YTKACECaptureFactory(id receiver, id request, id properties, id resu
     @synchronized (YTKACESABRDownloader.class) {
         YTKACELastPlayerFactory = receiver;
         YTKACELastPlayerRequest = YTKACECopyObject(request);
+        YTKACEUsingRestoredRequest = NO;
+        id persistCopy = YTKACELastPlayerRequest;
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
+            YTKACEPersistPlayerRequest(persistCopy);
+        });
         YTKACELastRequestProperties = properties;
         if (videoID.length != 0 && YTKACELastPlayerService != nil) {
             if (YTKACEPlayerRequests == nil) {
@@ -549,9 +566,6 @@ static void YTKACECaptureFactory(id receiver, id request, id properties, id resu
             }
         }
     }
-    YTKACEDownloadLog(@"reload", @"factory request video=%@ request=%@ result=%@",
-        videoID ?: @"unknown", NSStringFromClass([request class]),
-        NSStringFromClass([result class]));
     static BOOL dumped = YES;
     if (!dumped) {
         dumped = YES;
@@ -602,7 +616,86 @@ static id YTKACEFactoryRequestExtended(id receiver,
     return result;
 }
 
+static id YTKACELastInnerTubeContext;
+static IMP OriginalContextShort;
+static IMP OriginalContextMedium;
+static IMP OriginalContextLong;
+
+static void YTKACECaptureContext(id context) {
+    if (context == nil) return;
+    @synchronized (YTKACESABRDownloader.class) {
+        if (YTKACELastInnerTubeContext == nil) {
+        }
+        YTKACELastInnerTubeContext = context;
+    }
+}
+
+static id YTKACEContextShort(id receiver, SEL selector, id pageID,
+                             BOOL incognito, int criticality, id tracking,
+                             BOOL sendIdentifier, long long serviceType) {
+    id result = OriginalContextShort == NULL ? nil :
+        ((id (*)(id, SEL, id, BOOL, int, id, BOOL, long long))OriginalContextShort)(
+            receiver, selector, pageID, incognito, criticality, tracking,
+            sendIdentifier, serviceType);
+    YTKACECaptureContext(result);
+    return result;
+}
+
+static id YTKACEContextMedium(id receiver, SEL selector, id pageID,
+                              BOOL incognito, int criticality, id tracking,
+                              BOOL sendIdentifier, id nonce, id jars,
+                              id attestation, long long serviceType) {
+    id result = OriginalContextMedium == NULL ? nil :
+        ((id (*)(id, SEL, id, BOOL, int, id, BOOL, id, id, id, long long))
+            OriginalContextMedium)(receiver, selector, pageID, incognito,
+                criticality, tracking, sendIdentifier, nonce, jars,
+                attestation, serviceType);
+    YTKACECaptureContext(result);
+    return result;
+}
+
+static id YTKACEContextLong(id receiver, SEL selector, id pageID,
+                            BOOL incognito, int criticality, id tracking,
+                            BOOL sendIdentifier, id nonce, id jars,
+                            id attestation, id reauth, long long serviceType,
+                            BOOL isPrefetch) {
+    id result = OriginalContextLong == NULL ? nil :
+        ((id (*)(id, SEL, id, BOOL, int, id, BOOL, id, id, id, id, long long, BOOL))
+            OriginalContextLong)(receiver, selector, pageID, incognito,
+                criticality, tracking, sendIdentifier, nonce, jars, attestation,
+                reauth, serviceType, isPrefetch);
+    YTKACECaptureContext(result);
+    return result;
+}
+
+static IMP OriginalPlayerServiceInit;
+
+static id YTKACEPlayerServiceInit(id receiver, SEL selector) {
+    id result = OriginalPlayerServiceInit == NULL ? receiver :
+        ((id (*)(id, SEL))OriginalPlayerServiceInit)(receiver, selector);
+    if (result != nil) {
+        @synchronized (YTKACESABRDownloader.class) {
+            if (YTKACELastPlayerService == nil) {
+                YTKACELastPlayerService = result;
+            }
+        }
+    }
+    return result;
+}
+
 static void YTKACEInstallPlayerServiceHook(void) {
+    YTKACEInstallInstanceHook(@"YTPlayerService", @"init",
+                              (IMP)YTKACEPlayerServiceInit,
+                              &OriginalPlayerServiceInit);
+    YTKACEInstallInstanceHook(@"YTAccountScopedInnerTubeContextFactory",
+        @"contextWithPageID:isIncognitoActive:criticality:clickTrackingInfo:sendDeviceIdentifier:serviceType:",
+        (IMP)YTKACEContextShort, &OriginalContextShort);
+    YTKACEInstallInstanceHook(@"YTAccountScopedInnerTubeContextFactory",
+        @"contextWithPageID:isIncognitoActive:criticality:clickTrackingInfo:sendDeviceIdentifier:clientScreenNonce:consistencyTokenJars:attestationResponseData:serviceType:",
+        (IMP)YTKACEContextMedium, &OriginalContextMedium);
+    YTKACEInstallInstanceHook(@"YTAccountScopedInnerTubeContextFactory",
+        @"contextWithPageID:isIncognitoActive:criticality:clickTrackingInfo:sendDeviceIdentifier:clientScreenNonce:consistencyTokenJars:attestationResponseData:reauthProofToken:serviceType:isPrefetch:",
+        (IMP)YTKACEContextLong, &OriginalContextLong);
     BOOL serviceInstalled = YTKACEInstallInstanceHook(
         @"YTPlayerService",
         @"makePlayerRequest:responseBlock:errorBlock:",
@@ -707,7 +800,7 @@ void YTKACEPreparePlayerWithRoute(NSString *videoID,
             ? @"playback" : @"player");
     dispatch_async(dispatch_get_main_queue(), ^{
         void (^response)(id, id) = ^(id playerResponse, __unused id cacheContext) {
-            completion(playerResponse, nil);
+            completion(YTKACEHLSOriginalResponse(videoID) ?: playerResponse, nil);
         };
         void (^failure)(NSError *) = ^(NSError *error) {
             completion(nil, error);
@@ -734,6 +827,411 @@ void YTKACEPreparePlayerWithRoute(NSString *videoID,
 void YTKACEPreparePlayer(NSString *videoID,
                          YTKACEPlayerReloadCompletion completion) {
     YTKACEPreparePlayerWithRoute(videoID, NO, completion);
+}
+
+static NSURL *YTKACERequestSeedURL(void) {
+    return [YTKACEApplicationSupportDirectory()
+        URLByAppendingPathComponent:@"player-request.pb"];
+}
+
+static void YTKACEPersistPlayerRequest(id request) {
+    static NSTimeInterval lastWrite;
+    NSTimeInterval now = NSDate.date.timeIntervalSinceReferenceDate;
+    if (now - lastWrite < 60.0) return;
+    if (![request respondsToSelector:NSSelectorFromString(@"data")]) {
+        return;
+    }
+    NSData *encoded = ((id (*)(id, SEL))objc_msgSend)(
+        request, NSSelectorFromString(@"data"));
+    if (![encoded isKindOfClass:NSData.class] || encoded.length == 0) return;
+    lastWrite = now;
+    [encoded writeToURL:YTKACERequestSeedURL() atomically:YES];
+}
+
+NSString *YTKACEPlayerOnBehalfOfUser(void) {
+    id request = nil;
+    @synchronized (YTKACESABRDownloader.class) {
+        request = YTKACELastPlayerRequest;
+    }
+    if (request == nil) return nil;
+    @try {
+        id value = [request valueForKeyPath:@"context.user.onBehalfOfUser"];
+        return [value isKindOfClass:NSString.class] && [value length] != 0 ? value : nil;
+    } @catch (__unused NSException *exception) {
+        return nil;
+    }
+}
+
+void YTKACEDiscardRestoredRequest(void) {
+    BOOL restored = NO;
+    @synchronized (YTKACESABRDownloader.class) {
+        restored = YTKACEUsingRestoredRequest;
+        if (restored) {
+            YTKACELastPlayerRequest = nil;
+            YTKACEUsingRestoredRequest = NO;
+        }
+    }
+    if (!restored) return;
+    [NSFileManager.defaultManager removeItemAtURL:YTKACERequestSeedURL()
+                                            error:NULL];
+    YTKACEDownloadLog(@"resolve", @"discarded stale player request seed");
+}
+
+void YTKACERestorePlayerRequest(void) {
+    @synchronized (YTKACESABRDownloader.class) {
+        if (YTKACELastPlayerRequest != nil) return;
+    }
+    NSData *encoded = [NSData dataWithContentsOfURL:YTKACERequestSeedURL()];
+    if (encoded.length == 0) return;
+    Class requestClass = NSClassFromString(@"YTIPlayerRequest");
+    SEL parse = NSSelectorFromString(@"parseFromData:error:");
+    if (requestClass == Nil || ![requestClass respondsToSelector:parse]) return;
+    NSError *error = nil;
+    id restored = ((id (*)(id, SEL, id, NSError **))objc_msgSend)(
+        requestClass, parse, encoded, &error);
+    if (restored == nil) {
+        YTKACEDownloadLog(@"resolve", @"request seed parse failed error=%@",
+            error.localizedDescription ?: @"unknown");
+        return;
+    }
+    @synchronized (YTKACESABRDownloader.class) {
+        YTKACELastPlayerRequest = restored;
+        YTKACEUsingRestoredRequest = YES;
+    }
+    YTKACEDownloadLog(@"resolve", @"restored player request bytes=%lu",
+        (unsigned long)encoded.length);
+}
+
+static IMP OriginalOfflineVideoExecute;
+static IMP OriginalOfflineVideoExecuteCompletion;
+
+static __weak UIView *YTKACEMenuSourceView;
+
+static void YTKACECaptureMenuSource(id view) {
+    if ([view isKindOfClass:UIView.class]) {
+        YTKACEMenuSourceView = view;
+    }
+}
+
+static IMP OriginalShowMenuCompletion;
+static IMP OriginalShowMenuSkipCompletion;
+static IMP OriginalActionsForRenderersLog;
+
+static void YTKACEShowMenuCompletion(id receiver, SEL selector, id renderer,
+                                     id view, id entry, id block, BOOL cancel,
+                                     BOOL log, id responder, id completion) {
+    YTKACECaptureMenuSource(view);
+    if (OriginalShowMenuCompletion == NULL) return;
+    ((void (*)(id, SEL, id, id, id, id, BOOL, BOOL, id, id))
+        OriginalShowMenuCompletion)(receiver, selector, renderer, view, entry,
+                                    block, cancel, log, responder, completion);
+}
+
+static void YTKACEShowMenuSkipCompletion(id receiver, SEL selector, id renderer,
+                                         id view, id entry, id block,
+                                         BOOL cancel, BOOL log, BOOL skip,
+                                         id responder, id completion) {
+    YTKACECaptureMenuSource(view);
+    if (OriginalShowMenuSkipCompletion == NULL) return;
+    ((void (*)(id, SEL, id, id, id, id, BOOL, BOOL, BOOL, id, id))
+        OriginalShowMenuSkipCompletion)(receiver, selector, renderer, view,
+                                        entry, block, cancel, log, skip,
+                                        responder, completion);
+}
+
+static id YTKACEActionsForRenderersLog(id receiver, SEL selector, id renderers,
+                                       id view, id entry, BOOL log,
+                                       id responder) {
+    YTKACEQueuePrepareMenuRenderers(renderers);
+    YTKACECaptureMenuSource(view);
+    if (OriginalActionsForRenderersLog == NULL) return nil;
+    id actions = ((id (*)(id, SEL, id, id, id, BOOL, id))OriginalActionsForRenderersLog)(
+        receiver, selector, renderers, view, entry, log, responder);
+    YTKACERouteSpeedMenuItem(renderers, actions, view, responder);
+    return actions;
+}
+
+static UIView *YTKACEOverflowButtonInside(UIView *root) {
+    if (root == nil || root.window == nil) return nil;
+    NSString *identifier = root.accessibilityIdentifier.lowercaseString ?: @"";
+    if ([identifier containsString:@"menu"] ||
+        [identifier containsString:@"overflow"] ||
+        [identifier containsString:@"action_button"]) {
+        CGRect frame = root.bounds;
+        if (CGRectGetWidth(frame) > 8.0 && CGRectGetWidth(frame) < 80.0 &&
+            CGRectGetHeight(frame) > 8.0) {
+            return root;
+        }
+    }
+    for (UIView *child in root.subviews) {
+        UIView *found = YTKACEOverflowButtonInside(child);
+        if (found != nil) return found;
+    }
+    return nil;
+}
+
+static NSString *YTKACEOfflineCommandVideoID(id command) {
+    for (NSString *name in @[@"offlineVideoEndpoint", @"offlineVideoCommand"]) {
+        id endpoint = YTKACEGetValue(command, @[name]);
+        id value = YTKACEGetValue(endpoint, @[@"videoId", @"videoID"]);
+        if ([value isKindOfClass:NSString.class] && [value length] != 0) {
+            return value;
+        }
+    }
+    id direct = YTKACEGetValue(command, @[@"videoId", @"videoID"]);
+    if ([direct isKindOfClass:NSString.class] && [direct length] != 0) {
+        return direct;
+    }
+    NSString *dump = nil;
+    @try {
+        dump = [command description];
+    } @catch (__unused NSException *exception) {
+        return nil;
+    }
+    if (dump.length == 0) return nil;
+    static NSRegularExpression *expression;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        expression = [NSRegularExpression
+            regularExpressionWithPattern:
+                @"video_?[Ii]d:\\s*\"([A-Za-z0-9_-]{11})\""
+                                 options:0
+                                   error:NULL];
+    });
+    NSTextCheckingResult *match = [expression firstMatchInString:dump options:0
+        range:NSMakeRange(0, dump.length)];
+    if (match != nil) {
+        return [dump substringWithRange:[match rangeAtIndex:1]];
+    }
+    static NSRegularExpression *packed;
+    static dispatch_once_t packedToken;
+    dispatch_once(&packedToken, ^{
+        packed = [NSRegularExpression
+            regularExpressionWithPattern:@"\\\\n\\\\013([A-Za-z0-9_-]{11})"
+                                 options:0
+                                   error:NULL];
+    });
+    NSTextCheckingResult *packedMatch = [packed firstMatchInString:dump options:0
+        range:NSMakeRange(0, dump.length)];
+    if (packedMatch != nil) {
+        return [dump substringWithRange:[packedMatch rangeAtIndex:1]];
+    }
+    YTKACEDownloadLog(@"feed", @"no video id in command dump=%@",
+        dump.length > 300 ? [dump substringToIndex:300] : dump);
+    return nil;
+}
+
+static BOOL YTKACEHandleFeedDownload(id command, id view, id sender) {
+    const NSInteger placement = YTKACEDownloadPlacement();
+    NSString *videoID = YTKACEOfflineCommandVideoID(command);
+    UIView *anchor = [view isKindOfClass:UIView.class] ? view : nil;
+    if (anchor.window == nil && [sender isKindOfClass:UIView.class]) {
+        anchor = sender;
+    }
+    if (anchor.window == nil) {
+        id senderView = YTKACEGetValue(sender, @[@"view", @"contentView", @"cell", @"_cell"]);
+        if ([senderView respondsToSelector:@selector(contentView)] &&
+            ![senderView isKindOfClass:UIView.class]) {
+            senderView = YTKACEGetValue(senderView, @[@"contentView"]);
+        }
+        if ([senderView isKindOfClass:UIView.class]) {
+            UIView *cell = senderView;
+            UIView *overflow = YTKACEOverflowButtonInside(cell);
+            anchor = overflow ?: cell;
+        }
+    }
+    if (anchor.window == nil && YTKACEMenuSourceView.window != nil) {
+        anchor = YTKACEMenuSourceView;
+    }
+    if (placement != 2 && placement != 3) return NO;
+    if (videoID.length == 0) return NO;
+    YTKACEShowNotice(YTKACELocalized(@"Preparing download"));
+    YTKACEResolvePlayerResponse(videoID, ^(id response, NSError *error) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (response == nil) {
+                YTKACEDownloadLog(@"feed", @"resolve failed video=%@ error=%@",
+                    videoID, error.localizedDescription ?: @"unknown");
+                YTKACEShowNotice(YTKACELocalized(@"Download unavailable"));
+                return;
+            }
+            [YTKACEDownloadCoordinator.sharedCoordinator
+                showDownloadMenuForResponse:response
+                                 sourceView:anchor];
+        });
+    });
+    return YES;
+}
+
+static void YTKACEOfflineVideoExecute(id receiver, SEL selector, id command,
+                                      id entry, id view, id sender) {
+    if (YTKACEHandleFeedDownload(command, view, sender)) return;
+    if (OriginalOfflineVideoExecute == NULL) return;
+    ((void (*)(id, SEL, id, id, id, id))OriginalOfflineVideoExecute)(
+        receiver, selector, command, entry, view, sender);
+}
+
+static IMP OriginalLegacyOfflineVideoExecute;
+
+static void YTKACELegacyOfflineVideoExecute(id receiver, SEL selector, id command,
+                                            id entry, id view, id sender) {
+    if (YTKACEHandleFeedDownload(command, view, sender)) return;
+    if (OriginalLegacyOfflineVideoExecute == NULL) return;
+    ((void (*)(id, SEL, id, id, id, id))OriginalLegacyOfflineVideoExecute)(
+        receiver, selector, command, entry, view, sender);
+}
+
+static void YTKACEOfflineVideoExecuteCompletion(id receiver, SEL selector,
+                                                id command, id entry, id view,
+                                                id sender, id block) {
+    if (YTKACEHandleFeedDownload(command, view, sender)) return;
+    if (OriginalOfflineVideoExecuteCompletion == NULL) return;
+    ((void (*)(id, SEL, id, id, id, id, id))OriginalOfflineVideoExecuteCompletion)(
+        receiver, selector, command, entry, view, sender, block);
+}
+
+void YTKACEInstallFeedDownloadHooks(void) {
+    YTKACEInstallInstanceHook(@"YTMenuController",
+        @"showMenuWithMenuRenderer:fromView:entry:dismissalBlock:addCancelAction:shouldLogItems:firstResponder:completion:",
+        (IMP)YTKACEShowMenuCompletion, &OriginalShowMenuCompletion);
+    YTKACEInstallInstanceHook(@"YTMenuController",
+        @"showMenuWithMenuRenderer:fromView:entry:dismissalBlock:addCancelAction:shouldLogItems:skipCollapsedState:firstResponder:completion:",
+        (IMP)YTKACEShowMenuSkipCompletion, &OriginalShowMenuSkipCompletion);
+    YTKACEInstallInstanceHook(@"YTMenuController",
+        @"actionsForRenderers:fromView:entry:shouldLogItems:firstResponder:",
+        (IMP)YTKACEActionsForRenderersLog, &OriginalActionsForRenderersLog);
+    BOOL a = YTKACEInstallInstanceHook(@"YTOfflineVideoEndpointCommandHandlerImpl",
+        @"executeWithCommand:entry:fromView:sender:",
+        (IMP)YTKACEOfflineVideoExecute, &OriginalOfflineVideoExecute);
+    BOOL b = YTKACEInstallInstanceHook(@"YTOfflineVideoEndpointCommandHandlerImpl",
+        @"executeWithCommand:entry:fromView:sender:completionBlock:",
+        (IMP)YTKACEOfflineVideoExecuteCompletion,
+        &OriginalOfflineVideoExecuteCompletion);
+    BOOL legacy = NO;
+    if (!a) {
+        legacy = YTKACEInstallInstanceHook(@"YTOfflineVideoEndpointCommandHandler",
+            @"executeWithCommand:entry:fromView:sender:",
+            (IMP)YTKACELegacyOfflineVideoExecute, &OriginalLegacyOfflineVideoExecute);
+    }
+    YTKACEDownloadLog(@"feed", @"hooks execute=%d completion=%d legacy=%d", a, b, legacy);
+}
+
+BOOL YTKACEPlaybackTemplateReady(void) {
+    @synchronized (YTKACESABRDownloader.class) {
+        if (YTKACELastPlayerRequest == nil) return NO;
+        if (YTKACELastPlayerService != nil) return YES;
+    }
+    return NSClassFromString(@"YTPlayerService") != Nil;
+}
+
+void YTKACEResolvePlayerResponse(NSString *videoID,
+                                 YTKACEPlayerReloadCompletion completion) {
+    if (videoID.length == 0) {
+        completion(nil, [NSError errorWithDomain:@"YTKACEPlayerResolve" code:1
+            userInfo:@{NSLocalizedDescriptionKey: @"No video identifier."}]);
+        return;
+    }
+    id cached = YTKACECachedPlayerResponse(videoID);
+    if (cached != nil) {
+        YTKACEDownloadLog(@"resolve", @"cached video=%@", videoID);
+        completion(cached, nil);
+        return;
+    }
+    id service = nil;
+    id sourceRequest = nil;
+    @synchronized (YTKACESABRDownloader.class) {
+        NSArray *pair = YTKACEPlayerRequests[videoID];
+        if (pair.count > 1) {
+            service = pair[0];
+            sourceRequest = pair[1];
+        } else {
+            service = YTKACELastPlayerService;
+            sourceRequest = YTKACELastPlayerRequest;
+        }
+    }
+    if (service == nil) {
+        Class serviceClass = NSClassFromString(@"YTPlayerService");
+        if (serviceClass != Nil) {
+            @try {
+                service = [[serviceClass alloc] init];
+            } @catch (__unused NSException *exception) {
+                service = nil;
+            }
+            YTKACEDownloadLog(@"resolve", @"constructed player service=%d",
+                service != nil);
+            if (service != nil) {
+                @synchronized (YTKACESABRDownloader.class) {
+                    if (YTKACELastPlayerService == nil) {
+                        YTKACELastPlayerService = service;
+                    }
+                }
+            }
+        }
+    }
+    if (sourceRequest == nil && YTKACELastInnerTubeContext != nil) {
+        id built = [NSClassFromString(@"YTIPlayerRequest") new];
+        if (YTKACESetValue(built, @"context",
+                           YTKACECopyObject(YTKACELastInnerTubeContext))) {
+            sourceRequest = built;
+        }
+    }
+    if (service == nil || sourceRequest == nil || OriginalMakePlayerRequest == NULL) {
+        completion(nil, [NSError errorWithDomain:@"YTKACEPlayerResolve" code:2
+            userInfo:@{NSLocalizedDescriptionKey:
+                [NSString stringWithFormat:
+                    @"No player request template (service=%d context=%d).",
+                    service != nil, YTKACELastInnerTubeContext != nil]}]);
+        return;
+    }
+    id request = YTKACECopyObject(sourceRequest);
+    if (!YTKACESetValue(request, @"videoId", videoID)) {
+        completion(nil, [NSError errorWithDomain:@"YTKACEPlayerResolve" code:3
+            userInfo:@{NSLocalizedDescriptionKey:
+                @"YouTube's player request could not be retargeted."}]);
+        return;
+    }
+    YTKACESetValue(request, @"playlistId", @"");
+    YTKACESetValue(request, @"params", @"");
+    YTKACESetValue(request, @"playlistIndex", @0);
+    id playback = YTKACEGetValue(request, @[@"playbackContext"]);
+    id contentPlayback = YTKACEGetValue(playback, @[@"contentPlaybackContext"]);
+    YTKACESetValue(contentPlayback, @"currentUrl", @"");
+    YTKACESetValue(contentPlayback, @"referer", @"");
+    YTKACEDownloadLog(@"resolve", @"request video=%@", videoID);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        ((void (*)(id, SEL, id, id, id))OriginalMakePlayerRequest)(
+            service,
+            NSSelectorFromString(@"makePlayerRequest:responseBlock:errorBlock:"),
+            request,
+            ^(id receivedResponse, __unused id cacheContext) {
+                id playerResponse = YTKACEHLSOriginalResponse(videoID) ?: receivedResponse;
+                NSString *resolved = nil;
+                id details = YTKACEGetValue(playerResponse, @[@"videoDetails"]);
+                id value = YTKACEGetValue(details, @[@"videoId", @"videoID"]);
+                if ([value isKindOfClass:NSString.class]) resolved = value;
+                id streaming = YTKACEGetValue(playerResponse, @[@"streamingData"]);
+                if (streaming == nil) {
+                    id nested = YTKACEGetValue(playerResponse, @[@"playerData"]);
+                    streaming = YTKACEGetValue(nested, @[@"streamingData"]);
+                }
+                id ustreamer = YTKACEGetValue(streaming,
+                    @[@"mediaUstreamerRequestConfig"]);
+                id config = YTKACEGetValue(ustreamer,
+                    @[@"videoPlaybackUstreamerConfig"]);
+                YTKACEDownloadLog(@"resolve",
+                    @"response video=%@ resolved=%@ streaming=%d ustreamer=%d config=%d",
+                    videoID, resolved ?: @"none", streaming != nil,
+                    ustreamer != nil, config != nil);
+                if (playerResponse != nil) {
+                    YTKACEStorePlayerResponse(videoID, playerResponse);
+                }
+                completion(playerResponse, nil);
+            },
+            ^(NSError *error) {
+                YTKACEDownloadLog(@"resolve", @"error video=%@ error=%@",
+                    videoID, error.localizedDescription ?: @"unknown");
+                completion(nil, error);
+            });
+    });
 }
 
 void YTKACEReloadPlayer(NSString * _Nullable videoID,
@@ -830,9 +1328,24 @@ static id YTKACEMintWithVideoID(id receiver, SEL selector, id videoID) {
     if (OriginalMintWithVideoID != NULL) {
         result = ((id (*)(id, SEL, id))OriginalMintWithVideoID)(receiver, selector, videoID);
     }
-    YTKACEDownloadLog(@"token", @"media mint video=%@ result=%@",
-        videoID, result ? NSStringFromClass([result class]) : @"nil");
     YTKACESABRSetPoToken(result);
+    if ([videoID isKindOfClass:NSString.class]) {
+        static NSMutableArray<NSString *> *logged;
+        static dispatch_once_t once;
+        dispatch_once(&once, ^{ logged = [NSMutableArray array]; });
+        BOOL fresh = NO;
+        @synchronized (logged) {
+            if (![logged containsObject:videoID]) {
+                [logged addObject:videoID];
+                if (logged.count > 30) [logged removeObjectAtIndex:0];
+                fresh = YES;
+            }
+        }
+        if (fresh) {
+            YTKACEDownloadLog(@"token", @"video=%@ potoken=%lu", videoID,
+                              (unsigned long)YTKACESABRPoTokenLength());
+        }
+    }
     return result;
 }
 
@@ -886,6 +1399,7 @@ void YTKACEInstallDownloadHooks(void) {
         );
         [button setImage:YTKACEDownloadGlyphImage()
                 forState:UIControlStateNormal];
-        button.hidden = !YTKACEFeatureEnabled(YTKACEDownloadKey);
+        const NSInteger placement = YTKACEDownloadPlacement();
+        button.hidden = placement != 1 && placement != 3;
     });
 }

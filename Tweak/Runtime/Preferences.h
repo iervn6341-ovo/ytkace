@@ -20,6 +20,8 @@ FOUNDATION_EXPORT NSString * const YTKACEPreferencesDidChangeNotification;
 FOUNDATION_EXPORT void YTKACERegisterDefaults(void);
 FOUNDATION_EXPORT BOOL YTKACEMasterEnabled(void);
 FOUNDATION_EXPORT BOOL YTKACEFeatureEnabled(NSString *key);
+FOUNDATION_EXPORT BOOL YTKACEDownloadsEnabled(void);
+FOUNDATION_EXPORT NSInteger YTKACEDownloadPlacement(void);
 FOUNDATION_EXPORT BOOL YTKACEOLEDActive(UITraitCollection * _Nullable traits);
 FOUNDATION_EXPORT UIColor *YTKACEInterfaceBackgroundColor(
     UITraitCollection * _Nullable traits);
@@ -30,5 +32,6 @@ FOUNDATION_EXPORT void YTKACESetPreference(NSString *key, BOOL enabled);
 FOUNDATION_EXPORT id _Nullable YTKACEPreferenceObject(NSString *key);
 FOUNDATION_EXPORT void YTKACESetPreferenceObject(NSString *key, id _Nullable value);
 FOUNDATION_EXPORT NSURL *YTKACEApplicationSupportDirectory(void);
+FOUNDATION_EXPORT NSUInteger YTKACEPurgeSystemCaches(void);
 
 NS_ASSUME_NONNULL_END

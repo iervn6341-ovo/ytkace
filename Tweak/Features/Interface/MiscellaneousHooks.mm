@@ -1,13 +1,17 @@
 #import "../../YTKACE.h"
 #import "../../Runtime/Hooking.h"
 #import "../../Runtime/Preferences.h"
+#import "../Downloads/DownloadLog.h"
 
 #import <UIKit/UIKit.h>
+#import <mach-o/dyld.h>
+#import <mach-o/getsect.h>
+#import <mach-o/loader.h>
+#import <dlfcn.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
 #include <stdlib.h>
 
-static IMP OriginalDeviceIdiom;
 static IMP OriginalAddInteraction;
 static IMP OriginalSemanticContent;
 static IMP OriginalSetSemanticContent;
@@ -74,13 +78,99 @@ static BOOL YTKACEMiniPlayerEnabled(void) {
     return YTKACEFeatureEnabled(@"YTKACE.Preference.Playback.KidsMiniPlayer");
 }
 
+static NSString *const YTKACELayoutIdiomKey = @"YTKACE.Preference.App.LayoutIdiom";
+
+static BOOL YTKACEIdiomForced;
+static UIUserInterfaceIdiom YTKACEForcedIdiom;
+static UIUserInterfaceIdiom YTKACERealIdiom;
+static IMP OriginalDeviceIdiom;
+
+typedef struct {
+    uintptr_t start;
+    uintptr_t end;
+} YTKACETextRange;
+
+static YTKACETextRange YTKACEIdiomRanges[2];
+static NSUInteger YTKACEIdiomRangeCount;
+
+static void YTKACEAddTextRange(const struct mach_header *header) {
+    if (header == NULL || YTKACEIdiomRangeCount >= 2) return;
+    unsigned long size = 0;
+    const uint8_t *text = getsectiondata(
+        (const struct mach_header_64 *)header, "__TEXT", "__text", &size);
+    if (text == NULL || size == 0) return;
+    YTKACEIdiomRanges[YTKACEIdiomRangeCount].start = (uintptr_t)text;
+    YTKACEIdiomRanges[YTKACEIdiomRangeCount].end = (uintptr_t)text + size;
+    YTKACEIdiomRangeCount++;
+}
+
+static void YTKACEComputeIdiomRanges(void) {
+    for (uint32_t index = 0; index < _dyld_image_count(); index++) {
+        const struct mach_header *header = _dyld_get_image_header(index);
+        if (header == NULL) continue;
+        if (header->filetype != MH_EXECUTE) continue;
+        YTKACEAddTextRange(header);
+        break;
+    }
+    Dl_info info;
+    if (dladdr((const void *)&YTKACEComputeIdiomRanges, &info) != 0) {
+        YTKACEAddTextRange((const struct mach_header *)info.dli_fbase);
+    }
+}
+
+static inline BOOL YTKACECallerIsApp(uintptr_t caller) {
+    for (NSUInteger index = 0; index < YTKACEIdiomRangeCount; index++) {
+        if (caller >= YTKACEIdiomRanges[index].start &&
+            caller < YTKACEIdiomRanges[index].end) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
+NSInteger YTKACERealUserInterfaceIdiom(void) {
+    if (YTKACEIdiomForced) {
+        return (NSInteger)YTKACERealIdiom;
+    }
+    return (NSInteger)UIDevice.currentDevice.userInterfaceIdiom;
+}
+
 static UIUserInterfaceIdiom YTKACEUserInterfaceIdiom(id receiver, SEL selector) {
-    if (YTKACEFeatureEnabled(@"YTKACE.Preference.App.iPadLayout")) {
-        return UIUserInterfaceIdiomPad;
+    if (YTKACEIdiomForced &&
+        YTKACECallerIsApp((uintptr_t)__builtin_return_address(0))) {
+        return YTKACEForcedIdiom;
     }
     return OriginalDeviceIdiom != NULL
-        ? ((UIUserInterfaceIdiom (*)(id, SEL))OriginalDeviceIdiom)(receiver, selector)
-        : UIUserInterfaceIdiomPhone;
+        ? ((UIUserInterfaceIdiom (*)(id, SEL))OriginalDeviceIdiom)(receiver,
+                                                                   selector)
+        : YTKACERealIdiom;
+}
+
+static void YTKACEResolveForcedIdiom(void) {
+    UIUserInterfaceIdiom actual = UIDevice.currentDevice.userInterfaceIdiom;
+    id stored = YTKACEPreferenceObject(YTKACELayoutIdiomKey);
+    NSInteger choice = [stored respondsToSelector:@selector(integerValue)]
+        ? [stored integerValue] : 0;
+    if (choice == 0 &&
+        YTKACEFeatureEnabled(@"YTKACE.Preference.App.iPadLayout")) {
+        choice = 2;
+    }
+    UIUserInterfaceIdiom desired;
+    if (choice == 1) {
+        desired = UIUserInterfaceIdiomPhone;
+    } else if (choice == 2) {
+        desired = UIUserInterfaceIdiomPad;
+    } else {
+        return;
+    }
+    if (desired == actual) return;
+    YTKACERealIdiom = actual;
+    YTKACEForcedIdiom = desired;
+    YTKACEIdiomForced = YES;
+}
+
+static BOOL YTKACEForcedIsIPad(__unused id receiver, __unused SEL selector) {
+    return YTKACEForcedIdiom == UIUserInterfaceIdiomPad;
 }
 
 static void YTKACEAddInteraction(UIView *receiver, SEL selector, id interaction) {
@@ -149,14 +239,23 @@ static BOOL YTKACEAgeValue(id receiver, SEL selector) {
     return original != NULL ? ((BOOL (*)(id, SEL))original)(receiver, selector) : NO;
 }
 
+static NSInteger YTKACECaptionsMode(void) {
+    if (!YTKACEMasterEnabled()) return 0;
+    id stored = [NSUserDefaults.standardUserDefaults objectForKey:@"YTKACE.Preference.Playback.CaptionsMode"];
+    if ([stored respondsToSelector:@selector(integerValue)]) return MAX(0, MIN(2, [stored integerValue]));
+    if (YTKACEFeatureEnabled(@"YTKACE.Preference.Playback.CaptionsDisabled")) return 2;
+    if (YTKACEFeatureEnabled(@"YTKACE.Preference.Playback.CaptionsAlwaysOn")) return 1;
+    return 0;
+}
+
 static BOOL YTKACECaptionValue(id receiver, SEL selector) {
     NSString *name = NSStringFromSelector(selector).lowercaseString;
     BOOL negative = [name containsString:@"disabled"] ||
         [name containsString:@"hidden"];
-    if (YTKACEFeatureEnabled(@"YTKACE.Preference.Playback.CaptionsDisabled")) {
+    if ((YTKACECaptionsMode() == 2)) {
         return negative;
     }
-    if (YTKACEFeatureEnabled(@"YTKACE.Preference.Playback.CaptionsAlwaysOn")) {
+    if ((YTKACECaptionsMode() == 1)) {
         if (!YTKACECaptionRequestReceiver(receiver, selector)) {
             IMP original = YTKACEMiscOriginal(receiver, selector);
             return original != NULL
@@ -181,9 +280,9 @@ static void YTKACECaptionSetter(id receiver, SEL selector, BOOL enabled) {
     BOOL negative = [name containsString:@"disabled"] ||
         [name containsString:@"hidden"];
     BOOL value = enabled;
-    if (YTKACEFeatureEnabled(@"YTKACE.Preference.Playback.CaptionsDisabled")) {
+    if ((YTKACECaptionsMode() == 2)) {
         value = negative;
-    } else if (YTKACEFeatureEnabled(@"YTKACE.Preference.Playback.CaptionsAlwaysOn") &&
+    } else if ((YTKACECaptionsMode() == 1) &&
                YTKACECaptionRequestReceiver(receiver, selector)) {
         value = !negative;
     }
@@ -202,8 +301,58 @@ static id YTKACEFirstCaptionTrack(id tracks) {
     return nil;
 }
 
+static NSString *YTKACETrackText(id track, NSString *name) {
+    SEL selector = NSSelectorFromString(name);
+    if (![track respondsToSelector:selector]) return nil;
+    id value = ((id (*)(id, SEL))objc_msgSend)(track, selector);
+    return [value isKindOfClass:NSString.class] ? value : nil;
+}
+
+static id YTKACEBestCaptionTrackForLanguage(NSArray *tracks, NSString *language) {
+    if (language.length == 0) return nil;
+    NSString *base = [[language.lowercaseString componentsSeparatedByCharactersInSet:
+        [NSCharacterSet characterSetWithCharactersInString:@"-_"]] firstObject];
+    id best = nil;
+    NSInteger bestRank = NSIntegerMax;
+    for (id track in tracks) {
+        NSString *code = YTKACETrackText(track, @"languageCode").lowercaseString;
+        if (code.length == 0) continue;
+        NSString *codeBase = [[code componentsSeparatedByCharactersInSet:
+            [NSCharacterSet characterSetWithCharactersInString:@"-_"]] firstObject];
+        if (![code isEqualToString:language.lowercaseString] && ![codeBase isEqualToString:base]) continue;
+        NSString *vss = YTKACETrackText(track, @"VSSID") ?: @"";
+        NSInteger rank = [vss hasPrefix:@"."] ? 0 : ([vss hasPrefix:@"a."] ? 1 : 2);
+        if (rank < bestRank) {
+            bestRank = rank;
+            best = track;
+        }
+    }
+    return best;
+}
+
+static id YTKACEPreferredCaptionTrack(id tracks) {
+    id first = YTKACEFirstCaptionTrack(tracks);
+    if (first == nil) return nil;
+    NSArray *list = [tracks isKindOfClass:NSArray.class] ? tracks
+        : ([tracks respondsToSelector:@selector(allObjects)]
+            ? ((id (*)(id, SEL))objc_msgSend)(tracks, @selector(allObjects)) : nil);
+    if (![list isKindOfClass:NSArray.class]) return first;
+    NSString *preferred = [NSUserDefaults.standardUserDefaults
+        stringForKey:@"YTKACE.Preference.Playback.CaptionLanguage"];
+    id match = YTKACEBestCaptionTrackForLanguage(list, preferred);
+    for (NSString *language in NSLocale.preferredLanguages) {
+        if (match != nil) break;
+        match = YTKACEBestCaptionTrackForLanguage(list, language);
+    }
+    if (match != nil) return match;
+    for (id track in list) {
+        if (![[YTKACETrackText(track, @"VSSID") ?: @"" lowercaseString] hasPrefix:@"t"]) return track;
+    }
+    return first;
+}
+
 static void YTKACEScheduleCaptionSelection(id track) {
-    if (track == nil || !YTKACEFeatureEnabled(@"YTKACE.Preference.Playback.CaptionsAlwaysOn")) {
+    if (track == nil || !(YTKACECaptionsMode() == 1)) {
         return;
     }
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
@@ -263,7 +412,7 @@ static void YTKACECaptionTracksSetter(id receiver, SEL selector, id tracks) {
     if (original != NULL) {
         ((void (*)(id, SEL, id))original)(receiver, selector, tracks);
     }
-    id track = YTKACEFirstCaptionTrack(tracks);
+    id track = YTKACEPreferredCaptionTrack(tracks);
     id previousTrack = objc_getAssociatedObject(
         receiver, YTKACELastCaptionTrackAssociation);
     if (previousTrack != track) {
@@ -301,7 +450,7 @@ static void YTKACECaptionSelectedTrackSetter(id receiver,
 }
 
 static id YTKACECaptionTracks(id receiver, SEL selector) {
-    if (YTKACEFeatureEnabled(@"YTKACE.Preference.Playback.CaptionsDisabled")) {
+    if ((YTKACECaptionsMode() == 2)) {
         return @[];
     }
     id tracks = OriginalCaptionTracks != NULL
@@ -544,18 +693,13 @@ static void YTKACEDiscoverMiscHooks(void) {
     NSArray<NSString *> *captionTokens = @[
         @"caption", @"player", @"playback", @"watch", @"globalconfig"
     ];
-    int count = objc_getClassList(NULL, 0);
-    if (count <= 0) return;
-    Class *classes = (Class *)calloc((size_t)count, sizeof(Class));
-    if (classes == NULL) return;
-    count = objc_getClassList(classes, count);
     NSMutableOrderedSet<NSString *> *targets = [NSMutableOrderedSet orderedSet];
-    for (int index = 0; index < count; index++) {
-        Class cls = classes[index];
-        NSString *className = NSStringFromClass(cls);
+    for (NSString *className in YTKACEAppClassNames()) {
         BOOL mini = YTKACEClassNameMatches(className, miniTokens);
         BOOL caption = YTKACEClassNameMatches(className, captionTokens);
         if (!mini && !caption) continue;
+        Class cls = NSClassFromString(className);
+        if (cls == Nil) continue;
         unsigned int methodCount = 0;
         Method *methods = class_copyMethodList(cls, &methodCount);
         for (unsigned int methodIndex = 0;
@@ -593,7 +737,7 @@ static void YTKACEDiscoverMiscHooks(void) {
         }
         free(methods);
     }
-    free(classes);
+
     NSArray<NSString *> *result = targets.array;
     [NSUserDefaults.standardUserDefaults setObject:result
                                     forKey:YTKACEMiscDiscoveryCacheKey()];
@@ -605,13 +749,27 @@ static void YTKACEDiscoverMiscHooks(void) {
 }
 
 void YTKACEInstallMiscellaneousHooks(void) {
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    if ([defaults objectForKey:@"YTKACE.Preference.Playback.CaptionsMode"] == nil) {
+        NSInteger legacy = [defaults boolForKey:@"YTKACE.Preference.Playback.CaptionsDisabled"] ? 2
+            : ([defaults boolForKey:@"YTKACE.Preference.Playback.CaptionsAlwaysOn"] ? 1 : 0);
+        if (legacy != 0) [defaults setInteger:legacy forKey:@"YTKACE.Preference.Playback.CaptionsMode"];
+    }
     if (YTKACEMiscOriginals == nil) {
         YTKACEMiscOriginals = [NSMutableDictionary dictionary];
         YTKACECaptionControllers = [NSHashTable weakObjectsHashTable];
     }
-    YTKACEInstallInstanceHook(@"UIDevice", @"userInterfaceIdiom",
-                              (IMP)YTKACEUserInterfaceIdiom,
-                              &OriginalDeviceIdiom);
+    YTKACEResolveForcedIdiom();
+    if (YTKACEIdiomForced) {
+        YTKACEComputeIdiomRanges();
+        for (NSString *name in @[@"YTCommonUtils", @"OGLMetrics"]) {
+            YTKACEInstallClassHook(name, @"isIPad",
+                                   (IMP)YTKACEForcedIsIPad, NULL);
+        }
+        YTKACEInstallInstanceHook(@"UIDevice", @"userInterfaceIdiom",
+                                  (IMP)YTKACEUserInterfaceIdiom,
+                                  &OriginalDeviceIdiom);
+    }
     YTKACEInstallInstanceHook(@"UIView", @"addInteraction:",
                               (IMP)YTKACEAddInteraction,
                               &OriginalAddInteraction);

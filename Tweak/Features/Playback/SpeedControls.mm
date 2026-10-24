@@ -1,7 +1,6 @@
 #import "../../YTKACE.h"
 #import "../../Runtime/Hooking.h"
 #import "../../Runtime/Preferences.h"
-#import "../Downloads/DownloadLog.h"
 #import "../../UI/Assets.h"
 #import "../../UI/OverlayButtonHost.h"
 
@@ -21,6 +20,7 @@ static NSString * const YTKACELegacyModeKey =
     @"YTKACE.Preference.Player.DefaultRateMode";
 
 static NSString * const YTKACECustomRateKey = @"YTKACE.Preference.Player.CustomRate";
+static NSString * const YTKACEShortsRateKey = @"YTKACE.Preference.Shorts.PlaybackRate";
 
 static const double YTKACERateFollowApp = 0.0;
 static const double YTKACERateReuseLast = -1.0;
@@ -66,6 +66,16 @@ static double YTKACEConfiguredStartRate(void) {
     return migrated;
 }
 
+static double YTKACEShortsRate(void) {
+    const double rate =
+        [NSUserDefaults.standardUserDefaults doubleForKey:YTKACEShortsRateKey];
+    return YTKACERateIsUsable(rate) ? rate : 0.0;
+}
+
+static BOOL YTKACESourceUsesShortsRate(id source) {
+    return YTKACEShortsRate() > 0.0 && source != nil && YTKACEPlayerIsShorts(source);
+}
+
 double YTKACEStartPlaybackRate(void) {
     const double configured = YTKACEConfiguredStartRate();
     if (configured == YTKACERateReuseLast) {
@@ -80,8 +90,12 @@ double YTKACEStartPlaybackRate(void) {
     return YTKACERateIsUsable(configured) ? configured : 1.0;
 }
 
+static BOOL YTKACESpeedMenuStyle(void) {
+    return [YTKACEPreferenceObject(@"YTKACE.Preference.Player.SpeedButtonStyle") integerValue] == 1;
+}
+
 static BOOL YTKACERateCeilingRaised(void) {
-    return YTKACEFeatureEnabled(YTKACESpeedKey) || YTKACEStartPlaybackRate() > 2.0;
+    return YES;
 }
 
 static BOOL YTKACEDeliverRate(id target, NSString *name, double rate) {
@@ -174,9 +188,11 @@ static UIImage *YTKACESpeedButtonImage(BOOL plus) {
 @property(nonatomic, weak) id rateSource;
 @property(nonatomic, copy) NSString *primedVideo;
 @property(nonatomic, assign) double observedRate;
+@property(nonatomic, readonly) double currentRate;
 - (void)decrease;
 - (void)increase;
 - (void)reset;
+- (void)valueTapped:(UIButton *)sender;
 @end
 
 @implementation YTKACESpeedCoordinator
@@ -274,7 +290,8 @@ static UIImage *YTKACESpeedButtonImage(BOOL plus) {
     if ([self.primedVideo isEqualToString:identifier]) return NO;
     self.primedVideo = identifier;
 
-    const double target = YTKACEStartPlaybackRate();
+    const double target = YTKACESourceUsesShortsRate(source)
+        ? YTKACEShortsRate() : YTKACEStartPlaybackRate();
     if (!YTKACERateIsUsable(target)) return NO;
     const double playing = [self rateFromObject:source depth:0];
     if (fabs(playing - target) < 0.01) return NO;
@@ -287,7 +304,8 @@ static UIImage *YTKACESpeedButtonImage(BOOL plus) {
     NSString *key = notification.userInfo[@"key"];
     if (![key isEqualToString:YTKACEStartRateKey] &&
         ![key isEqualToString:YTKACELegacyRateKey] &&
-        ![key isEqualToString:YTKACELegacyModeKey]) {
+        ![key isEqualToString:YTKACELegacyModeKey] &&
+        ![key isEqualToString:YTKACEShortsRateKey]) {
         return;
     }
     self.primedVideo = nil;
@@ -313,8 +331,10 @@ static UIImage *YTKACESpeedButtonImage(BOOL plus) {
         return;
     }
     self.observedRate = rate;
-    [NSUserDefaults.standardUserDefaults setFloat:(float)rate
-                                           forKey:YTKACELastRateKey];
+    if (!YTKACESourceUsesShortsRate(notification.object)) {
+        [NSUserDefaults.standardUserDefaults setFloat:(float)rate
+                                               forKey:YTKACELastRateKey];
+    }
     [self.valueButton setTitle:YTKACESpeedText(rate)
                       forState:UIControlStateNormal];
 }
@@ -392,8 +412,10 @@ static UIImage *YTKACESpeedButtonImage(BOOL plus) {
     if (![self applyRate:rate toObject:self.eventsDelegate depth:0]) {
         [self applyRate:rate toObject:self.rateSource depth:0];
     }
-    [NSUserDefaults.standardUserDefaults setFloat:(float)rate
-                                           forKey:YTKACELastRateKey];
+    if (!YTKACESourceUsesShortsRate(self.rateSource)) {
+        [NSUserDefaults.standardUserDefaults setFloat:(float)rate
+                                               forKey:YTKACELastRateKey];
+    }
     self.observedRate = rate;
     [self.valueButton setTitle:YTKACESpeedText(rate)
                       forState:UIControlStateNormal];
@@ -409,6 +431,22 @@ static UIImage *YTKACESpeedButtonImage(BOOL plus) {
 
 - (void)reset {
     [self setRate:1.0];
+}
+
+- (void)valueTapped:(UIButton *)sender {
+    if (!YTKACESpeedMenuStyle()) {
+        [self reset];
+        return;
+    }
+    SEL open = NSSelectorFromString(@"didPressVarispeed:");
+    for (UIResponder *responder = self.overlay; responder != nil;
+         responder = responder.nextResponder) {
+        if ([responder respondsToSelector:open]) {
+            ((void (*)(id, SEL, id))objc_msgSend)(responder, open, sender);
+            return;
+        }
+    }
+    [self reset];
 }
 
 @end
@@ -498,28 +536,24 @@ static void YTKACEInstallMaximumRateHook(NSString *className,
 
 static void YTKACEInstallMaximumRateHooks(void) {
     YTKACEMaximumRateOriginals = [NSMutableDictionary dictionary];
-    int count = objc_getClassList(NULL, 0);
-    if (count <= 0) {
-        return;
-    }
-    Class *classes = (__unsafe_unretained Class *)calloc((size_t)count,
-                                                          sizeof(Class));
-    count = objc_getClassList(classes, count);
-    for (int index = 0; index < count; index++) {
-        NSString *name = NSStringFromClass(classes[index]);
+    for (NSString *name in YTKACEAppClassNames()) {
         BOOL candidate = [name containsString:@"GranularVariableSpeedConfig"] ||
             [name containsString:@"PlayerHotConfig"];
         if (!candidate) {
             continue;
         }
+        Class cls = NSClassFromString(name);
+        if (cls == Nil) {
+            continue;
+        }
         for (NSString *selector in @[@"maximumPlaybackRate", @"maxPlaybackRate"]) {
-            if (class_getInstanceMethod(classes[index],
+            if (class_getInstanceMethod(cls,
                                         NSSelectorFromString(selector)) != NULL) {
                 YTKACEInstallMaximumRateHook(name, selector);
             }
         }
     }
-    free(classes);
+
 }
 
 static NSString *const YTKACEHoldSpeedKey =
@@ -531,34 +565,71 @@ static NSString *const YTKACEHoldSpeedRateKey =
 static IMP OriginalSpeedmasterActivated;
 static IMP OriginalSpeedmasterLongPress;
 
+static double YTKACEHoldPreviousRate;
+static BOOL YTKACEHoldOverrideActive;
+static BOOL YTKACEHoldPillActive;
+
+static void YTKACERestoreHoldRate(void);
+
 static void YTKACEApplyHoldRate(NSString *source) {
     const BOOL on = YTKACEFeatureEnabled(YTKACEHoldSpeedKey);
     const double stored =
         [YTKACEPreferenceObject(YTKACEHoldSpeedRateKey) doubleValue];
     (void)source;
     if (!on || stored < 0.25 || stored > 5.0) return;
+    if (!YTKACEHoldOverrideActive) {
+        const double base = [YTKACESpeedCoordinator sharedCoordinator].currentRate;
+        YTKACEHoldPreviousRate =
+            (base >= 0.25 && base <= 5.0) ? base : 1.0;
+        YTKACEHoldOverrideActive = YES;
+    }
     dispatch_async(dispatch_get_main_queue(), ^{
         [[YTKACESpeedCoordinator sharedCoordinator] setRate:stored];
     });
 }
 
+static void YTKACERestoreHoldRate(void) {
+    if (!YTKACEHoldOverrideActive) return;
+    YTKACEHoldOverrideActive = NO;
+    const double previous = YTKACEHoldPreviousRate;
+    YTKACEHoldPreviousRate = 0.0;
+    if (previous < 0.25 || previous > 5.0) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [[YTKACESpeedCoordinator sharedCoordinator] setRate:previous];
+    });
+}
+
 static void YTKACESpeedmasterActivated(id receiver, SEL selector, BOOL active) {
+    if (active) YTKACEHoldPillActive = YES;
     if (OriginalSpeedmasterActivated != NULL) {
         ((void (*)(id, SEL, BOOL))OriginalSpeedmasterActivated)(receiver,
                                                                 selector, active);
     }
-    if (!active) return;
+    if (!active) {
+        YTKACEHoldPillActive = NO;
+        YTKACERestoreHoldRate();
+        return;
+    }
     YTKACEApplyHoldRate(@"activated");
 }
 
 static void YTKACESpeedmasterLongPress(id receiver, SEL selector,
                                        UILongPressGestureRecognizer *recognizer) {
+    if (recognizer.state == UIGestureRecognizerStateBegan) YTKACEHoldPillActive = YES;
     if (OriginalSpeedmasterLongPress != NULL) {
         ((void (*)(id, SEL, id))OriginalSpeedmasterLongPress)(receiver, selector,
                                                               recognizer);
     }
-    if (recognizer.state != UIGestureRecognizerStateBegan) return;
-    YTKACEApplyHoldRate(@"longpress");
+    if (recognizer.state == UIGestureRecognizerStateBegan) {
+        YTKACEApplyHoldRate(@"longpress");
+        return;
+    }
+    if (recognizer.state == UIGestureRecognizerStateEnded ||
+        recognizer.state == UIGestureRecognizerStateCancelled ||
+        recognizer.state == UIGestureRecognizerStateFailed) {
+        YTKACEHoldPillActive = NO;
+        YTKACERestoreHoldRate();
+    }
 }
 
 static BOOL YTKACELooksLikeSpeedPill(NSString *text) {
@@ -576,8 +647,8 @@ static void YTKACETextNodeSetAttributedText(id receiver, SEL selector,
     NSAttributedString *replacement = value;
     NSString *text = [value isKindOfClass:NSAttributedString.class]
         ? value.string : nil;
-    if (text.length != 0 && YTKACEFeatureEnabled(YTKACEHoldSpeedKey) &&
-        YTKACELooksLikeSpeedPill(text)) {
+    if (text.length != 0 && YTKACEHoldPillActive &&
+        YTKACEFeatureEnabled(YTKACEHoldSpeedKey) && YTKACELooksLikeSpeedPill(text)) {
         const double stored =
             [YTKACEPreferenceObject(YTKACEHoldSpeedRateKey) doubleValue];
         NSString *wanted = YTKACESpeedText(stored);
@@ -604,12 +675,87 @@ static void YTKACEInstallHoldSpeedHooks(void) {
     const BOOL activated = YTKACEInstallInstanceHook(
         @"YTSpeedmasterController", @"setIsSpeedmasterActivated:",
         (IMP)YTKACESpeedmasterActivated, &OriginalSpeedmasterActivated);
-    YTKACEDownloadLog(@"speed",
-                      @"hold speed hooks node=%d activated=%d press=%d",
-                      node, activated, press);
+    (void)node;
+    (void)activated;
+    (void)press;
+}
+
+static IMP OriginalVarispeedInit;
+
+static id YTKACEVarispeedInit(id receiver, SEL selector) {
+    id controller = ((id (*)(id, SEL))OriginalVarispeedInit)(receiver, selector);
+    if (controller == nil || !YTKACERateCeilingRaised()) return controller;
+    Class optionClass = NSClassFromString(@"YTVarispeedSwitchControllerOption");
+    SEL initializer = NSSelectorFromString(@"initWithTitle:rate:");
+    if (optionClass == Nil || ![optionClass instancesRespondToSelector:initializer]) return controller;
+    NSMutableDictionary<NSNumber *, NSString *> *titles = [NSMutableDictionary dictionary];
+    id existing = [controller valueForKey:@"_options"];
+    for (id option in [existing isKindOfClass:NSArray.class] ? existing : @[]) {
+        if (![option respondsToSelector:@selector(rate)]) continue;
+        const float rate = ((float (*)(id, SEL))objc_msgSend)(option, @selector(rate));
+        id title = [option respondsToSelector:@selector(title)] ? [option valueForKey:@"title"] : nil;
+        if ([title isKindOfClass:NSString.class]) titles[@(llroundf(rate * 100.0f))] = title;
+    }
+    static const float rates[] = {0.25f, 0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 1.75f, 2.0f,
+                                  2.5f, 3.0f, 3.5f, 4.0f, 4.5f, 5.0f};
+    NSMutableArray *options = [NSMutableArray array];
+    for (size_t index = 0; index < sizeof(rates) / sizeof(rates[0]); index++) {
+        NSString *title = titles[@(llroundf(rates[index] * 100.0f))] ?: YTKACESpeedText(rates[index]);
+        id option = ((id (*)(id, SEL, id, float))objc_msgSend)(
+            [optionClass alloc], initializer, title, rates[index]);
+        if (option != nil) [options addObject:option];
+    }
+    if (options.count != 0) [controller setValue:[options copy] forKey:@"_options"];
+    return controller;
+}
+
+static id YTKACESpeedValue(id object, NSString *name) {
+    SEL selector = NSSelectorFromString(name);
+    return [object respondsToSelector:selector] ? ((id (*)(id, SEL))objc_msgSend)(object, selector) : nil;
+}
+
+void YTKACERouteSpeedMenuItem(id renderers, id actions, UIView *view, id responder) {
+    SEL open = NSSelectorFromString(@"didPressVarispeed:");
+    SEL extensionSelector = NSSelectorFromString(@"messageForFieldNumber:");
+    if (![renderers isKindOfClass:NSArray.class] || ![actions isKindOfClass:NSArray.class] ||
+        ![responder respondsToSelector:open]) {
+        return;
+    }
+    NSArray *items = renderers;
+    NSArray *built = actions;
+    for (NSUInteger index = 0; index < items.count && index < built.count; index++) {
+        id options = YTKACESpeedValue(YTKACESpeedValue(items[index], @"elementRenderer"), @"compatibilityOptions");
+        if (![options respondsToSelector:extensionSelector]) continue;
+        id extension = ((id (*)(id, SEL, NSUInteger))objc_msgSend)(options, extensionSelector, 396644439);
+        id identifier = YTKACESpeedValue(extension, @"menuItemIdentifier");
+        if (![identifier isKindOfClass:NSString.class] ||
+            ![identifier isEqualToString:@"menu_item_playback_speed"]) {
+            continue;
+        }
+        id action = built[index];
+        SEL setHandler = NSSelectorFromString(@"setHandler:");
+        if (![action respondsToSelector:setHandler]) return;
+        __weak id weakResponder = responder;
+        __weak UIView *weakView = view;
+        dispatch_block_t handler = ^{
+            id target = weakResponder;
+            if ([target respondsToSelector:open]) {
+                ((void (*)(id, SEL, id))objc_msgSend)(target, open, weakView);
+            }
+        };
+        ((void (*)(id, SEL, id))objc_msgSend)(action, setHandler, handler);
+        @try {
+            UIView *elementView = [YTKACESpeedValue(action, @"button") valueForKey:@"_elementView"];
+            if ([elementView isKindOfClass:UIView.class]) elementView.userInteractionEnabled = NO;
+        } @catch (__unused NSException *exception) {
+        }
+        return;
+    }
 }
 
 void YTKACEInstallSpeedHooks(void) {
+    YTKACEInstallInstanceHook(@"YTVarispeedSwitchControllerImpl", @"init",
+                              (IMP)YTKACEVarispeedInit, &OriginalVarispeedInit);
     YTKACEInstallHoldSpeedHooks();
     if (YTKACERateCeilingRaised()) {
         YTKACEInstallMaximumRateHooks();
@@ -632,7 +778,7 @@ void YTKACEInstallSpeedHooks(void) {
             @"YTKACE Speed",
             @"speedometer",
             coordinator,
-            @selector(reset)
+            @selector(valueTapped:)
         );
         UIButton *plus = YTKACEOverlayButton(
             stack,
@@ -660,8 +806,8 @@ void YTKACEInstallSpeedHooks(void) {
         [value sizeToFit];
 
         BOOL hidden = !YTKACEFeatureEnabled(YTKACESpeedKey);
-        minus.hidden = hidden;
+        minus.hidden = hidden || YTKACESpeedMenuStyle();
         value.hidden = hidden;
-        plus.hidden = hidden;
+        plus.hidden = hidden || YTKACESpeedMenuStyle();
     });
 }

@@ -1,4 +1,5 @@
 #import "YTKACETabEditorController.h"
+#import "../UI/Notice.h"
 #import "YTKACERootOptionsController.h"
 #import "YTKACESettingsPages.h"
 #import "../YTKACE.h"
@@ -36,7 +37,53 @@ static UIImage *YTKACETabEditorIcon(NSString *token, NSString *fallback) {
 @property(nonatomic, strong) NSMutableArray<NSMutableDictionary *> *inactiveTabs;
 @end
 
+static NSArray<NSString *> *YTKACETintTitles(void) {
+    return @[YTKACELocalized(@"Off"), YTKACELocalized(@"Text Only"), YTKACELocalized(@"Text and Icon")];
+}
+
+static NSArray<NSString *> *YTKACEFrostedTitles(void) {
+    return @[YTKACELocalized(@"Default"), YTKACELocalized(@"On"), YTKACELocalized(@"Off")];
+}
+
+static NSUInteger YTKACETintIndex(void) {
+    NSInteger mode = [YTKACEPreferenceObject(@"YTKACE.Preference.Tabs.SelectedTint") integerValue];
+    return (NSUInteger)MAX(0, MIN(2, mode));
+}
+
+static NSString *YTKACETintHex(void) {
+    id stored = YTKACEPreferenceObject(@"YTKACE.Preference.Tabs.SelectedTintColor");
+    return [stored isKindOfClass:NSString.class] ? stored : @"#0A84FF";
+}
+
+static UIColor *YTKACETintSwatchColor(void) {
+    NSString *value = [[YTKACETintHex() stringByReplacingOccurrencesOfString:@"#" withString:@""] uppercaseString];
+    unsigned int rgb = 0x0A84FF;
+    if (value.length == 6) [[NSScanner scannerWithString:value] scanHexInt:&rgb];
+    return [UIColor colorWithRed:((rgb >> 16) & 0xFF) / 255.0
+                           green:((rgb >> 8) & 0xFF) / 255.0
+                            blue:(rgb & 0xFF) / 255.0
+                           alpha:1.0];
+}
+
+static NSString *YTKACETintHexFromColor(UIColor *color) {
+    CGFloat red = 0.0, green = 0.0, blue = 0.0, alpha = 0.0;
+    if (![color getRed:&red green:&green blue:&blue alpha:&alpha]) return @"#0A84FF";
+    return [NSString stringWithFormat:@"#%02X%02X%02X",
+            (int)lround(red * 255.0), (int)lround(green * 255.0),
+            (int)lround(blue * 255.0)];
+}
+
+@interface YTKACETabEditorController () <UIColorPickerViewControllerDelegate>
+@end
+
 @implementation YTKACETabEditorController
+
+- (NSArray<NSString *> *)mainRows {
+    NSMutableArray<NSString *> *rows = [@[@"labels", @"shorts", @"frosted"] mutableCopy];
+    [rows addObject:@"tint"];
+    [rows addObject:@"tintColor"];
+    return rows;
+}
 
 - (instancetype)init {
     return [super initWithStyle:UITableViewStylePlain];
@@ -130,7 +177,7 @@ static UIImage *YTKACETabEditorIcon(NSString *token, NSString *fallback) {
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     (void)tableView;
-    if (section == 0) return 3;
+    if (section == 0) return (NSInteger)[self mainRows].count;
     if (section == 1) return 1;
     if (section == 2) return (NSInteger)self.activeTabs.count;
     return (NSInteger)self.inactiveTabs.count;
@@ -180,18 +227,46 @@ willDisplayHeaderView:(UIView *)view
     cell.indentationLevel = 0;
     cell.indentationWidth = 0.0;
 
+    NSString *row = indexPath.section == 0 ? [self mainRows][(NSUInteger)indexPath.row] : nil;
+    if ([row isEqualToString:@"tint"]) {
+        cell.textLabel.text = YTKACELocalized(@"Selected Tab Color");
+        cell.detailTextLabel.text = YTKACETintTitles()[YTKACETintIndex()];
+        cell.detailTextLabel.textColor = YTKACEAccentColor();
+        cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+        return cell;
+    }
+    if ([row isEqualToString:@"frosted"]) {
+        cell.textLabel.text = YTKACELocalized(@"Frosted Tab Bar");
+        cell.detailTextLabel.text = YTKACEFrostedTitles()[(NSUInteger)YTKACEFrostedTabBarMode()];
+        cell.detailTextLabel.textColor = YTKACEAccentColor();
+        cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+        return cell;
+    }
+    if ([row isEqualToString:@"tintColor"]) {
+        cell.textLabel.text = YTKACELocalized(@"Color");
+        UIView *dot = [[UIView alloc] initWithFrame:CGRectMake(0.0, 0.0, 28.0, 28.0)];
+        dot.backgroundColor = YTKACETintSwatchColor();
+        dot.layer.cornerRadius = 14.0;
+        dot.layer.borderWidth = 2.0;
+        dot.layer.borderColor = UIColor.secondaryLabelColor.CGColor;
+        cell.accessoryView = dot;
+        cell.editingAccessoryView = dot;
+        cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+        return cell;
+    }
+
     if (indexPath.section == 0) {
-        NSArray *titles = @[YTKACELocalized(@"Hide Tab Labels"),
-                            YTKACELocalized(@"Prevent Open in Shorts"),
-                            YTKACELocalized(@"Remove Frosted Tab Bar")];
-        NSArray *keys = @[@"YTKACE.Preference.Tabs.LabelsHidden",
-                          @"YTKACE.Preference.Shorts.PreventAutoOpen",
-                          @"YTKACE.Preference.Tabs.FrostedHidden"];
-        cell.textLabel.text = titles[(NSUInteger)indexPath.row];
+        NSDictionary *titles = @{@"labels": YTKACELocalized(@"Hide Tab Labels"),
+                                 @"shorts": YTKACELocalized(@"Don't Open App in Shorts"),
+                                 };
+        NSDictionary *keys = @{@"labels": @"YTKACE.Preference.Tabs.LabelsHidden",
+                               @"shorts": @"YTKACE.Preference.Shorts.PreventAutoOpen",
+                               };
+        cell.textLabel.text = titles[row];
         UISwitch *toggle = [UISwitch new];
         toggle.transform = CGAffineTransformMakeScale(0.95, 0.95);
         toggle.onTintColor = YTKACEAccentColor();
-        NSString *key = keys[(NSUInteger)indexPath.row];
+        NSString *key = keys[row];
         toggle.on = [YTKACEPreferenceObject(key) boolValue];
         objc_setAssociatedObject(toggle, YTKACETabSwitchKey, key, OBJC_ASSOCIATION_COPY_NONATOMIC);
         [toggle addTarget:self action:@selector(toggleChanged:) forControlEvents:UIControlEventValueChanged];
@@ -239,10 +314,33 @@ willDisplayHeaderView:(UIView *)view
     return cell;
 }
 
+- (void)saveTintColor:(UIColor *)color {
+    if (color == nil) return;
+    YTKACESetPreferenceObject(@"YTKACE.Preference.Tabs.SelectedTintColor", YTKACETintHexFromColor(color));
+    NSUInteger row = [[self mainRows] indexOfObject:@"tintColor"];
+    if (row != NSNotFound) {
+        [self.tableView reloadRowsAtIndexPaths:@[[NSIndexPath indexPathForRow:(NSInteger)row inSection:0]]
+                              withRowAnimation:UITableViewRowAnimationNone];
+    }
+    YTKACERefreshPivotBarBackground();
+}
+
+- (void)colorPickerViewController:(UIColorPickerViewController *)viewController
+                   didSelectColor:(UIColor *)color
+                     continuously:(BOOL)continuously {
+    (void)viewController;
+    if (!continuously) [self saveTintColor:color];
+}
+
+- (void)colorPickerViewControllerDidFinish:(UIColorPickerViewController *)viewController {
+    [self saveTintColor:viewController.selectedColor];
+}
+
 - (void)toggleChanged:(UISwitch *)sender {
     NSString *key = objc_getAssociatedObject(sender, YTKACETabSwitchKey);
     YTKACESetPreference(key, sender.isOn);
-    if ([key isEqualToString:@"YTKACE.Preference.Tabs.FrostedHidden"]) {
+    if ([key isEqualToString:@"YTKACE.Preference.Tabs.GlassMode"] ||
+        [key isEqualToString:@"YTKACE.Preference.Tabs.GlassMinimize"]) {
         YTKACERefreshPivotBarBackground();
         return;
     }
@@ -296,6 +394,29 @@ commitEditingStyle:(UITableViewCellEditingStyle)editingStyle
         ? self.activeTabs[(NSUInteger)indexPath.row]
         : self.inactiveTabs[(NSUInteger)indexPath.row];
     if (editingStyle == UITableViewCellEditingStyleDelete) {
+        NSString *key = tab[@"key"];
+        BOOL isSettingsRoute =
+            [key isEqualToString:@"YTKACE.Preference.Tabs.Hidden.YTKACETab"] ||
+            [key isEqualToString:@"YTKACE.Preference.Tabs.Hidden.Library"];
+        if (isSettingsRoute) {
+            NSString *other = [key isEqualToString:
+                @"YTKACE.Preference.Tabs.Hidden.YTKACETab"]
+                ? @"YTKACE.Preference.Tabs.Hidden.Library"
+                : @"YTKACE.Preference.Tabs.Hidden.YTKACETab";
+            BOOL otherHidden = NO;
+            for (NSMutableDictionary *entry in self.inactiveTabs) {
+                if ([entry[@"key"] isEqualToString:other]) {
+                    otherHidden = YES;
+                    break;
+                }
+            }
+            if (otherHidden) {
+                [tableView setEditing:NO animated:YES];
+                YTKACEShowNotice(YTKACELocalized(
+                    @"Keep the YTKACE or Library tab so settings stay reachable."));
+                return;
+            }
+        }
         [self.activeTabs removeObjectAtIndex:(NSUInteger)indexPath.row];
         [self.inactiveTabs addObject:tab];
     } else if (editingStyle == UITableViewCellEditingStyleInsert) {
@@ -320,6 +441,39 @@ commitEditingStyle:(UITableViewCellEditingStyle)editingStyle
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    NSString *row = indexPath.section == 0 ? [self mainRows][(NSUInteger)indexPath.row] : nil;
+    if ([row isEqualToString:@"tint"]) {
+        UITableViewCell *cell = [tableView cellForRowAtIndexPath:indexPath];
+        YTKACEPresentSelectionMenu(self, cell, YTKACELocalized(@"Selected Tab Color"), YTKACETintTitles(),
+            YTKACETintIndex(), ^(NSUInteger index) {
+                YTKACESetPreferenceObject(@"YTKACE.Preference.Tabs.SelectedTint", @(index));
+                [self.tableView reloadRowsAtIndexPaths:@[indexPath]
+                                      withRowAnimation:UITableViewRowAnimationNone];
+                YTKACERefreshPivotBarBackground();
+            });
+        return;
+    }
+    if ([row isEqualToString:@"frosted"]) {
+        UITableViewCell *cell = [tableView cellForRowAtIndexPath:indexPath];
+        YTKACEPresentSelectionMenu(self, cell, YTKACELocalized(@"Frosted Tab Bar"), YTKACEFrostedTitles(),
+            (NSUInteger)YTKACEFrostedTabBarMode(), ^(NSUInteger index) {
+                YTKACESetPreferenceObject(@"YTKACE.Preference.Tabs.Frosted", @(index));
+                [self.tableView reloadRowsAtIndexPaths:@[indexPath]
+                                      withRowAnimation:UITableViewRowAnimationNone];
+                YTKACERefreshPivotBarBackground();
+                YTKACEShowRestartNotice(self);
+            });
+        return;
+    }
+    if ([row isEqualToString:@"tintColor"]) {
+        UIColorPickerViewController *picker = [UIColorPickerViewController new];
+        picker.title = YTKACELocalized(@"Selected Tab Color");
+        picker.supportsAlpha = NO;
+        picker.selectedColor = YTKACETintSwatchColor();
+        picker.delegate = self;
+        [self presentViewController:picker animated:YES completion:nil];
+        return;
+    }
     if (indexPath.section == 1) {
         NSArray<NSString *> *titles = nil;
         NSArray<NSString *> *values = nil;

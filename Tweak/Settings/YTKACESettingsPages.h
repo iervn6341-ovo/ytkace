@@ -2,6 +2,8 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+FOUNDATION_EXPORT UIViewController *YTKACEMakeSettingsPage(NSString *pageID);
+FOUNDATION_EXPORT NSArray<NSDictionary *> *YTKACESettingsMenu(void);
 FOUNDATION_EXPORT UIViewController *YTKACEMakePlayerControlsController(void);
 FOUNDATION_EXPORT UIViewController *YTKACEMakeSponsorBlockController(void);
 FOUNDATION_EXPORT UIViewController *YTKACEMakeTabBarOptionsController(void);
@@ -9,6 +11,7 @@ FOUNDATION_EXPORT UIViewController *YTKACEMakeOverlayOptionsController(void);
 FOUNDATION_EXPORT UIViewController *YTKACEMakeStreamingOptionsController(void);
 FOUNDATION_EXPORT UIViewController *YTKACEMakeNavigationOptionsController(void);
 FOUNDATION_EXPORT UIViewController *YTKACEMakeShortsOptionsController(void);
+FOUNDATION_EXPORT UIViewController *YTKACEMakeGlassOptionsController(void);
 FOUNDATION_EXPORT UIViewController *YTKACEMakeMiscOptionsController(void);
 FOUNDATION_EXPORT UIViewController *YTKACEMakeGestureOptionsController(void);
 FOUNDATION_EXPORT void YTKACEStartupDestinations(
@@ -41,5 +44,12 @@ FOUNDATION_EXPORT void YTKACEPresentChoiceMenu(UIViewController *presenter,
                                                YTKACEChoiceHandler handler);
 
 FOUNDATION_EXPORT NSArray<NSDictionary *> *YTKACEAllPageDefinitions(void);
+FOUNDATION_EXPORT UIViewController *YTKACEMakeSettingsResultsController(
+    NSArray<NSArray<NSDictionary *> *> *sections,
+    NSArray<NSString *> *sectionTitles);
+FOUNDATION_EXPORT void YTKACEUpdateSettingsResultsController(
+    UIViewController *controller,
+    NSArray<NSArray<NSDictionary *> *> *sections,
+    NSArray<NSString *> *sectionTitles);
 
 NS_ASSUME_NONNULL_END

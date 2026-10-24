@@ -5,12 +5,13 @@
 #import "YTKACEDownloadsController.h"
 #import "../Runtime/Hooking.h"
 #import "../UI/Assets.h"
+#import "../YTKACE.h"
 
 #import <UIKit/UIKit.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
 
-static const NSUInteger YTKACENativeSettingsCategory = 789;
+static const NSUInteger YTKACENativeSettingsCategory = 0x796b6361;
 static const NSUInteger YTKACENativeSettingsGroup = 0x796b6163;
 static NSString *const YTKACEInertIdentifier = @"YTKACEInertItem";
 static const NSInteger YTKACESearchFieldTag = 0x5954534B;
@@ -26,27 +27,31 @@ static IMP OriginalSettingsCellLayout;
 typedef UIViewController * _Nonnull (^YTKACENativeBuilder)(void);
 
 static NSArray<NSDictionary *> *YTKACENativeLayout(void) {
-    return @[
+    NSMutableArray *layout = [NSMutableArray arrayWithArray:@[
         @{@"kind": @"search"},
-        @{@"kind": @"row", @"title": @"Downloads & Library"},
-        @{@"kind": @"header", @"title": @"MAIN"},
-        @{@"kind": @"row", @"title": @"Player"},
-        @{@"kind": @"row", @"title": @"SponsorBlock"},
-        @{@"kind": @"row", @"title": @"Tabs"},
-        @{@"kind": @"row", @"title": @"Gestures"},
-        @{@"kind": @"header", @"title": @"VIDEO"},
-        @{@"kind": @"row", @"title": @"Overlay"},
-        @{@"kind": @"row", @"title": @"Playback"},
-        @{@"kind": @"row", @"title": @"Shorts"},
-        @{@"kind": @"row", @"title": @"Wi-Fi Quality"},
-        @{@"kind": @"row", @"title": @"Cellular Quality"},
-        @{@"kind": @"header", @"title": @"APP"},
-        @{@"kind": @"row", @"title": @"Navigation"},
-        @{@"kind": @"row", @"title": @"Other"},
+        @{@"kind": @"row", @"title": @"Downloads & Library"}
+    ]];
+    for (NSDictionary *section in YTKACESettingsMenu()) {
+        [layout addObject:@{@"kind": @"header", @"title": section[@"header"]}];
+        for (NSDictionary *row in section[@"rows"]) {
+            [layout addObject:@{@"kind": @"row", @"title": row[@"title"], @"id": row[@"id"]}];
+        }
+    }
+    [layout addObjectsFromArray:@[
         @{@"kind": @"header", @"title": @"ABOUT"},
         @{@"kind": @"row", @"title": @"itzzace", @"developer": @YES},
         @{@"kind": @"footer"}
-    ];
+    ]];
+    return layout;
+}
+
+static NSDictionary *YTKACENativeMenuRow(NSString *title) {
+    for (NSDictionary *section in YTKACESettingsMenu()) {
+        for (NSDictionary *row in section[@"rows"]) {
+            if ([row[@"title"] isEqualToString:title]) return row;
+        }
+    }
+    return nil;
 }
 
 static NSArray *YTKACESettingsCategoryOrder(id receiver, SEL selector) {
@@ -87,24 +92,9 @@ static NSArray *YTKACEOrderedGroupCategories(id receiver, SEL selector, NSUInteg
 }
 
 static NSString *YTKACENativeSettingsSubtitle(NSString *title) {
-    static NSDictionary<NSString *, NSString *> *subtitles;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        subtitles = @{
-            @"Downloads & Library": @"Saved video, audio, Shorts, imports and backups",
-            @"Player": @"Download, PiP, loop, speed and progress controls",
-            @"SponsorBlock": @"Segments, alerts, colors and DeArrow",
-            @"Overlay": @"Player buttons, captions and watch-page cleanup",
-            @"Playback": @"Quality menu, autoplay and skip timing",
-            @"Shorts": @"Playback, feed and action buttons",
-            @"Navigation": @"Top buttons, branding and topic chips",
-            @"Tabs": @"Choose and reorder bottom tabs",
-            @"Gestures": @"Brightness, volume, hold and tap to seek",
-            @"Other": @"OLED, startup, sharing, layout and prompts",
-            @"itzzace": @"Developer"
-        };
-    });
-    NSString *value = subtitles[title];
+    NSString *value = YTKACENativeMenuRow(title)[@"detail"];
+    if ([title isEqualToString:@"Downloads & Library"]) value = @"Saved video, audio, Shorts, imports and backups";
+    if ([title isEqualToString:@"itzzace"]) value = @"Developer";
     return value != nil ? YTKACELocalized(value) : nil;
 }
 
@@ -188,23 +178,7 @@ static UIImage *YTKACENativeSettingsIconImage(NSString *title) {
     if ([title isEqualToString:@"Downloads & Library"]) {
         return YTKACEDownloadTabImage(NO);
     }
-    static NSDictionary<NSString *, NSString *> *symbols;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        symbols = @{
-            @"Player": @"play.rectangle",
-            @"Overlay": @"rectangle.on.rectangle",
-            @"Playback": @"playpause",
-            @"Navigation": @"rectangle.topthird.inset.filled",
-            @"Tabs": @"rectangle.bottomthird.inset.filled",
-            @"Gestures": @"hand.draw",
-            @"Wi-Fi Quality": @"wifi",
-            @"Cellular Quality": @"antenna.radiowaves.left.and.right",
-            @"Other": @"ellipsis.circle",
-            @"itzzace": @"person.crop.circle"
-        };
-    });
-    NSString *symbol = symbols[title];
+    NSString *symbol = [title isEqualToString:@"itzzace"] ? @"person.crop.circle" : YTKACENativeMenuRow(title)[@"symbol"];
     return symbol.length != 0 ? [UIImage systemImageNamed:symbol] : nil;
 }
 
@@ -409,30 +383,25 @@ static void YTKACEUpdateNativeSettingsSection(id receiver, SEL selector,
     } @catch (__unused NSException *exception) {
         return;
     }
-    NSDictionary<NSString *, YTKACENativeBuilder> *builders = @{
+    NSMutableDictionary<NSString *, YTKACENativeBuilder> *builders = [@{
         @"Downloads & Library": [^UIViewController *{
             YTKACEDownloadsController *controller = [YTKACEDownloadsController new];
             controller.hidesSettingsButton = YES;
             return controller;
         } copy],
-        @"Player": [^UIViewController *{ return YTKACEMakePlayerControlsController(); } copy],
-        @"SponsorBlock": [^UIViewController *{ return YTKACEMakeSponsorBlockController(); } copy],
-        @"Overlay": [^UIViewController *{ return YTKACEMakeOverlayOptionsController(); } copy],
-        @"Playback": [^UIViewController *{ return YTKACEMakeStreamingOptionsController(); } copy],
-        @"Shorts": [^UIViewController *{ return YTKACEMakeShortsOptionsController(); } copy],
-        @"Navigation": [^UIViewController *{ return YTKACEMakeNavigationOptionsController(); } copy],
-        @"Tabs": [^UIViewController *{ return YTKACEMakeTabBarOptionsController(); } copy],
-        @"Gestures": [^UIViewController *{ return YTKACEMakeGestureOptionsController(); } copy],
-        @"Wi-Fi Quality": [^UIViewController *{ return YTKACEMakeWiFiQualityController(); } copy],
-        @"Cellular Quality": [^UIViewController *{ return YTKACEMakeCellularQualityController(); } copy],
-        @"Other": [^UIViewController *{ return YTKACEMakeMiscOptionsController(); } copy],
         @"itzzace": [^UIViewController *{
             NSURL *URL = [NSURL URLWithString:@"https://github.com/itzzace/ytkace"];
             [UIApplication.sharedApplication openURL:URL options:@{}
                                    completionHandler:nil];
             return nil;
         } copy]
-    };
+    } mutableCopy];
+    for (NSDictionary *section in YTKACESettingsMenu()) {
+        for (NSDictionary *row in section[@"rows"]) {
+            NSString *pageID = row[@"id"];
+            builders[row[@"title"]] = [^UIViewController *{ return YTKACEMakeSettingsPage(pageID); } copy];
+        }
+    }
 
     NSMutableArray *items = [NSMutableArray array];
     for (NSDictionary *definition in YTKACENativeLayout()) {
