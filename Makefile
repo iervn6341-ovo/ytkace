@@ -12,6 +12,7 @@ YTKACE_FILES = \
 	Tweak/Entry.mm \
 	Tweak/Runtime/Hooking.mm \
 	Tweak/Runtime/Preferences.mm \
+	Tweak/Runtime/SettingsTransfer.mm \
 	Tweak/Runtime/Localization.mm \
 	Tweak/Runtime/TelemetryAudit.mm \
 	Tweak/UI/Assets.mm \
@@ -76,6 +77,7 @@ YTKACE_FILES = \
 	Tweak/Features/Navigation/GlassSheets.mm \
 	Tweak/Features/Playback/PlayerGlass.mm \
 	Tweak/Features/Navigation/NavigationBehaviorHooks.mm \
+	Tweak/Features/Navigation/SettingsPlaybackHooks.mm \
 	Tweak/Features/Gestures/PlayerGestures.mm \
 	Tweak/Features/Interface/OverlayVisibilityHooks.mm \
 	Tweak/Features/Interface/ContentVisibilityHooks.mm \
@@ -87,6 +89,7 @@ YTKACE_FILES = \
 	Tweak/Features/Interface/NativeShareHooks.mm \
 	Tweak/Features/Interface/NavigationVisibility.mm \
 	Tweak/Settings/SettingsEntry.mm \
+	Tweak/Settings/SettingsTransferController.mm \
 	Tweak/Settings/NativeSettingsEntry.mm \
 	Tweak/Settings/YTKACERootOptionsController.mm \
 	Tweak/Settings/YTKACESettingsPages.mm \

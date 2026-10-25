@@ -1,4 +1,5 @@
 #import "YTKACESettingsPages.h"
+#import "SettingsTransferController.h"
 #import "../UI/OverlayButtonHost.h"
 #import "YTKACESettingsSearch.h"
 #import "../Features/Downloads/SABRDownloader.h"
@@ -1821,7 +1822,10 @@ static NSDictionary *YTKACEGeneralDefinition(void) {
                                @"YTKACE.Preference.Posts.CopyText"),
             YTKACEToggleDetail(@"Mini Player for Kids Videos",
                 @"Allow the mini player on made-for-kids videos.",
-                @"YTKACE.Preference.Playback.KidsMiniPlayer")
+                @"YTKACE.Preference.Playback.KidsMiniPlayer"),
+            YTKACEToggleDetail(@"Keep Playing in YouTube Settings",
+                @"Prevent automatic pauses during native settings transitions. Manual pauses and audio interruptions still work.",
+                @"YTKACE.Preference.Navigation.KeepPlayingInSettings")
         ],
         @[
             YTKACEToggleDetail(@"Remove Search History", @"Hides past searches. Searches are still saved.",
@@ -1833,9 +1837,16 @@ static NSDictionary *YTKACEGeneralDefinition(void) {
                 @"YTKACE.Preference.App.HUDAlertsHidden"),
             YTKACEToggleDetail(@"Skip Age Gate", @"Skip the age check screen. Some videos may still be blocked.",
                                @"YTKACE.Preference.Content.AgeGateBypass")
+        ],
+        @[
+            YTKACEActionDetail(@"Copy Settings", @"Copy settings for YTKACE and integrated tweaks.", ^(UIViewController *controller) { YTKACEPresentSettingsTransfer(controller, YTKACESettingsCopy); }),
+            YTKACEActionDetail(@"Paste Settings", @"Preview and import settings from the clipboard.", ^(UIViewController *controller) { YTKACEPresentSettingsTransfer(controller, YTKACESettingsPaste); }),
+            YTKACEActionDetail(@"Export Settings File", @"Save a settings-only JSON file.", ^(UIViewController *controller) { YTKACEPresentSettingsTransfer(controller, YTKACESettingsExport); }),
+            YTKACEActionDetail(@"Import Settings File", @"Preview and import a settings-only JSON file.", ^(UIViewController *controller) { YTKACEPresentSettingsTransfer(controller, YTKACESettingsImport); }),
+            YTKACEActionDetail(@"Restore Previous Settings", @"Restore the snapshot saved before the last import.", ^(UIViewController *controller) { YTKACEPresentSettingsTransfer(controller, YTKACESettingsRestore); })
         ]
     ], @[YTKACELocalized(@"LANGUAGE"), YTKACELocalized(@"APPEARANCE"), YTKACELocalized(@"SHARING & EXTRAS"),
-         YTKACELocalized(@"PRIVACY & PROMPTS")]);
+         YTKACELocalized(@"PRIVACY & PROMPTS"), YTKACELocalized(@"SETTINGS TRANSFER")]);
 }
 
 static NSDictionary *YTKACEDownloadsDefinition(void) {

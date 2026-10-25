@@ -3,6 +3,7 @@
 #import "Features/Downloads/DownloadLog.h"
 #import "Features/SponsorBlock/DeArrow.h"
 #import "Runtime/Preferences.h"
+#import "Features/Navigation/SettingsPlaybackHooks.h"
 
 #import <UIKit/UIKit.h>
 
@@ -50,6 +51,7 @@ static void YTKACEInstallModules(void) {
     YTKACEInstallShortsHooks();
     YTKACEInstallTabBarHooks();
     YTKACEInstallNavigationBehaviorHooks();
+    YTKACEInstallSettingsPlaybackHooks();
     YTKACEInstallPlayerGestureHooks();
     YTKACEInstallOverlayVisibilityHooks();
     YTKACEInstallContentVisibilityHooks();

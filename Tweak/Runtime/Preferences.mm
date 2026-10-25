@@ -1,5 +1,6 @@
 #import "Preferences.h"
 #import "Localization.h"
+#import "SettingsTransfer.h"
 #import "../Features/Downloads/SABRDownloader.h"
 #import "../Features/Ads/PlaybackAdsHooks.h"
 
@@ -54,7 +55,7 @@ void YTKACERegisterDefaults(void) {
         objectForKey:@"YTKACE.Preference.Downloads.Enabled"];
     BOOL hasPlacement = [YTKACEDefaults()
         objectForKey:@"YTKACE.Preference.Downloads.Placement"] != nil;
-    [YTKACEDefaults() registerDefaults:@{
+    NSDictionary *registered = @{
         YTKACEMasterEnabledKey: @YES,
         YTKACENoAdsKey: @YES,
         YTKACEAdBlockingModeKey: @(YTKACEAdBlockingModeUYouEnhanced),
@@ -105,6 +106,7 @@ void YTKACERegisterDefaults(void) {
         @"YTKACE.Preference.Player.HoldSpeedRate": @2.0,
         @"YTKACE.Preference.Gestures.LandscapeOnly": @NO,
         @"YTKACE.Preference.Profiles.Preview": @YES,
+        @"YTKACE.Preference.Navigation.KeepPlayingInSettings": @YES,
         @"YTKACE.Preference.Posts.SaveImage": @YES,
         @"YTKACE.Preference.Downloads.SaveLocation": @0,
         @"YTKACE.Preference.Appearance.LaunchAnimationDisabled": @NO,
@@ -158,7 +160,11 @@ void YTKACERegisterDefaults(void) {
         @"YTKACE.Preference.Tabs.Hidden.Notifs": @YES,
         @"YTKACE.Preference.Tabs.Hidden.WatchLater": @YES,
         @"YTKACE.Preference.Tabs.Order": @[@"home", @"shorts", @"subscriptions", @"library", @"ytkace"]
-    }];
+    };
+    [YTKACEDefaults() registerDefaults:registered];
+    NSMutableDictionary *transferRules = [NSMutableDictionary dictionary];
+    for (NSString *key in registered) transferRules[key] = YTKACESettingsRule(registered[key]);
+    YTKACERegisterSettingsModule(@"YTKACE", transferRules);
     if (!hasPlacement && [legacyDownloadButton boolValue]) {
         [YTKACEDefaults() setInteger:1
                               forKey:@"YTKACE.Preference.Downloads.Placement"];

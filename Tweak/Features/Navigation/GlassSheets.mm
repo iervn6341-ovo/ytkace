@@ -1,6 +1,7 @@
 #import "../../YTKACE.h"
 #import "../../Runtime/Hooking.h"
 #import "../../Runtime/Preferences.h"
+#import "SheetUpdatePolicy.h"
 
 #import <UIKit/UIKit.h>
 #import <objc/message.h>
@@ -16,6 +17,15 @@ static IMP OriginalContextualWillAppear;
 static IMP OriginalContextualLayout;
 
 static const void *YTKACESheetGlassAssociation = &YTKACESheetGlassAssociation;
+static const void *YTKACESheetUpdateAssociation = &YTKACESheetUpdateAssociation;
+
+@interface YTKACESheetUpdate : NSObject {
+@public
+    YTKACESheetUpdatePolicy policy;
+}
+@end
+@implementation YTKACESheetUpdate
+@end
 
 static BOOL YTKACESheetGlassEnabled(void) {
     return YTKACELiquidGlassAvailable() && YTKACEFeatureEnabled(@"YTKACE.Preference.Glass.Menus");
@@ -23,9 +33,8 @@ static BOOL YTKACESheetGlassEnabled(void) {
 
 static UIView *YTKACEFindViewOfClass(UIView *root, NSString *name) {
     NSMutableArray<UIView *> *queue = [NSMutableArray arrayWithObject:root];
-    while (queue.count != 0) {
-        UIView *view = queue.firstObject;
-        [queue removeObjectAtIndex:0];
+    for (NSUInteger index = 0; index < queue.count; ++index) {
+        UIView *view = queue[index];
         if ([NSStringFromClass(view.class) isEqualToString:name]) return view;
         [queue addObjectsFromArray:view.subviews];
     }
@@ -143,42 +152,41 @@ static void YTKACEApplyPanelGlass(UIView *sheet, CGFloat fallbackRadius) {
     }
     if (glass.superview != sheet) [sheet insertSubview:glass atIndex:0];
     else if (sheet.subviews.firstObject != glass) [sheet sendSubviewToBack:glass];
-    glass.frame = sheet.bounds;
+    if (!CGRectEqualToRect(glass.frame, sheet.bounds)) glass.frame = sheet.bounds;
     CGFloat radius = sheet.layer.cornerRadius > 0.0 ? sheet.layer.cornerRadius : fallbackRadius;
-    glass.layer.cornerRadius = radius;
-    glass.layer.maskedCorners = sheet.layer.cornerRadius > 0.0 ? sheet.layer.maskedCorners
+    if (glass.layer.cornerRadius != radius) glass.layer.cornerRadius = radius;
+    CACornerMask corners = sheet.layer.cornerRadius > 0.0 ? sheet.layer.maskedCorners
         : (kCALayerMinXMinYCorner | kCALayerMaxXMinYCorner);
-    sheet.backgroundColor = UIColor.clearColor;
+    if (glass.layer.maskedCorners != corners) glass.layer.maskedCorners = corners;
+    if (![sheet.backgroundColor isEqual:UIColor.clearColor]) sheet.backgroundColor = UIColor.clearColor;
     YTKACEClearSheetBackgrounds(sheet, sheet, glass, 0);
 }
 
 static void YTKACEApplySheetGlassLater(UIViewController *controller) {
-    __weak UIViewController *weakController = controller;
-    for (NSNumber *delay in @[@0.05, @0.15, @0.3, @0.5, @0.8, @1.2]) {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay.doubleValue * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            UIViewController *strong = weakController;
-            if (strong == nil || strong.view.window == nil) return;
-            YTKACEApplySheetGlass(strong);
-        });
+    if (!YTKACESheetGlassEnabled() || controller == nil) return;
+    YTKACESheetUpdate *update = objc_getAssociatedObject(controller, YTKACESheetUpdateAssociation);
+    if (update == nil) {
+        update = [YTKACESheetUpdate new];
+        objc_setAssociatedObject(controller, YTKACESheetUpdateAssociation, update,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
+    if (!update->policy.request(true)) return;
+    __weak UIViewController *weakController = controller;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIViewController *strong = weakController;
+        BOOL visible = strong.isViewLoaded && strong.view.window != nil;
+        if (update->policy.consume(YTKACESheetGlassEnabled(), visible)) YTKACEApplySheetGlass(strong);
+    });
 }
 
 static void YTKACESheetLayout(UIViewController *receiver, SEL selector) {
     if (OriginalSheetLayout != NULL) ((void (*)(id, SEL))OriginalSheetLayout)(receiver, selector);
-    if (!YTKACESheetGlassEnabled()) return;
-    __weak UIViewController *weakController = receiver;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        UIViewController *controller = weakController;
-        if (controller != nil) YTKACEApplySheetGlass(controller);
-    });
+    YTKACEApplySheetGlassLater(receiver);
 }
 
 static void YTKACESheetWillAppear(UIViewController *receiver, SEL selector, BOOL animated) {
     if (OriginalSheetWillAppear != NULL) ((void (*)(id, SEL, BOOL))OriginalSheetWillAppear)(receiver, selector, animated);
-    if (!YTKACESheetGlassEnabled()) return;
-    [receiver.view layoutIfNeeded];
-    YTKACEApplySheetGlass(receiver);
+    YTKACEApplySheetGlassLater(receiver);
 }
 
 static void YTKACEApplyModalGlass(UIView *modal) {
@@ -234,16 +242,14 @@ static void YTKACEReportReveal(UIView *receiver, SEL selector) {
 
 static void YTKACEContextualBegin(UIPresentationController *receiver, SEL selector) {
     if (OriginalContextualBegin != NULL) ((void (*)(id, SEL))OriginalContextualBegin)(receiver, selector);
-    UIViewController *presented = receiver.presentedViewController;
-    [presented.view layoutIfNeeded];
-    YTKACEApplySheetGlass(presented);
+    YTKACEApplySheetGlassLater(receiver.presentedViewController);
 }
 
 static void YTKACEContextualContainerLayout(UIPresentationController *receiver, SEL selector) {
     if (OriginalContextualContainerLayout != NULL) {
         ((void (*)(id, SEL))OriginalContextualContainerLayout)(receiver, selector);
     }
-    YTKACEApplySheetGlass(receiver.presentedViewController);
+    YTKACEApplySheetGlassLater(receiver.presentedViewController);
 }
 
 static void YTKACEModalShow(UIView *receiver, SEL selector) {
@@ -258,13 +264,11 @@ static void YTKACEModalReposition(UIView *receiver, SEL selector) {
 
 static void YTKACESheetAppear(UIViewController *receiver, SEL selector, BOOL animated) {
     if (OriginalSheetAppear != NULL) ((void (*)(id, SEL, BOOL))OriginalSheetAppear)(receiver, selector, animated);
-    YTKACEApplySheetGlass(receiver);
     YTKACEApplySheetGlassLater(receiver);
 }
 
 static void YTKACEContextualAppear(UIViewController *receiver, SEL selector, BOOL animated) {
     if (OriginalContextualAppear != NULL) ((void (*)(id, SEL, BOOL))OriginalContextualAppear)(receiver, selector, animated);
-    YTKACEApplySheetGlass(receiver);
     YTKACEApplySheetGlassLater(receiver);
 }
 
@@ -272,18 +276,12 @@ static void YTKACEContextualWillAppear(UIViewController *receiver, SEL selector,
     if (OriginalContextualWillAppear != NULL) {
         ((void (*)(id, SEL, BOOL))OriginalContextualWillAppear)(receiver, selector, animated);
     }
-    [receiver.view layoutIfNeeded];
-    YTKACEApplySheetGlass(receiver);
+    YTKACEApplySheetGlassLater(receiver);
 }
 
 static void YTKACEContextualLayout(UIViewController *receiver, SEL selector) {
     if (OriginalContextualLayout != NULL) ((void (*)(id, SEL))OriginalContextualLayout)(receiver, selector);
-    if (!YTKACESheetGlassEnabled()) return;
-    __weak UIViewController *weakController = receiver;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        UIViewController *controller = weakController;
-        if (controller != nil) YTKACEApplySheetGlass(controller);
-    });
+    YTKACEApplySheetGlassLater(receiver);
 }
 
 __attribute__((constructor)) static void YTKACEInstallGlassSheets(void) {

@@ -356,7 +356,7 @@ static void YTKACEQualityHandleTap(id receiver, SEL selector) {
                     }
                 };
                 ((void (*)(id, SEL, BOOL, id))objc_msgSend)(
-                    overlay, dismissSelector, YES, completion);
+                    overlay, dismissSelector, NO, completion);
                 return;
             }
         }

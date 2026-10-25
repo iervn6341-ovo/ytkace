@@ -55,6 +55,39 @@ To build both IPAs in one run, fill in the second URL field as well: the workflo
 Open the YTKACE tab and tap the gear, or open YouTube Settings and choose YTKACE.
 Both pages carry the same options, and the YouTube Settings section has a search bar.
 
+### Settings transfer for integrated tweaks
+
+General contains Copy/Paste Settings and JSON file import/export. Imports preview the
+number of supported/changed/unknown entries, validate all known values before writing,
+and save `Documents/YTKACE/Settings-before-import.json`. Restore Previous Settings
+restores that snapshot; restart YouTube after importing. This versioned format is
+settings-only and does not accept uYouEnhanced's legacy `key: value` text.
+
+`Tweak/Runtime/SettingsTransfer.h` exposes an opt-in registration function. A separately
+loaded tweak can resolve it without adding a hard dependency on YTKACE:
+
+```objc
+#import <dlfcn.h>
+// Run after dylib constructors, for example on the first main-queue turn.
+typedef void (*RegisterModule)(NSString *, NSDictionary<NSString *, NSDictionary *> *);
+RegisterModule registerModule = (RegisterModule)dlsym(RTLD_DEFAULT, "YTKACERegisterSettingsModule");
+if (registerModule) registerModule(@"MyTweak", @{
+    @"MyTweak.Enabled": @{@"default": @YES},
+    @"MyTweak.Mode": @{@"default": @0, @"values": @[@0, @1]},
+    @"MyTweak.Delay": @{@"default": @2.0, @"minimum": @0.0, @"maximum": @10.0}
+});
+```
+
+Register only user preferences. Each key has one module owner. Rules require a default
+value; optional fields are `values`, `minimum`, `maximum`, `pattern` (string regex), and
+`elementType: @"number"` for numeric arrays. Booleans and numbers remain distinct.
+Strings, string arrays, numeric arrays and string-to-string dictionaries are supported;
+arbitrary nested objects and credentials are outside this interface. Files are limited
+to 1 MB. Unknown modules/keys are skipped; malformed known values reject the entire
+import. Preferences are merged without replacing YouTube's defaults domain. Registered
+modules must be available before opening the transfer actions. Settings that are cached
+by a tweak take effect after restarting the app.
+
 ## Screenshots
 
 <p align="center">
