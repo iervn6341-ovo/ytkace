@@ -16,6 +16,7 @@ YTKACE_FILES = \
 	Tweak/Runtime/SettingsTransfer.mm \
 	Tweak/Runtime/Localization.mm \
 	Tweak/Runtime/TelemetryAudit.mm \
+	Tweak/Runtime/TelemetryRecord.mm \
 	Tweak/UI/Assets.mm \
 	Tweak/UI/Notice.mm \
 	Tweak/UI/SystemMenu.mm \

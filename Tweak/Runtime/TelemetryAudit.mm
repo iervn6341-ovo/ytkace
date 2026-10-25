@@ -1,4 +1,5 @@
 #import "TelemetryAudit.h"
+#import "TelemetryRecord.h"
 
 #import "Hooking.h"
 #import "Preferences.h"
@@ -28,6 +29,7 @@ static NSURL *YTKACETelemetryAuditURL(void) {
         [NSFileManager.defaultManager createDirectoryAtURL:directory
                                withIntermediateDirectories:YES
                                                 attributes:nil error:nil];
+        [directory setResourceValue:@YES forKey:NSURLIsExcludedFromBackupKey error:nil];
         URL = [directory URLByAppendingPathComponent:@"outbound.ndjson"];
     });
     return URL;
@@ -49,92 +51,56 @@ static NSArray<NSDictionary *> *YTKACETelemetryAuditRecordsLocked(void) {
     return records;
 }
 
-static NSString *YTKACETelemetryServiceForHost(NSString *host) {
-    NSString *value = host.lowercaseString;
-    if ([value hasSuffix:@"youtube.com"] || [value hasSuffix:@"youtubei.googleapis.com"] ||
-        [value hasSuffix:@"googlevideo.com"] || [value hasSuffix:@"googleapis.com"] ||
-        [value hasSuffix:@"google.com"] || [value hasSuffix:@"gstatic.com"] ||
-        [value hasSuffix:@"ggpht.com"]) {
-        return @"Google / YouTube";
-    }
-    if ([value isEqualToString:@"sponsor.ajay.app"]) return @"SponsorBlock";
-    if ([value isEqualToString:@"dearrow-thumb.ajay.app"]) return @"DeArrow";
-    return @"Other";
-}
-
-static NSArray<NSString *> *YTKACETelemetryHeaderClasses(NSDictionary *headers) {
-    NSMutableOrderedSet<NSString *> *classes = [NSMutableOrderedSet orderedSet];
-    for (id rawKey in headers) {
-        if (![rawKey isKindOfClass:NSString.class]) continue;
-        NSString *key = [rawKey lowercaseString];
-        if ([key containsString:@"authorization"] || [key containsString:@"identity"] ||
-            [key containsString:@"authuser"]) {
-            [classes addObject:@"authentication"];
-        } else if ([key isEqualToString:@"cookie"] || [key isEqualToString:@"set-cookie"]) {
-            [classes addObject:@"cookies"];
-        } else if ([key containsString:@"language"] || [key containsString:@"locale"]) {
-            [classes addObject:@"locale"];
-        } else if ([key containsString:@"client"] || [key containsString:@"version"] ||
-                   [key containsString:@"visitor"] || [key isEqualToString:@"user-agent"]) {
-            [classes addObject:@"client metadata"];
-        } else {
-            [classes addObject:@"other headers"];
-        }
-    }
-    return classes.array;
-}
-
 static NSString *YTKACETelemetryTimestamp(void) {
     static NSISO8601DateFormatter *formatter;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{ formatter = [NSISO8601DateFormatter new]; });
-    return [formatter stringFromDate:NSDate.date];
+    @synchronized (formatter) { return [formatter stringFromDate:NSDate.date]; }
 }
 
 static void YTKACERecordTelemetryRequest(NSURLRequest *request) {
-    NSURL *URL = request.URL;
-    NSString *host = URL.host.lowercaseString;
-    if (host.length == 0) return;
-    NSDictionary *record = @{
-        @"timestamp": YTKACETelemetryTimestamp(),
-        @"host": host,
-        @"service": YTKACETelemetryServiceForHost(host),
-        @"method": request.HTTPMethod.uppercaseString ?: @"GET",
-        @"bodyBytes": @(request.HTTPBody.length),
-        @"headerClasses": YTKACETelemetryHeaderClasses(request.allHTTPHeaderFields ?: @{})
-    };
-    NSData *encoded = [NSJSONSerialization dataWithJSONObject:record options:0 error:nil];
-    if (encoded.length == 0) return;
+    if (!request.URL.host.length) return;
+    NSDictionary *snapshot = YTKACETelemetrySnapshot(request, YTKACETelemetryAuditDetailsEnabled());
     dispatch_async(YTKACETelemetryAuditQueue(), ^{
-        NSURL *URL = YTKACETelemetryAuditURL();
-        NSData *existing = [NSData dataWithContentsOfURL:URL] ?: NSData.data;
-        NSMutableData *updated = [existing mutableCopy];
-        [updated appendData:encoded];
-        [updated appendData:[@"\n" dataUsingEncoding:NSUTF8StringEncoding]];
-        if (updated.length > YTKACETelemetryAuditLimit) {
-            NSUInteger keep = YTKACETelemetryAuditLimit * 3 / 4;
-            NSData *tail = [updated subdataWithRange:
-                NSMakeRange(updated.length - keep, keep)];
-            NSRange firstNewline = [tail rangeOfData:[@"\n" dataUsingEncoding:NSUTF8StringEncoding]
-                                             options:0 range:NSMakeRange(0, tail.length)];
-            if (firstNewline.location != NSNotFound) {
-                tail = [tail subdataWithRange:NSMakeRange(NSMaxRange(firstNewline),
-                                                          tail.length - NSMaxRange(firstNewline))];
-            }
-            updated = [tail mutableCopy];
+        NSDictionary *record = YTKACETelemetryFinalize(snapshot);
+        NSData *encoded = [NSJSONSerialization dataWithJSONObject:record options:0 error:nil];
+        if (!encoded.length) return;
+        NSURL *url = YTKACETelemetryAuditURL();
+        NSMutableData *line = [encoded mutableCopy];
+        [line appendData:[@"\n" dataUsingEncoding:NSUTF8StringEncoding]];
+        if (![NSFileManager.defaultManager fileExistsAtPath:url.path]) {
+            NSDictionary *attributes = @{};
+#if TARGET_OS_IOS
+            attributes = @{NSFileProtectionKey: NSFileProtectionCompleteUntilFirstUserAuthentication};
+#endif
+            [NSFileManager.defaultManager createFileAtPath:url.path contents:NSData.data attributes:attributes];
         }
-        [updated writeToURL:URL atomically:YES];
+        NSFileHandle *handle = [NSFileHandle fileHandleForWritingToURL:url error:nil];
+        if (!handle) return;
+        unsigned long long offset = 0;
+        BOOL wrote = [handle seekToEndReturningOffset:&offset error:nil] && [handle writeData:line error:nil];
+        [handle closeAndReturnError:nil];
+        unsigned long long size = wrote ? offset + line.length : 0;
+        if (size > YTKACETelemetryAuditLimit) {
+            NSData *existing = [NSData dataWithContentsOfURL:url];
+            NSUInteger keep = MIN(existing.length, YTKACETelemetryAuditLimit * 3 / 4);
+            NSData *tail = [existing subdataWithRange:NSMakeRange(existing.length - keep, keep)];
+            NSRange newline = [tail rangeOfData:[@"\n" dataUsingEncoding:NSUTF8StringEncoding] options:0 range:NSMakeRange(0, tail.length)];
+            if (newline.location != NSNotFound) tail = [tail subdataWithRange:NSMakeRange(NSMaxRange(newline), tail.length - NSMaxRange(newline))];
+            [tail writeToURL:url atomically:YES];
+        }
     });
 }
 
 static void YTKACETelemetryTaskResume(NSURLSessionTask *receiver, SEL selector) {
-    if (YTKACETelemetryAuditEnabled() &&
-        objc_getAssociatedObject(receiver, YTKACETelemetryAuditTaskKey) == nil) {
-        objc_setAssociatedObject(receiver, YTKACETelemetryAuditTaskKey, @YES,
-                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        NSURLRequest *request = receiver.currentRequest ?: receiver.originalRequest;
-        if (request != nil) YTKACERecordTelemetryRequest(request);
-    }
+    @try {
+        if (YTKACETelemetryAuditEnabled() &&
+            objc_getAssociatedObject(receiver, YTKACETelemetryAuditTaskKey) == nil) {
+            objc_setAssociatedObject(receiver, YTKACETelemetryAuditTaskKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            NSURLRequest *request = receiver.currentRequest ?: receiver.originalRequest;
+            if (request != nil) YTKACERecordTelemetryRequest(request);
+        }
+    } @catch (__unused NSException *exception) { /* Observation must not prevent task execution. */ }
     if (OriginalNSURLSessionTaskResume != NULL) {
         ((void (*)(id, SEL))OriginalNSURLSessionTaskResume)(receiver, selector);
     }
@@ -146,6 +112,21 @@ BOOL YTKACETelemetryAuditEnabled(void) {
 
 void YTKACESetTelemetryAuditEnabled(BOOL enabled) {
     YTKACESetPreference(YTKACETelemetryAuditKey, enabled);
+}
+
+BOOL YTKACETelemetryAuditDetailsEnabled(void) {
+    return YTKACEFeatureEnabled(@"YTKACE.Preference.Privacy.TelemetryAuditDetails");
+}
+
+void YTKACESetTelemetryAuditDetailsEnabled(BOOL enabled) {
+    YTKACESetPreference(@"YTKACE.Preference.Privacy.TelemetryAuditDetails", enabled);
+}
+
+void YTKACELoadTelemetryAuditRecords(void (^completion)(NSArray<NSDictionary *> *records)) {
+    dispatch_async(YTKACETelemetryAuditQueue(), ^{
+        NSArray *records = YTKACETelemetryAuditRecordsLocked();
+        dispatch_async(dispatch_get_main_queue(), ^{ if (completion) completion(records); });
+    });
 }
 
 NSUInteger YTKACETelemetryAuditRecordCount(void) {
@@ -170,13 +151,13 @@ static NSDictionary *YTKACETelemetryAuditReport(void) {
         hosts[host] = @([hosts[host] unsignedIntegerValue] + 1);
     }
     return @{
-        @"schemaVersion": @1,
+        @"schemaVersion": @2,
         @"generatedAt": YTKACETelemetryTimestamp(),
         @"scope": @"Outbound NSURLSession tasks observed inside the YouTube process.",
         @"limitations": @[
             @"This is an observation log, not proof of what a remote server stores.",
             @"Requests sent through other networking stacks may not appear.",
-            @"URL paths and queries, header values, cookies, credentials, and request bodies are never recorded."
+            @"Metadata mode excludes paths, queries, header values and bodies. Optional details contain redacted path/query/header and bounded JSON previews; credentials and raw body bytes are excluded."
         ],
         @"summary": @{
             @"observedRequests": @(records.count),
@@ -199,7 +180,7 @@ NSString *YTKACETelemetryAuditReportText(void) {
         @"YTKACE Telemetry Audit\nGenerated: %@\nObserved requests: %@\n\n",
         report[@"generatedAt"], summary[@"observedRequests"]];
     [text appendString:@"Scope\nOutbound NSURLSession tasks observed inside the YouTube process.\n\n"];
-    [text appendString:@"Privacy\nNo URL paths or queries, header values, cookies, credentials, or request bodies are recorded.\n\n"];
+    [text appendString:@"Privacy\nMetadata only by default. Optional request details contain redacted path/query/header and bounded JSON previews. Raw body bytes and credentials are excluded.\n\n"];
     [text appendString:@"Requests by service\n"];
     NSDictionary *services = summary[@"byService"];
     for (NSString *service in [services.allKeys sortedArrayUsingSelector:@selector(localizedCaseInsensitiveCompare:)]) {
@@ -211,6 +192,10 @@ NSString *YTKACETelemetryAuditReportText(void) {
         [text appendFormat:@"%@ | %@ | %@ | %@ | %@ bytes | %@\n",
             record[@"timestamp"], record[@"service"], record[@"host"],
             record[@"method"], record[@"bodyBytes"], headers.length == 0 ? @"no headers" : headers];
+        if ([record[@"detailsCaptured"] boolValue]) {
+            NSData *detail = [NSJSONSerialization dataWithJSONObject:record options:NSJSONWritingPrettyPrinted | NSJSONWritingSortedKeys error:nil];
+            if (detail) [text appendFormat:@"%@\n\n", [[NSString alloc] initWithData:detail encoding:NSUTF8StringEncoding]];
+        }
     }
     return text;
 }

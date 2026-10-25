@@ -6,6 +6,9 @@ NS_ASSUME_NONNULL_BEGIN
 /// user opts in through the Telemetry Audit settings page.
 FOUNDATION_EXPORT void YTKACEInstallTelemetryAudit(void);
 FOUNDATION_EXPORT BOOL YTKACETelemetryAuditEnabled(void);
+FOUNDATION_EXPORT BOOL YTKACETelemetryAuditDetailsEnabled(void);
+FOUNDATION_EXPORT void YTKACESetTelemetryAuditDetailsEnabled(BOOL enabled);
+FOUNDATION_EXPORT void YTKACELoadTelemetryAuditRecords(void (^completion)(NSArray<NSDictionary *> *records));
 FOUNDATION_EXPORT void YTKACESetTelemetryAuditEnabled(BOOL enabled);
 FOUNDATION_EXPORT NSUInteger YTKACETelemetryAuditRecordCount(void);
 FOUNDATION_EXPORT NSString *YTKACETelemetryAuditReportText(void);

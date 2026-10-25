@@ -66,6 +66,7 @@ void YTKACERegisterDefaults(void) {
         YTKACESpeedKey: @NO,
         YTKACELoopKey: @NO,
         YTKACETelemetryAuditKey: @NO,
+        @"YTKACE.Preference.Privacy.TelemetryAuditDetails": @NO,
         @"YTKACE.Preference.Playback.CustomDoubleTap": @NO,
         @"YTKACE.Preference.Playback.TapToSeek": @NO,
         @"YTKACE.Preference.Sharing.NativeSheet": @NO,

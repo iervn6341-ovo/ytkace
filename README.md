@@ -63,6 +63,18 @@ and sleep timers. Menus use an explicit `UIGlassEffect` background when supporte
 respect Reduce Transparency, and retain their original action callbacks. This does
 not replace every server-driven YouTube menu; native host menus need separate adapters.
 
+### Telemetry Audit
+
+The audit page includes an observed-request list with host/method/service/path search
+and a selectable, copyable detail page. Recording and request-detail capture both
+default to off. Optional details sanitize URL/query/header fields and bounded JSON
+bodies before writing; raw credentials, input streams, compressed and binary bodies
+are not stored. Only selected client fields and boolean flags retain values. Existing
+metadata-only entries remain readable but cannot recover omitted content. The browser
+refreshes from a background snapshot while visible at the top, with manual refresh
+available when scrolled. Logs rotate at 768 KB. This remains a passive NSURLSession
+resume observer, not a full response/network capture.
+
 ### Settings transfer for integrated tweaks
 
 General contains Copy/Paste Settings and JSON file import/export. Imports preview the
