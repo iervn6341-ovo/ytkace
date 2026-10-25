@@ -90,8 +90,13 @@ static UIView *YTKACEFindSettingsControl(UIView *overlay, UIView *excluded) {
     return best;
 }
 
-static BOOL YTKACEKeepControlsVisible(void) {
-    return YTKACEFeatureEnabled(@"YTKACE.Preference.Overlay.AlwaysShowControls");
+static BOOL YTKACEKeepControlsVisible(UIView *overlay) {
+    if (!YTKACEFeatureEnabled(@"YTKACE.Preference.Overlay.AlwaysShowControls") ||
+        !overlay.window || CGRectIsEmpty(overlay.bounds)) return NO;
+    for (UIView *ancestor = overlay; ancestor; ancestor = ancestor.superview)
+        if (ancestor.hidden) return NO;
+    CGRect frame = [overlay convertRect:overlay.bounds toView:overlay.window];
+    return CGRectIntersectsRect(frame, overlay.window.bounds);
 }
 
 static void YTKACESetHostedControlsHidden(UIView *view, BOOL hidden) {
@@ -123,7 +128,7 @@ static void YTKACEUpdateHostedVisibility(UIView *receiver, BOOL visible) {
 }
 
 static void YTKACEControlsSetOverlayVisible(UIView *receiver, SEL selector, BOOL visible) {
-    visible = visible || YTKACEKeepControlsVisible();
+    visible = visible || YTKACEKeepControlsVisible(receiver);
     if (OriginalControlsSetOverlayVisible != NULL) {
         ((void (*)(id, SEL, BOOL))OriginalControlsSetOverlayVisible)(receiver, selector, visible);
     }
@@ -131,7 +136,7 @@ static void YTKACEControlsSetOverlayVisible(UIView *receiver, SEL selector, BOOL
 }
 
 static void YTKACEControlsSetControlsVisible(UIView *receiver, SEL selector, BOOL visible) {
-    visible = visible || YTKACEKeepControlsVisible();
+    visible = visible || YTKACEKeepControlsVisible(receiver);
     if (OriginalControlsSetControlsVisible != NULL) {
         ((void (*)(id, SEL, BOOL))OriginalControlsSetControlsVisible)(receiver, selector, visible);
     }
@@ -139,7 +144,7 @@ static void YTKACEControlsSetControlsVisible(UIView *receiver, SEL selector, BOO
 }
 
 static void YTKACEVideoSetOverlayVisible(UIView *receiver, SEL selector, BOOL visible) {
-    visible = visible || YTKACEKeepControlsVisible();
+    visible = visible || YTKACEKeepControlsVisible(receiver);
     if (OriginalVideoSetOverlayVisible != NULL) {
         ((void (*)(id, SEL, BOOL))OriginalVideoSetOverlayVisible)(receiver, selector, visible);
     }
@@ -147,7 +152,7 @@ static void YTKACEVideoSetOverlayVisible(UIView *receiver, SEL selector, BOOL vi
 }
 
 static void YTKACEVideoSetControlsVisible(UIView *receiver, SEL selector, BOOL visible) {
-    visible = visible || YTKACEKeepControlsVisible();
+    visible = visible || YTKACEKeepControlsVisible(receiver);
     if (OriginalVideoSetControlsVisible != NULL) {
         ((void (*)(id, SEL, BOOL))OriginalVideoSetControlsVisible)(receiver, selector, visible);
     }
@@ -155,7 +160,7 @@ static void YTKACEVideoSetControlsVisible(UIView *receiver, SEL selector, BOOL v
 }
 
 static void YTKACEControlsSetHidden(UIView *receiver, SEL selector, BOOL hidden) {
-    hidden = hidden && !YTKACEKeepControlsVisible();
+    // Structural hides select the active overlay/layout; they are not auto-fade.
     if (OriginalControlsSetHidden != NULL) {
         ((void (*)(id, SEL, BOOL))OriginalControlsSetHidden)(receiver, selector, hidden);
     }
@@ -163,6 +168,17 @@ static void YTKACEControlsSetHidden(UIView *receiver, SEL selector, BOOL hidden)
 }
 
 static UIStackView *YTKACEStackForOverlay(UIView *overlay) {
+    static NSHashTable<UIView *> *overlays;
+    static dispatch_once_t observerToken;
+    dispatch_once(&observerToken, ^{
+        overlays = [NSHashTable weakObjectsHashTable];
+        [NSNotificationCenter.defaultCenter addObserverForName:YTKACEPreferencesDidChangeNotification
+            object:nil queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification *note) {
+                // UIKit coalesces these requests; never force synchronous layout from settings.
+                for (UIView *view in overlays.allObjects) [view setNeedsLayout];
+            }];
+    });
+    [overlays addObject:overlay];
     UIStackView *stack = objc_getAssociatedObject(overlay, YTKACEOverlayStackAssociation);
     if (stack != nil) {
         return stack;
@@ -172,7 +188,7 @@ static UIStackView *YTKACEStackForOverlay(UIView *overlay) {
     stack.axis = UILayoutConstraintAxisHorizontal;
     stack.alignment = UIStackViewAlignmentCenter;
     stack.distribution = UIStackViewDistributionFill;
-    stack.spacing = 4.0;
+    stack.spacing = 6.0;
     stack.layoutMargins = UIEdgeInsetsZero;
     stack.layoutMarginsRelativeArrangement = YES;
     stack.backgroundColor = UIColor.clearColor;
@@ -209,27 +225,41 @@ static UIImage *YTKACEPlayerGlyph(UIImage *image) {
     return cached;
 }
 
+@interface YTKACEPlayerControlButton : UIButton
+@property(nonatomic) BOOL featureHidden;
+@property(nonatomic) BOOL layoutHidden;
+@end
+@implementation YTKACEPlayerControlButton
+- (void)setHidden:(BOOL)hidden {
+    _featureHidden = hidden;
+    [super setHidden:hidden || _layoutHidden];
+}
+- (void)setLayoutHidden:(BOOL)hidden {
+    _layoutHidden = hidden;
+    [super setHidden:hidden || _featureHidden];
+}
+- (CGRect)imageRectForContentRect:(CGRect)contentRect {
+    if (!self.currentImage) return CGRectZero;
+    CGFloat extent = MIN(24.0, MIN(CGRectGetWidth(contentRect), CGRectGetHeight(contentRect)));
+    return CGRectMake(CGRectGetMidX(contentRect) - extent / 2, CGRectGetMidY(contentRect) - extent / 2, extent, extent);
+}
+- (CGRect)titleRectForContentRect:(CGRect)contentRect { return CGRectInset(contentRect, 2, 0); }
+- (void)setHighlighted:(BOOL)highlighted {
+    [super setHighlighted:highlighted];
+    self.imageView.alpha = highlighted ? 0.6 : 1.0;
+    self.titleLabel.alpha = highlighted ? 0.6 : 1.0;
+}
+@end
+
 static UIButton *YTKACENativePlayerButton(UIView *overlay, NSString *identifier,
                                          NSString *symbolName) {
+    (void)overlay;
     UIImageSymbolConfiguration *configuration = [UIImageSymbolConfiguration
         configurationWithPointSize:24.0 weight:UIImageSymbolWeightRegular];
     UIImage *image = YTKACEPlayerGlyph([UIImage systemImageNamed:symbolName withConfiguration:configuration]);
-    UIButton *button = nil;
-    SEL factory = NSSelectorFromString(@"buttonWithImage:accessibilityLabel:verticalContentPadding:");
-    if ([overlay respondsToSelector:factory]) {
-        id candidate = ((id (*)(id, SEL, id, id, CGFloat))objc_msgSend)(
-            overlay, factory, image, identifier, 10.0);
-        if ([candidate isKindOfClass:UIButton.class]) button = candidate;
-    }
-    if (button == nil) {
-        Class nativeClass = NSClassFromString(@"YTQTMButton");
-        SEL iconFactory = NSSelectorFromString(@"iconButton");
-        if ([nativeClass respondsToSelector:iconFactory]) {
-            id candidate = ((id (*)(id, SEL))objc_msgSend)(nativeClass, iconFactory);
-            if ([candidate isKindOfClass:UIButton.class]) button = candidate;
-        }
-    }
-    if (button == nil) button = [UIButton buttonWithType:UIButtonTypeSystem];
+    // Private YT factories apply additional internal padding and can shrink a
+    // 24pt image to ~10pt. Keep a public UIKit button's glyph and hit area separate.
+    UIButton *button = [YTKACEPlayerControlButton buttonWithType:UIButtonTypeCustom];
     button.accessibilityIdentifier = identifier;
     button.accessibilityLabel = identifier;
     button.tintColor = UIColor.whiteColor;
@@ -238,14 +268,11 @@ static UIButton *YTKACENativePlayerButton(UIView *overlay, NSString *identifier,
     button.imageView.contentMode = UIViewContentModeScaleAspectFit;
     button.clipsToBounds = YES;
     button.translatesAutoresizingMaskIntoConstraints = NO;
-    [button.widthAnchor constraintEqualToConstant:44.0].active = YES;
+    NSLayoutConstraint *width = [button.widthAnchor constraintEqualToConstant:44.0];
+    // UIStackView installs a required zero-width constraint for hidden items.
+    width.priority = UILayoutPriorityRequired - 1;
+    width.active = YES;
     [button.heightAnchor constraintEqualToConstant:44.0].active = YES;
-    SEL sizing = NSSelectorFromString(@"setSizeWithPaddingAndInsets:");
-    if ([button respondsToSelector:sizing]) ((void (*)(id, SEL, BOOL))objc_msgSend)(button, sizing, NO);
-    SEL hitTarget = NSSelectorFromString(@"setMinHitTargetSize:");
-    if ([button respondsToSelector:hitTarget]) ((void (*)(id, SEL, CGFloat))objc_msgSend)(button, hitTarget, 44.0);
-    SEL feedback = NSSelectorFromString(@"enableNewTouchFeedback");
-    if ([button respondsToSelector:feedback]) ((void (*)(id, SEL))objc_msgSend)(button, feedback);
     return button;
 }
 
@@ -274,17 +301,20 @@ UIButton *YTKACEOverlayButton(UIStackView *stack,
     return button;
 }
 
-static void YTKACEAvoidNativeControls(UIView *view, UIView *overlay,
-                                      UIStackView *stack, CGRect band,
-                                      CGFloat *left) {
-    if (view == stack || view.hidden || view.alpha < 0.05) return;
-    if ([view isKindOfClass:UIControl.class]) {
+static void YTKACECollectNativeControls(UIView *view, UIView *overlay,
+                                        UIStackView *stack, std::vector<YTPCFrame>& obstacles,
+                                        NSUInteger depth = 0) {
+    if (view == stack || view.hidden || view.alpha < 0.05 || depth > 12 || obstacles.size() > 128) return;
+    NSString *name = NSStringFromClass(view.class);
+    if ([view isKindOfClass:UIControl.class] || view.gestureRecognizers.count ||
+        [name containsString:@"TransportControls"] || [name containsString:@"PlaybackButton"] ||
+        [name containsString:@"PlayPause"]) {
         CGRect frame = [view convertRect:view.bounds toView:overlay];
         // Ignore full-player tap-catcher buttons, not actual transport controls.
-        if (CGRectGetWidth(frame) <= 100 && CGRectGetHeight(frame) <= 100 &&
-            CGRectIntersectsRect(frame, band)) *left = MAX(*left, CGRectGetMaxX(frame) + 4.0);
+        if (CGRectGetWidth(frame) <= 160 && CGRectGetHeight(frame) <= 160)
+            obstacles.push_back({frame.origin.x, frame.origin.y, frame.size.width, frame.size.height});
     }
-    for (UIView *child in view.subviews) YTKACEAvoidNativeControls(child, overlay, stack, band, left);
+    for (UIView *child in view.subviews) YTKACECollectNativeControls(child, overlay, stack, obstacles, depth + 1);
 }
 
 static void YTKACELayoutPlayerButtons(UIView *overlay, UIStackView *stack) {
@@ -295,7 +325,6 @@ static void YTKACELayoutPlayerButtons(UIView *overlay, UIStackView *stack) {
         UIButton *button = (UIButton *)view;
         if ([button.accessibilityIdentifier isEqualToString:YTKACEOverflowIdentifier]) {
             more = button;
-            more.hidden = YES;
             continue;
         }
         for (NSNumber *state in @[@(UIControlStateNormal), @(UIControlStateSelected), @(UIControlStateHighlighted)]) {
@@ -303,7 +332,9 @@ static void YTKACELayoutPlayerButtons(UIView *overlay, UIStackView *stack) {
             UIImage *glyph = YTKACEPlayerGlyph(image);
             if (image != glyph) [button setImage:glyph forState:state.unsignedIntegerValue];
         }
-        if (!button.hidden) [wanted addObject:button];
+        BOOL featureHidden = [button isKindOfClass:YTKACEPlayerControlButton.class]
+            ? ((YTKACEPlayerControlButton *)button).featureHidden : button.hidden;
+        if (!featureHidden) [wanted addObject:button];
     }
     CGRect safe = UIEdgeInsetsInsetRect(overlay.bounds, overlay.safeAreaInsets);
     CGFloat left = CGRectGetMinX(safe) + 8.0;
@@ -315,12 +346,25 @@ static void YTKACELayoutPlayerButtons(UIView *overlay, UIStackView *stack) {
         top = MAX(CGRectGetMinY(safe) + 4.0, CGRectGetMaxY(frame) + 4.0);
         right = MIN(right, CGRectGetMidX(frame) + 22.0);
     }
-    CGRect band = CGRectMake(left, top, MAX(0, right - left), 44.0);
-    YTKACEAvoidNativeControls(overlay, overlay, stack, band, &left);
-    auto plan = ytkace::planOverlay(left, right, top, CGRectGetMaxY(safe) - 8.0, wanted.count);
+    std::vector<YTPCFrame> obstacles;
+    YTKACECollectNativeControls(overlay, overlay, stack, obstacles);
+    // The native time label, timeline and fullscreen bar own the bottom band.
+    auto plan = ytkace::planOverlayAvoiding(left, right, top, CGRectGetMaxY(safe) - 56.0, wanted.count, obstacles);
     stack.hidden = !plan.fits;
-    if (!plan.fits) return;
-    for (NSUInteger index = plan.inlineCount; index < wanted.count; ++index) wanted[index].hidden = YES;
+    if (!plan.fits) {
+        for (UIView *view in stack.arrangedSubviews)
+            if ([view isKindOfClass:YTKACEPlayerControlButton.class]) ((YTKACEPlayerControlButton *)view).layoutHidden = YES;
+        CGRect empty = CGRectMake(CGRectGetMinX(safe), CGRectGetMinY(safe), 0, 44);
+        if (!CGRectEqualToRect(stack.frame, empty)) stack.frame = empty;
+        return;
+    }
+    for (NSUInteger index = 0; index < wanted.count; ++index) {
+        UIButton *button = wanted[index];
+        if ([button isKindOfClass:YTKACEPlayerControlButton.class])
+            ((YTKACEPlayerControlButton *)button).layoutHidden = index >= plan.inlineCount;
+        else button.hidden = index >= plan.inlineCount;
+    }
+    if (more != nil) ((YTKACEPlayerControlButton *)more).layoutHidden = plan.overflowCount == 0;
     if (plan.overflowCount != 0) {
         if (more == nil) {
             more = YTKACENativePlayerButton(overlay, YTKACEOverflowIdentifier, @"ellipsis");
@@ -347,8 +391,7 @@ static void YTKACELayoutPlayerButtons(UIView *overlay, UIStackView *stack) {
                 UIButton *source = weakMore;
                 UIButton *original = weakButton;
                 if (source == nil || original == nil || !original.enabled) return;
-                // Invoke only the feature action, not YTQTMButton's internal
-                // feedback targets. A visible sender keeps iPad popovers valid.
+                // A visible sender keeps feature popovers anchored on iPad.
                 void (^invoke)(UIButton *) = objc_getAssociatedObject(original, YTKACEPlayerActionAssociation);
                 if (invoke != nil) invoke(source);
             }];
@@ -361,9 +404,10 @@ static void YTKACELayoutPlayerButtons(UIView *overlay, UIStackView *stack) {
             objc_setAssociatedObject(more, YTKACEOverflowSignatureAssociation,
                                      [signature copy], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         }
-        more.hidden = NO;
+        ((YTKACEPlayerControlButton *)more).layoutHidden = NO;
     }
-    stack.frame = CGRectMake(plan.x, plan.y, plan.width, 44.0);
+    CGRect frame = CGRectMake(plan.x, plan.y, plan.width, 44.0);
+    if (!CGRectEqualToRect(stack.frame, frame)) stack.frame = frame;
 }
 
 static void YTKACEControlsOverlayLayout(UIView *receiver, SEL selector) {

@@ -101,7 +101,10 @@ BOOL YTKACEPresentSystemMenu(UIViewController *presenter, UIView *source,
         navigation.modalPresentationStyle = UIModalPresentationPopover;
         navigation.preferredContentSize = CGSizeMake(360.0, MIN(600.0, 100.0 + actions.count * 64.0));
         UIPopoverPresentationController *popover = navigation.popoverPresentationController;
-        popover.sourceView = source.window == presenter.view.window ? source : presenter.view;
+        BOOL usable = source && source.window == presenter.view.window && !CGRectIsEmpty(source.bounds);
+        for (UIView *view = source; usable && view; view = view.superview)
+            if (view.hidden || view.alpha < 0.05) usable = NO;
+        popover.sourceView = usable ? source : presenter.view;
         popover.sourceRect = popover.sourceView.bounds;
     } else {
         UISheetPresentationController *sheet = navigation.sheetPresentationController;

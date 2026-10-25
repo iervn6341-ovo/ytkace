@@ -32,4 +32,39 @@ int main() {
             assert(layout.width == slots * 44 + (slots - 1) * 4);
         }
     }
+    // Compact portrait player: prefer a complete free segment, not a row over transport controls.
+    const std::vector<YTPCFrame> native{{178, 86, 60, 60}, {277, 94, 44, 44}, {88, 94, 44, 44}};
+    auto packed = ytkace::planOverlayAvoiding(8, 406, 54, 177, 8, native);
+    assert(packed.fits && packed.overflowCount > 0);
+    YTPCFrame row{packed.x, packed.y, packed.width, 44};
+    for (auto obstacle : native) assert(!YTPCIntersects(row, YTPCExpand(obstacle, 6)));
+    // A fully obstructed/mini player must never push controls beyond its edges.
+    assert(!ytkace::planOverlayAvoiding(8, 120, 54, 98, 8, {{8, 54, 112, 44}}).fits);
+    for (int width = 160; width <= 900; width += 13) {
+        for (std::size_t count = 1; count <= 12; ++count) {
+            std::vector<YTPCFrame> controls{{width * 0.45, 88, 64, 64}, {width * 0.72, 92, 44, 44}};
+            auto layout = ytkace::planOverlayAvoiding(8, width - 8, 54, 180, count, controls);
+            if (!layout.fits) continue;
+            YTPCFrame result{layout.x, layout.y, layout.width, 44};
+            assert(YTPCContains({8, 54, double(width - 16), 126}, result));
+            for (auto obstacle : controls) assert(!YTPCIntersects(result, YTPCExpand(obstacle, 6)));
+            assert(layout.inlineCount + layout.overflowCount == count);
+        }
+    }
+    // Bottom buttons use the fullscreen coordinate space and retain a 44pt touch target.
+    YTPCFrame safe{4, 4, 406, 225}, fullscreen{372, 184, 36, 36};
+    YTPCFrame bottomNative[]{{8, 195, 84, 22}, fullscreen};
+    auto caption = YTPCPlaceBefore(safe, fullscreen, 44, 6, bottomNative, 2);
+    assert(YTPCValid(caption) && caption.width == 44 && YTPCContains(safe, caption));
+    for (auto obstacle : bottomNative) assert(!YTPCIntersects(caption, YTPCExpand(obstacle, 6)));
+    auto quality = YTPCPlaceBefore(safe, caption, 44, 6, bottomNative, 2);
+    assert(YTPCValid(quality) && !YTPCIntersects(caption, quality));
+    YTPCFrame blocked[]{{4, 180, 340, 44}};
+    assert(!YTPCValid(YTPCPlaceBefore(safe, fullscreen, 44, 6, blocked, 1)));
+    assert(!YTPCValid(YTPCPlaceBefore(safe, fullscreen, 24, 6, nullptr, 0)));
+    assert(!YTPCValid(YTPCPlaceBefore(safe, {NAN, 0, 44, 44}, 44, 6, nullptr, 0)));
+    // Fullscreen peekable hosts can have negative/nonzero origins relative to the player.
+    auto swappedHost = YTPCPlaceBefore({-56, -180, 788, 340}, {500, -4, 36, 36}, 44, 6, nullptr, 0);
+    assert(YTPCValid(swappedHost) && swappedHost.y == -8);
+    assert(YTPCContains({-56, -180, 788, 340}, swappedHost));
 }

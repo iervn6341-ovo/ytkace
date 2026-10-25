@@ -12,6 +12,7 @@ YTKACE_FILES = \
 	Tweak/Entry.mm \
 	Tweak/Runtime/Hooking.mm \
 	Tweak/Runtime/Preferences.mm \
+	Tweak/Runtime/OverlayVisibility.mm \
 	Tweak/Runtime/SettingsTransfer.mm \
 	Tweak/Runtime/Localization.mm \
 	Tweak/Runtime/TelemetryAudit.mm \

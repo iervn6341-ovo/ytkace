@@ -2,6 +2,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <vector>
+#include "PlayerControlGeometry.h"
 
 namespace ytkace {
 struct OverlayLayout {
@@ -31,5 +33,43 @@ inline OverlayLayout planOverlay(double left, double right, double top,
     result.y = top;
     result.fits = true;
     return result;
+}
+
+// Evaluate complete 44pt rows around native controls. Never shrink buttons to fit.
+inline OverlayLayout planOverlayAvoiding(double left, double right, double top, double bottom,
+                                         std::size_t count, const std::vector<YTPCFrame>& obstacles,
+                                         double extent = 44, double gap = 6) {
+    OverlayLayout best;
+    if (!planOverlay(left, right, top, bottom, count, extent, gap).fits) return best;
+    std::vector<double> rows{top};
+    for (auto obstacle : obstacles) if (YTPCValid(obstacle)) {
+        rows.push_back(obstacle.y - gap - extent);
+        rows.push_back(obstacle.y + obstacle.height + gap);
+    }
+    std::sort(rows.begin(), rows.end());
+    for (double y : rows) {
+        if (!std::isfinite(y) || y < top || y + extent > bottom) continue;
+        std::vector<std::pair<double, double>> blocked;
+        for (auto obstacle : obstacles) {
+            if (!YTPCValid(obstacle) || obstacle.y - gap >= y + extent || obstacle.y + obstacle.height + gap <= y) continue;
+            blocked.emplace_back(obstacle.x - gap, obstacle.x + obstacle.width + gap);
+        }
+        std::sort(blocked.begin(), blocked.end());
+        double cursor = left;
+        auto consider = [&](double end) {
+            auto plan = planOverlay(cursor, std::min(right, end), y, bottom, count, extent, gap);
+            if (!plan.fits) return;
+            if (!best.fits || plan.inlineCount > best.inlineCount ||
+                (plan.inlineCount == best.inlineCount && (plan.y < best.y ||
+                 (plan.y == best.y && plan.x > best.x)))) best = plan;
+        };
+        for (auto interval : blocked) {
+            consider(interval.first);
+            cursor = std::max(cursor, interval.second);
+            if (cursor >= right) break;
+        }
+        consider(right);
+    }
+    return best;
 }
 } // namespace ytkace

@@ -781,10 +781,10 @@ void YTKACEInstallSpeedHooks(void) {
                forState:UIControlStateNormal];
         [value setImage:nil forState:UIControlStateNormal];
         [value setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
-        value.titleLabel.font = [UIFont systemFontOfSize:13.0 weight:UIFontWeightMedium];
+        value.titleLabel.font = [UIFont systemFontOfSize:14.0 weight:UIFontWeightMedium];
         value.titleLabel.numberOfLines = 1;
-        value.titleLabel.adjustsFontSizeToFitWidth = YES;
-        value.titleLabel.minimumScaleFactor = 0.75;
+        value.titleLabel.adjustsFontSizeToFitWidth = NO;
+        value.titleLabel.minimumScaleFactor = 1.0;
         value.titleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
 
         BOOL hidden = !YTKACEFeatureEnabled(YTKACESpeedKey);

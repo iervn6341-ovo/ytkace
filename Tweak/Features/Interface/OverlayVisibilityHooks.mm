@@ -1,6 +1,7 @@
 #import "../../YTKACE.h"
 #import "../../Runtime/Hooking.h"
 #import "../../Runtime/Preferences.h"
+#import "../../Runtime/OverlayVisibility.h"
 #import "../../UI/OverlayButtonHost.h"
 
 #import <objc/message.h>
@@ -9,7 +10,6 @@
 #import <math.h>
 
 static const void *YTKACEOverlayHiddenAssociation = &YTKACEOverlayHiddenAssociation;
-static const void *YTKACEOverlayForcedAssociation = &YTKACEOverlayForcedAssociation;
 static const void *YTKACEOverlayEnabledAssociation = &YTKACEOverlayEnabledAssociation;
 static const void *YTKACEOverlayTransformAssociation = &YTKACEOverlayTransformAssociation;
 static const void *YTKACEDoubleTapAssociation = &YTKACEDoubleTapAssociation;
@@ -541,43 +541,33 @@ static void YTKACEHideProductPill(UIView *pill, BOOL hide) {
 }
 
 static void YTKACESetOverlayForcedVisible(UIView *view, BOOL forced) {
-    NSDictionary *baseline = objc_getAssociatedObject(
-        view,
-        YTKACEOverlayForcedAssociation
-    );
-    if (forced) {
-        if (baseline == nil) {
-            baseline = @{@"hidden": @(view.hidden), @"alpha": @(view.alpha)};
-            objc_setAssociatedObject(view,
-                                     YTKACEOverlayForcedAssociation,
-                                     baseline,
-                                     OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    YTKACEKeepNativeOverlayVisible((id<YTKACENativeVisibilityTarget>)view, forced);
+}
+
+static BOOL YTKACEIsOverlayAccessorTarget(UIView *view, NSArray<NSString *> *accessors) {
+    NSUInteger depth = 0;
+    for (UIView *ancestor = view.superview; ancestor && depth < 12; ancestor = ancestor.superview, ++depth) {
+        for (NSString *name in accessors) {
+            SEL selector = NSSelectorFromString(name);
+            if (![ancestor respondsToSelector:selector]) continue;
+            NSMethodSignature *signature = [ancestor methodSignatureForSelector:selector];
+            if (signature.numberOfArguments == 2 && signature.methodReturnType[0] == '@' &&
+                ((id (*)(id, SEL))objc_msgSend)(ancestor, selector) == view) return YES;
         }
-        view.hidden = NO;
-        view.alpha = 1.0;
-    } else if (baseline != nil) {
-        view.hidden = [baseline[@"hidden"] boolValue];
-        view.alpha = [baseline[@"alpha"] doubleValue];
-        objc_setAssociatedObject(view,
-                                 YTKACEOverlayForcedAssociation,
-                                 nil,
-                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
+    return NO;
 }
 
 static void YTKACEApplyOverlayBehavior(UIView *view) {
     NSString *token = YTKACEOverlayToken(view);
-    BOOL playPause = YTKACEOverlayTokenMatches(token, @[
-        @"playpause", @"play_pause", @"playbackbutton"
-    ]);
-    BOOL progress = YTKACEOverlayTokenMatches(token, @[
-        @"progress", @"scrubber", @"playerbar", @"player_bar"
-    ]);
-    BOOL control = [view isKindOfClass:UIControl.class] ||
-        YTKACEOverlayTokenMatches(token, @[@"control", @"button"]);
-    BOOL force = (YTKACEOverlayPreference(@"YTKACE.Preference.Overlay.AlwaysShowPlayPause") && playPause) ||
-        (YTKACEOverlayPreference(@"YTKACE.Preference.Overlay.AlwaysShowControls") && control) ||
-        (YTKACEFeatureEnabled(@"YTKACE.Preference.Overlay.ProgressAlwaysVisible") && progress);
+    BOOL keepPlay = YTKACEOverlayPreference(@"YTKACE.Preference.Overlay.AlwaysShowPlayPause");
+    BOOL keepProgress = YTKACEFeatureEnabled(@"YTKACE.Preference.Overlay.ProgressAlwaysVisible");
+    BOOL playPause = keepPlay && YTKACEIsOverlayAccessorTarget(view, @[@"playPauseButton"]);
+    BOOL progress = keepProgress && ([NSStringFromClass(view.class) isEqualToString:@"YTInlinePlayerBarContainerView"] ||
+        YTKACEIsOverlayAccessorTarget(view, @[@"playerBar", @"modularPlayerBar", @"segmentablePlayerBar"]));
+    // Keep-all is handled by native overlay visibility setters. Walking every
+    // descendant used to resurrect hidden replay/seek/legacy control variants.
+    BOOL force = playPause || progress;
     YTKACESetOverlayForcedVisible(view, force);
 
     BOOL previousNext = YTKACEOverlayTokenMatches(
@@ -621,7 +611,15 @@ static void YTKACEApplyOverlayBehavior(UIView *view) {
         view,
         YTKACEOverlayTransformAssociation
     );
-    if (YTKACEOverlayPreference(@"YTKACE.Preference.Overlay.CompactPreviousNext") && previousNext) {
+    BOOL nestedTransport = NO;
+    if (previousNext) for (UIView *parent = view.superview; parent; parent = parent.superview) {
+        if ([NSStringFromClass(parent.class) containsString:@"ControlsOverlay"]) break;
+        if (YTKACEOverlayTokenMatches(YTKACEOverlayToken(parent), YTKACEPreviousNextTokens())) {
+            nestedTransport = YES;
+            break;
+        }
+    }
+    if (YTKACEOverlayPreference(@"YTKACE.Preference.Overlay.CompactPreviousNext") && previousNext && !nestedTransport) {
         if (transform == nil) {
             objc_setAssociatedObject(view,
                                      YTKACEOverlayTransformAssociation,
@@ -669,6 +667,8 @@ static void YTKACEApplyOverlayBehavior(UIView *view) {
 }
 
 static void YTKACEApplyOverlayTree(UIView *view) {
+    if ([view.accessibilityIdentifier hasPrefix:@"YTKACE"] ||
+        [view.accessibilityIdentifier hasPrefix:@"YTVideoOverlay-"]) return;
     YTKACEApplyOverlayBehavior(view);
     YTKACESetOverlayHidden(view, YTKACEOverlayShouldHide(view));
     for (UIView *subview in view.subviews) {
