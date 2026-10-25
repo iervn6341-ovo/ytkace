@@ -55,6 +55,14 @@ To build both IPAs in one run, fill in the second URL field as well: the workflo
 Open the YTKACE tab and tap the gear, or open YouTube Settings and choose YTKACE.
 Both pages carry the same options, and the YouTube Settings section has a search bar.
 
+When the integrated CaptionIsland factory is loaded, **Caption Island** appears in this
+menu and search. The bridge resolves the factory on use, so standalone YTKACE has no
+hard dependency on CaptionIsland. **General → Use System Menus** selects UIKit list
+sheets/popovers for tweak-owned choices, download menus, library actions, transcripts
+and sleep timers. Menus use an explicit `UIGlassEffect` background when supported,
+respect Reduce Transparency, and retain their original action callbacks. This does
+not replace every server-driven YouTube menu; native host menus need separate adapters.
+
 ### Settings transfer for integrated tweaks
 
 General contains Copy/Paste Settings and JSON file import/export. Imports preview the

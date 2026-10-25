@@ -1,4 +1,5 @@
 #import "OverlayButtonHost.h"
+#import "SystemMenu.h"
 #import "../YTKACE.h"
 #import "../Runtime/Hooking.h"
 #import "../Runtime/Preferences.h"
@@ -472,6 +473,7 @@ void YTKACEPresentNativeSheet(NSString *title,
                               NSString *subtitle,
                               UIView *sourceView,
                               NSArray<NSDictionary *> *actions) {
+    if (YTKACEPresentSystemMenu(YTKACESheetPresenter(sourceView), sourceView, title, subtitle, actions)) return;
     Class actionClass = NSClassFromString(@"YTActionSheetAction");
     SEL makeSimple = NSSelectorFromString(@"actionWithTitle:iconImage:style:handler:");
     SEL makeDetailed = NSSelectorFromString(

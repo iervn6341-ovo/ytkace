@@ -1,5 +1,6 @@
 #import "YTKACESettingsSearch.h"
 #import "YTKACESettingsPages.h"
+#import "CaptionIslandIntegration.h"
 #import "../Runtime/Localization.h"
 #import "../UI/Assets.h"
 
@@ -12,6 +13,17 @@ static UIViewController *YTKACEControllerForPageID(NSString *pageID) {
 
 static NSArray<NSDictionary *> *YTKACESearchIndex(void) {
     NSMutableArray<NSDictionary *> *records = [NSMutableArray array];
+    if (YTKACEIntegratesCaptionIslandSettings()) {
+        NSString *title = YTKACELocalized(@"Caption Island");
+        NSString *subtitle = YTKACELocalized(@"Dynamic Island captions, lyrics, language priorities, and diagnostics");
+        NSDictionary *item = @{@"type": @"action", @"title": title, @"en": @"Caption Island",
+            @"subtitle": subtitle, @"action": [^(UIViewController *presenter) {
+                YTKACEOpenSettingsRecord(@{@"pageID": @"caption-island", @"row": @0, @"section": @0, @"entryOnly": @YES}, presenter);
+            } copy]};
+        [records addObject:@{@"en": @"Caption Island", @"item": item, @"pageID": @"caption-island",
+            @"pageTitle": title, @"header": @"", @"title": title, @"subtitle": subtitle,
+            @"section": @0, @"row": @0, @"entryOnly": @YES}];
+    }
     for (NSDictionary *page in YTKACEAllPageDefinitions()) {
         NSArray *sections = page[@"sections"];
         NSArray *headers = page[@"headers"];
@@ -90,6 +102,7 @@ void YTKACEOpenSettingsRecord(NSDictionary *record, UIViewController *presenter)
     } else {
         return;
     }
+    if ([record[@"entryOnly"] boolValue]) return;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.45 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         if (![page isKindOfClass:UITableViewController.class]) return;

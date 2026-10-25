@@ -1,5 +1,6 @@
 #import "DownloadCoordinator.h"
 #import "../../UI/OverlayButtonHost.h"
+#import "../../UI/SystemMenu.h"
 #import "../../YTKACE.h"
 #import "DownloadLog.h"
 #import "DownloadSponsor.h"
@@ -557,6 +558,9 @@ void YTKACESaveVideoToPhotosFile(NSURL *url,
         responder = responder.nextResponder;
     }
     presenter = sourceController ?: presenter;
+    UIViewController *systemPresenter = [presenter isKindOfClass:UIViewController.class]
+        ? presenter : [self topViewController];
+    if (YTKACEPresentSystemMenu(systemPresenter, sourceView, title, subtitle, actions)) return;
     Class actionClass = NSClassFromString(@"YTActionSheetAction");
     SEL makeDetailed = NSSelectorFromString(
         @"actionWithTitle:iconImage:secondaryIconImage:accessibilityIdentifier:handler:");

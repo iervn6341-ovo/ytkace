@@ -9,6 +9,7 @@
 #import "../UI/Assets.h"
 #import "../UI/Notice.h"
 #import "../UI/OverlayButtonHost.h"
+#import "../UI/SystemMenu.h"
 #import "../Features/Downloads/YTKACEDownloadPlayerController.h"
 #import "../Features/Downloads/YTKACEAudioPlayerController.h"
 #import "../Features/Downloads/MediaArtwork.h"
@@ -1025,7 +1026,8 @@ referenceSizeForHeaderInSection:(NSInteger)section {
 - (BOOL)presentNativeLibrarySheetWithTitle:(NSString *)title
                                     actions:(NSArray *)actions
                                  sourceView:(UIView *)sourceView {
-    (void)sourceView;
+    if (YTKACEFeatureEnabled(@"YTKACE.Preference.Interface.SystemMenus"))
+        return YTKACEPresentSystemMenu(self, sourceView, title, nil, actions);
     id sheet = YTKACEMakeSheet(@"", title);
     if (sheet == nil) return NO;
     @try {
@@ -1463,33 +1465,28 @@ didSelectItemAtIndexPath:(NSIndexPath *)indexPath {
                        asset:(NSString *)asset
                       symbol:(NSString *)symbol
                      handler:(void (^)(UIAlertAction *action))handler {
+    UIImage *image = [YTKACEAssetImage(asset, symbol)
+        imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+    if (YTKACEFeatureEnabled(@"YTKACE.Preference.Interface.SystemMenus")) {
+        BOOL selected = [title hasPrefix:@"\u2713  "];
+        NSMutableDictionary *model = [@{@"title": selected ? [title substringFromIndex:3] : title,
+            @"selected": @(selected), @"destructive": @([symbol hasPrefix:@"trash"]),
+            @"handler": [^{ if (handler) handler(nil); } copy]} mutableCopy];
+        if (image) model[@"icon"] = image;
+        return model;
+    }
     Class actionClass = NSClassFromString(@"YTActionSheetAction");
     SEL selector = NSSelectorFromString(@"actionWithTitle:iconImage:style:handler:");
     if (actionClass == Nil || ![actionClass respondsToSelector:selector]) {
         return nil;
     }
-    UIImage *image = [YTKACEAssetImage(asset, symbol)
-        imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
     return ((id (*)(id, SEL, id, id, NSInteger, id))objc_msgSend)(
         actionClass, selector, title, image, 0, handler
     );
 }
 
 - (BOOL)showNativeMenuForURL:(NSURL *)url sourceView:(UIView *)sourceView {
-    (void)sourceView;
     NSString *title = url.lastPathComponent.stringByDeletingPathExtension;
-    id sheet = YTKACEMakeSheet(@"", title);
-    if (sheet == nil) {
-        return NO;
-    }
-    @try {
-        id header = [sheet valueForKey:@"_headerView"];
-        SEL divider = NSSelectorFromString(@"showHeaderDivider");
-        if ([header respondsToSelector:divider]) {
-            ((void (*)(id, SEL))objc_msgSend)(header, divider);
-        }
-    } @catch (__unused NSException *exception) {
-    }
     NSArray *actions = @[
         [self nativeActionWithTitle:YTKACELocalized(@"Default Player") asset:@"ig_icon_play_outline_24_Normal"
                              symbol:@"play" handler:^(__unused UIAlertAction *action) {
@@ -1524,6 +1521,20 @@ didSelectItemAtIndexPath:(NSIndexPath *)indexPath {
             [self confirmDeleteAll];
         }] ?: NSNull.null
     ];
+    if (YTKACEFeatureEnabled(@"YTKACE.Preference.Interface.SystemMenus"))
+        return YTKACEPresentSystemMenu(self, sourceView, title, nil, actions);
+    id sheet = YTKACEMakeSheet(@"", title);
+    if (sheet == nil) {
+        return NO;
+    }
+    @try {
+        id header = [sheet valueForKey:@"_headerView"];
+        SEL divider = NSSelectorFromString(@"showHeaderDivider");
+        if ([header respondsToSelector:divider]) {
+            ((void (*)(id, SEL))objc_msgSend)(header, divider);
+        }
+    } @catch (__unused NSException *exception) {
+    }
     SEL addAction = NSSelectorFromString(@"addAction:");
     for (id action in actions) {
         if (action != NSNull.null && [sheet respondsToSelector:addAction]) {

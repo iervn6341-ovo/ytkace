@@ -17,6 +17,7 @@ YTKACE_FILES = \
 	Tweak/Runtime/TelemetryAudit.mm \
 	Tweak/UI/Assets.mm \
 	Tweak/UI/Notice.mm \
+	Tweak/UI/SystemMenu.mm \
 	Tweak/UI/OverlayButtonHost.mm \
 	Tweak/Features/Ads/AdsHooks.mm \
 	Tweak/Features/Ads/PlaybackAdsHooks.mm \
@@ -89,6 +90,7 @@ YTKACE_FILES = \
 	Tweak/Features/Interface/NativeShareHooks.mm \
 	Tweak/Features/Interface/NavigationVisibility.mm \
 	Tweak/Settings/SettingsEntry.mm \
+	Tweak/Settings/CaptionIslandIntegration.mm \
 	Tweak/Settings/SettingsTransferController.mm \
 	Tweak/Settings/NativeSettingsEntry.mm \
 	Tweak/Settings/YTKACERootOptionsController.mm \

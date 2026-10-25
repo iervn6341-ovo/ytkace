@@ -1,5 +1,7 @@
 #import "YTKACESettingsPages.h"
 #import "SettingsTransferController.h"
+#import "CaptionIslandIntegration.h"
+#import "../UI/SystemMenu.h"
 #import "../UI/OverlayButtonHost.h"
 #import "YTKACESettingsSearch.h"
 #import "../Features/Downloads/SABRDownloader.h"
@@ -399,12 +401,17 @@ void YTKACEPresentSelectionMenu(UIViewController *presenter,
                                 NSArray<NSString *> *titles,
                                 NSUInteger selectedIndex,
                                 YTKACEChoiceHandler handler) {
-    (void)title;
-    (void)sourceView;
     if (titles.count == 0) {
         return;
     }
     selectedIndex = MIN(selectedIndex, titles.count - 1);
+    NSMutableArray *systemActions = [NSMutableArray array];
+    [titles enumerateObjectsUsingBlock:^(NSString *choice, NSUInteger index, BOOL *stop) {
+        (void)stop;
+        [systemActions addObject:@{@"title": choice, @"selected": @(index == selectedIndex),
+            @"handler": [^{ if (handler) handler(index); } copy]}];
+    }];
+    if (YTKACEPresentSystemMenu(presenter, sourceView, title, nil, systemActions)) return;
     Class actionClass = NSClassFromString(@"YTActionSheetAction");
     SEL makeAction = NSSelectorFromString(@"actionWithTitle:iconImage:style:handler:");
     id sheet = [actionClass respondsToSelector:makeAction] ? YTKACEMakeSheet(nil, nil) : nil;
@@ -1798,6 +1805,9 @@ static NSDictionary *YTKACEGeneralDefinition(void) {
                                 0.0, 80.0, 5.0, 0.0),
             YTKACEToggleDetail(@"Skip Launch Animation", @"Starts YouTube faster.",
                                @"YTKACE.Preference.Appearance.LaunchAnimationDisabled"),
+            YTKACEToggleDetail(@"Use System Menus",
+                @"Use UIKit selection sheets with Liquid Glass when available for YTKACE and Caption Island.",
+                @"YTKACE.Preference.Interface.SystemMenus"),
             YTKACEPickerDetail(@"Device Layout",
                 @"Force the iPhone or iPad layout instead of following the device.",
                 @"YTKACE.Preference.App.LayoutIdiom",
@@ -1975,6 +1985,19 @@ UIViewController *YTKACEMakeTabBarOptionsController(void) {
 }
 
 NSArray<NSDictionary *> *YTKACESettingsMenu(void) {
+    NSMutableArray *playback = [NSMutableArray arrayWithArray:@[
+        @{@"id": @"player", @"title": @"Player", @"detail": @"Buttons, speed, background audio, and controls", @"symbol": @"play.rectangle"},
+        @{@"id": @"quality", @"title": @"Video Quality", @"detail": @"Default quality on Wi-Fi and mobile data", @"symbol": @"sparkles.tv"},
+        @{@"id": @"captions", @"title": @"Captions", @"detail": @"Captions on or off, language, and transcript", @"symbol": @"captions.bubble"}
+    ]];
+    if (YTKACEIntegratesCaptionIslandSettings()) {
+        [playback addObject:@{@"id": @"caption-island", @"title": @"Caption Island",
+            @"detail": @"Dynamic Island captions, lyrics, language priorities, and diagnostics", @"symbol": @"captions.bubble.fill"}];
+    }
+    [playback addObjectsFromArray:@[
+        @{@"id": @"gestures", @"title": @"Gestures", @"detail": @"Brightness, volume, double tap, and seeking", @"symbol": @"hand.draw"},
+        @{@"id": @"sponsorblock", @"title": @"SponsorBlock", @"detail": @"Skip or mark sponsored segments", @"symbol": @"sponsor"}
+    ]];
     NSMutableArray *look = [NSMutableArray arrayWithArray:@[
         @{@"id": @"watch", @"title": @"Watch Page", @"detail": @"Comments, suggestions, and the button row", @"symbol": @"rectangle.on.rectangle"},
         @{@"id": @"feed", @"title": @"Home & Feed", @"detail": @"Home redesign, shelves, mixes, and posts", @"symbol": @"house"},
@@ -1986,13 +2009,7 @@ NSArray<NSDictionary *> *YTKACESettingsMenu(void) {
         [look addObject:@{@"id": @"glass", @"title": @"Liquid Glass", @"detail": @"Tab bar, menus, toasts, and player", @"symbol": @"drop"}];
     }
     return @[
-        @{@"header": @"PLAYBACK", @"rows": @[
-            @{@"id": @"player", @"title": @"Player", @"detail": @"Buttons, speed, background audio, and controls", @"symbol": @"play.rectangle"},
-            @{@"id": @"quality", @"title": @"Video Quality", @"detail": @"Default quality on Wi-Fi and mobile data", @"symbol": @"sparkles.tv"},
-            @{@"id": @"captions", @"title": @"Captions", @"detail": @"Captions on or off, language, and transcript", @"symbol": @"captions.bubble"},
-            @{@"id": @"gestures", @"title": @"Gestures", @"detail": @"Brightness, volume, double tap, and seeking", @"symbol": @"hand.draw"},
-            @{@"id": @"sponsorblock", @"title": @"SponsorBlock", @"detail": @"Skip or mark sponsored segments", @"symbol": @"sponsor"}
-        ]},
+        @{@"header": @"PLAYBACK", @"rows": playback},
         @{@"header": @"LOOK & LAYOUT", @"rows": look},
         @{@"header": @"APP", @"rows": @[
             @{@"id": @"downloads", @"title": @"Downloads", @"detail": @"Download button, where to save, and backups", @"symbol": @"arrow.down.circle"},
@@ -2019,6 +2036,7 @@ static NSDictionary *YTKACEDefinitionForPage(NSString *pageID) {
 }
 
 UIViewController *YTKACEMakeSettingsPage(NSString *pageID) {
+    if ([pageID isEqualToString:@"caption-island"]) return YTKACEMakeCaptionIslandSettingsPage();
     if ([pageID isEqualToString:@"tabs"]) return YTKACEMakeTabBarOptionsController();
     if ([pageID isEqualToString:@"telemetry-audit"]) return YTKACEMakeTelemetryAuditController();
     NSDictionary *definition = YTKACEDefinitionForPage(pageID);
