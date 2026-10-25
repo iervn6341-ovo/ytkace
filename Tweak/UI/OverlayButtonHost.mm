@@ -235,8 +235,11 @@ static UIImage *YTKACEPlayerGlyph(UIImage *image) {
     [super setHidden:hidden || _layoutHidden];
 }
 - (void)setLayoutHidden:(BOOL)hidden {
+    if (_layoutHidden == hidden) return;
     _layoutHidden = hidden;
-    [super setHidden:hidden || _featureHidden];
+    // Dispatch through the observable hidden setter so UIStackView updates its
+    // hiding constraints when an item enters/leaves the overflow menu.
+    [self setHidden:_featureHidden];
 }
 - (CGRect)imageRectForContentRect:(CGRect)contentRect {
     if (!self.currentImage) return CGRectZero;
