@@ -56,6 +56,8 @@ activation, as well as a differently wrapped callback model.
 The 1080p check measures the actual button title rectangle and its minimum font
 width. `--preview-quality-label` finishes the controls suite and then holds the
 selected label in view after `Documents/quality-preview.txt` is written.
+The controls build first checks QualityControls.mm with deprecated declarations
+enabled as errors, before compiling the wider fixture with its older UIKit APIs.
 ELM fixtures include yoga children and controller/materialized node chains without
 UIView/subnodes/accessibility text. Native fallback cancellation verifies transformed
 panel inside/outside acceptance using a UITouch location fixture and normal recognizer

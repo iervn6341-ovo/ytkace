@@ -4,6 +4,12 @@ script_dir="$(cd "$(dirname "$0")" && pwd -P)"
 project_dir="$(cd "$script_dir/../.." && pwd -P)"
 app_dir="${1:?Pass an output .app directory}"
 mkdir -p "$app_dir"
+# Keep this source's warning policy aligned with the shipping build. The wider
+# UIKit fixture below still exercises older APIs with deprecation suppression.
+xcrun clang++ -fobjc-arc -fblocks -std=c++17 -Wall -Wextra -Werror \
+  -Werror=deprecated-declarations -target "$(uname -m)-apple-ios17.5-simulator" \
+  -isysroot "$(xcrun --sdk iphonesimulator --show-sdk-path)" -fsyntax-only \
+  "$project_dir/Tweak/Features/Playback/QualityControls.mm"
 xcrun clang++ -fobjc-arc -fblocks -std=c++17 -Wall -Wextra -Werror \
   -Wno-deprecated-declarations -target "$(uname -m)-apple-ios17.5-simulator" \
   -isysroot "$(xcrun --sdk iphonesimulator --show-sdk-path)" \
