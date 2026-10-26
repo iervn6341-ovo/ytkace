@@ -75,6 +75,23 @@ refreshes from a background snapshot while visible at the top, with manual refre
 available when scrolled. Logs rotate at 768 KB. This remains a passive NSURLSession
 resume observer, not a full response/network capture.
 
+### Player menus beside buttons
+
+With General → Use System Menus enabled, YTKACE player menus use UIKit popovers
+on iPhone and iPad, anchored to the visible player button. The popover delegate
+prevents compact-width adaptation into a bottom sheet. UIKit supplies the native
+material, including Liquid Glass on supported systems, without an extra glass
+layer over the player menu. Selected/disabled actions, subtitles and callbacks
+retain their behavior; settings outside the player keep their existing sheets.
+
+The presenter also recognizes YouTube's YTBottomSheetController,
+YTContextualSheetViewController and YTActionSheetDialogViewController containers
+when launched by a player UIControl. It reuses their content and callbacks rather
+than rebuilding YouTube's server-driven actions. Unrecognized containers, missing
+or hidden anchors, and other app pages keep their original presentation. New
+YouTube versions still require device validation. Bounds adapt to the safe area
+and the native popover repositions on rotation; long option lists remain scrollable.
+
 ### Settings transfer for integrated tweaks
 
 General contains Copy/Paste Settings and JSON file import/export. Imports preview the

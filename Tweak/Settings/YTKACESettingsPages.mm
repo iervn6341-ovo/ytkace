@@ -1806,7 +1806,7 @@ static NSDictionary *YTKACEGeneralDefinition(void) {
             YTKACEToggleDetail(@"Skip Launch Animation", @"Starts YouTube faster.",
                                @"YTKACE.Preference.Appearance.LaunchAnimationDisabled"),
             YTKACEToggleDetail(@"Use System Menus",
-                @"Use UIKit selection sheets with Liquid Glass when available for YTKACE and Caption Island.",
+                @"Use native menus. Player menus open beside the tapped button; settings use sheets.",
                 @"YTKACE.Preference.Interface.SystemMenus"),
             YTKACEPickerDetail(@"Device Layout",
                 @"Force the iPhone or iPad layout instead of following the device.",

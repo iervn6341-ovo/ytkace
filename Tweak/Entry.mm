@@ -3,6 +3,7 @@
 #import "Features/Downloads/DownloadLog.h"
 #import "Features/SponsorBlock/DeArrow.h"
 #import "Runtime/Preferences.h"
+#import "UI/PlayerMenuPresentation.h"
 #import "Features/Navigation/SettingsPlaybackHooks.h"
 
 #import <UIKit/UIKit.h>
@@ -14,6 +15,7 @@
 NSString * const YTKACEVersion = @YTKACE_VERSION_STRING;
 
 static void YTKACEInstallModules(void) {
+    YTKACEInstallPlayerMenuPresentation();
     YTKACEInstallSideloadCompatibilityHooks();
     YTKACEInstallCastCompatibilityHooks();
     YTKACEInstallAdsHooks();

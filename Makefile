@@ -20,6 +20,7 @@ YTKACE_FILES = \
 	Tweak/UI/Assets.mm \
 	Tweak/UI/Notice.mm \
 	Tweak/UI/SystemMenu.mm \
+	Tweak/UI/PlayerMenuPresentation.mm \
 	Tweak/UI/OverlayButtonHost.mm \
 	Tweak/Features/Ads/AdsHooks.mm \
 	Tweak/Features/Ads/PlaybackAdsHooks.mm \
@@ -108,7 +109,7 @@ YTKACE_CFLAGS += -DYTKACE_VERSION_STRING=\"$(shell awk '/^Version:/ {print $$2}'
 YTKACE_CFLAGS += -Wno-module-import-in-extern-c
 YTKACE_CFLAGS += -I"$(YTKACE_PROJECT_DIR)/Vendor/FFmpeg/include"
 YTKACE_CCFLAGS = -std=c++17
-YTKACE_FRAMEWORKS = Foundation UIKit JavaScriptCore AVFoundation AVKit AudioToolbox Photos QuartzCore MediaPlayer Security Network SystemConfiguration UniformTypeIdentifiers VideoToolbox CoreMedia
+YTKACE_FRAMEWORKS = Foundation UIKit CoreGraphics JavaScriptCore AVFoundation AVKit AudioToolbox Photos QuartzCore MediaPlayer Security Network SystemConfiguration UniformTypeIdentifiers VideoToolbox CoreMedia
 YTKACE_LIBRARIES = z
 YTKACE_LDFLAGS = -Wl,-install_name,@rpath/YTKACE.dylib
 YTKACE_LDFLAGS += "$(YTKACE_PROJECT_DIR)/Vendor/FFmpeg/lib/libavformat.a"

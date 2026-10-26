@@ -1,4 +1,5 @@
 #import "SystemMenu.h"
+#import "PlayerMenuPresentation.h"
 #import "../Runtime/Preferences.h"
 #import "../Runtime/Localization.h"
 #import <objc/message.h>
@@ -6,6 +7,7 @@
 @interface YTKACESystemMenuController : UITableViewController
 @property(nonatomic, copy) NSArray<NSDictionary *> *actions;
 @property(nonatomic, copy) NSString *menuSubtitle;
+@property(nonatomic) BOOL playerPopover;
 @end
 
 @implementation YTKACESystemMenuController
@@ -13,10 +15,10 @@
     [super viewDidLoad];
     self.tableView.rowHeight = UITableViewAutomaticDimension;
     self.tableView.estimatedRowHeight = 60.0;
-    self.tableView.backgroundColor = UIColor.systemGroupedBackgroundColor;
+    self.tableView.backgroundColor = self.playerPopover ? UIColor.clearColor : UIColor.systemGroupedBackgroundColor;
     Class glassClass = NSClassFromString(@"UIGlassEffect");
     SEL factory = NSSelectorFromString(@"effectWithStyle:");
-    if (!UIAccessibilityIsReduceTransparencyEnabled() && [glassClass respondsToSelector:factory]) {
+    if (!self.playerPopover && !UIAccessibilityIsReduceTransparencyEnabled() && [glassClass respondsToSelector:factory]) {
         UIVisualEffect *effect = ((id (*)(id, SEL, NSInteger))objc_msgSend)(glassClass, factory, 0);
         UIVisualEffectView *glass = [[UIVisualEffectView alloc] initWithEffect:effect];
         glass.userInteractionEnabled = NO;
@@ -25,6 +27,16 @@
     }
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
         initWithBarButtonSystemItem:UIBarButtonSystemItemClose target:self action:@selector(closeMenu)];
+}
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    if (!self.playerPopover || !self.view.window) return;
+    UINavigationController *navigation = self.navigationController;
+    CGRect safe = UIEdgeInsetsInsetRect(self.view.window.bounds, self.view.window.safeAreaInsets);
+    CGFloat height = MIN(self.tableView.contentSize.height + navigation.navigationBar.bounds.size.height,
+        MAX(88.0, safe.size.height - 24));
+    CGSize size = navigation.preferredContentSize;
+    if (fabs(size.height - height) > 1) navigation.preferredContentSize = CGSizeMake(size.width, height);
 }
 - (void)closeMenu { [self dismissViewControllerAnimated:YES completion:nil]; }
 - (BOOL)accessibilityPerformEscape { [self closeMenu]; return YES; }
@@ -75,6 +87,7 @@
     NSDictionary *action = self.actions[indexPath.row];
     if (action[@"enabled"] && ![action[@"enabled"] boolValue]) return;
     dispatch_block_t handler = action[@"handler"];
+    YTKACERememberPlayerMenuSource(self.navigationController.popoverPresentationController.sourceView);
     // Dismiss before invoking actions which may immediately open another controller.
     // One presentation animation is enough for a submenu transition.
     [self dismissViewControllerAnimated:NO completion:^{ if (handler) handler(); }];
@@ -94,10 +107,16 @@ BOOL YTKACEPresentSystemMenu(UIViewController *presenter, UIView *source,
     controller.title = title.length ? title : YTKACELocalized(@"Options");
     controller.menuSubtitle = subtitle;
     controller.actions = actions;
+    controller.playerPopover = YTKACEIsPlayerMenuSource(source) && source.window == presenter.view.window;
     UINavigationController *navigation = [[UINavigationController alloc] initWithRootViewController:controller];
     navigation.view.backgroundColor = UIColor.clearColor;
     navigation.modalPresentationStyle = UIModalPresentationPageSheet;
-    if (presenter.traitCollection.userInterfaceIdiom == UIUserInterfaceIdiomPad) {
+    controller.playerPopover = YTKACEConfigurePlayerPopover(navigation, presenter, source,
+        CGSizeMake(340.0, 100.0 + actions.count * 60.0));
+    if (controller.playerPopover) {
+        // The native popover supplies its own material, including Liquid Glass
+        // on supported systems. Do not stack another glass layer over it.
+    } else if (presenter.traitCollection.userInterfaceIdiom == UIUserInterfaceIdiomPad) {
         navigation.modalPresentationStyle = UIModalPresentationPopover;
         navigation.preferredContentSize = CGSizeMake(360.0, MIN(600.0, 100.0 + actions.count * 64.0));
         UIPopoverPresentationController *popover = navigation.popoverPresentationController;

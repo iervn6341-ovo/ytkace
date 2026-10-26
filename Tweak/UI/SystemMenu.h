@@ -1,7 +1,7 @@
 #import <UIKit/UIKit.h>
 
 NS_ASSUME_NONNULL_BEGIN
-// UIKit list sheet/popover; action dictionaries retain their original callbacks.
+// UIKit list: anchored player popover, settings sheet; original action callbacks.
 FOUNDATION_EXPORT BOOL YTKACEPresentSystemMenu(UIViewController *presenter,
                                                UIView * _Nullable source,
                                                NSString * _Nullable title,

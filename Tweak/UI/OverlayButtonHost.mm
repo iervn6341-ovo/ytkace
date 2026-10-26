@@ -1,5 +1,6 @@
 #import "OverlayButtonHost.h"
 #import "SystemMenu.h"
+#import "PlayerMenuPresentation.h"
 #import "../YTKACE.h"
 #import "../Runtime/Hooking.h"
 #import "../Runtime/Preferences.h"
@@ -394,7 +395,8 @@ static void YTKACELayoutPlayerButtons(UIView *overlay, UIStackView *stack) {
                 UIButton *source = weakMore;
                 UIButton *original = weakButton;
                 if (source == nil || original == nil || !original.enabled) return;
-                // A visible sender keeps feature popovers anchored on iPad.
+                // Preserve the visible overflow button as the native submenu anchor.
+                YTKACERememberPlayerMenuSource(source);
                 void (^invoke)(UIButton *) = objc_getAssociatedObject(original, YTKACEPlayerActionAssociation);
                 if (invoke != nil) invoke(source);
             }];
