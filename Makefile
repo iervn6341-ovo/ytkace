@@ -54,6 +54,7 @@ YTKACE_FILES = \
 	Tweak/Features/Playback/PlaybackFixHooks.mm \
 	Tweak/Features/Playback/ChallengeSolver.mm \
 	Tweak/Features/Playback/SpeedControls.mm \
+	Tweak/Features/Playback/QualityControls.mm \
 	Tweak/Features/Playback/LoopControls.mm \
 	Tweak/Features/Playback/AutoplayControls.mm \
 	Tweak/Features/Playback/CaptionControls.mm \

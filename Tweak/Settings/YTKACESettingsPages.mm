@@ -1582,6 +1582,8 @@ static NSDictionary *YTKACEQualityDefinition(void) {
         @[
             YTKACEToggleDetail(@"Classic Quality Menu", @"Show the full resolution list instead of YouTube's simple menu.",
                                @"YTKACE.Preference.Playback.LegacyQualityMenu"),
+            YTKACEToggleDetail(@"Quality Button", @"Show a quality shortcut beside the native player controls.",
+                               @"YTKACE.Preference.Playback.QualityButton"),
             YTKACEToggleDetail(@"Hide Premium Quality",
                                @"Removes 1080p Premium from the quality menu.",
                                @"YTKACE.Preference.Playback.PremiumQualityHidden"),

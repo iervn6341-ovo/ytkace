@@ -5,6 +5,8 @@ For the independent player controls/transition/PlayerGlass regression, build
 Launch `dev.captionisland.player-controls-smoke` on a disposable iPhone simulator
 and read `Documents/result.txt`. It uses the production host and glass hooks with
 fake native classes, including glass on/keep-controls off, repeated transforms,
+two-row packing, native fade/auto-hide geometry reservations and integrated quality
+labels, per-video state and native action routing,
 cancelled pans, zero size, native glass reuse and layout reentry. It does not load
 YTVideoOverlay or simulate YouTube's private transition controller.
 

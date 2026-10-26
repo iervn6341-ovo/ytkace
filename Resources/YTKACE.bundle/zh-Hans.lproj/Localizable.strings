@@ -1003,3 +1003,7 @@ Licensed under CC BY-NC-SA 4.0." = "YTKACE 使用 SponsorBlock 数据。
 "Debug logs on" = "调试日志已开启";
 "Debug logs off" = "调试日志已关闭";
 "Default leaves YouTube's own tab bar as is." = "默认保留 YouTube 自带的标签栏。";
+
+"Quality Button" = "画质按钮";
+"Show a quality shortcut beside the native player controls." = "在原生播放器控制项旁显示画质快捷按钮。";
+"Open video quality from the player settings." = "请从播放器设置打开画质菜单。";

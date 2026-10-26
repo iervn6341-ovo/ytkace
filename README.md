@@ -65,18 +65,25 @@ not replace every server-driven YouTube menu; native host menus need separate ad
 
 ### Player controls
 
-YTKACE owns its player buttons and overflow menu. The native top-control band is
-used first, with 44pt touch targets and 24pt glyphs; actions that do not fit remain
-available in More. It does not load/register with YTVideoOverlay. Existing YTKACE
-feature and download-placement settings still control availability. CaptionIsland
-and YouQuality may independently use their existing YTVideoOverlay integration.
+YTKACE owns its player buttons, including the integrated YouQuality-style shortcut.
+Enable **Quality Button** under **Video Quality**. The text opens YouTube's native
+quality selector; its selected-format callback updates the compact label (4K, 2K,
+1080p, etc.) and full accessibility value. A new video shows Auto until a selection
+is reported. Existing YouQuality visibility preferences migrate once. The code
+retains PoomSmart's MIT notice in `YTKACE.bundle/Licenses/YouQuality.txt`.
+
+Buttons fill the native top band, then a second trailing row below the gear, using
+44pt targets, 24pt icons and 6pt spacing. Only actions that do not fit either safe
+row enter More. Native reservations are cached while controls fade/auto-hide, so
+opacity changes do not move custom buttons into the cast/CC/gear slots. Rotation
+invalidates the cache. YTKACE does not register with or load YTVideoOverlay;
+CaptionIsland independently retains its existing bottom-button integration.
 
 Local layout yields to active pans, controller transitions and invalid geometry,
-then resumes after completion/cancellation. The optional player-glass styling
-reuses native Liquid Glass, avoids full-player material surfaces, and preserves
-native layers during transforms/transition layout. Console diagnostics are tagged
-`[YTKACE PlayerControls]` and `[YTKACE PlayerGlass]`; state messages contain layout
-state/bounds and no video URLs or account details.
+then resumes after completion/cancellation. Player-glass styling reuses native
+Liquid Glass and preserves native layers during transforms. System menus measure
+actual table content for their popover/sheet height instead of a fixed estimate.
+Console diagnostics use `[YTKACE PlayerControls]` and `[YTKACE PlayerGlass]`.
 
 ### Telemetry Audit
 

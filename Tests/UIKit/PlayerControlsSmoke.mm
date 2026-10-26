@@ -5,6 +5,8 @@
 #import "../../Tweak/Runtime/Localization.h"
 #import "../../Tweak/Features/Downloads/DownloadLog.h"
 #import "../../Tweak/YTKACE.h"
+#import "../../Tweak/UI/Notice.h"
+#import "../../Tweak/Features/Playback/QualityControls.h"
 #import <objc/message.h>
 #include <cmath>
 
@@ -15,16 +17,44 @@ static NSUInteger NativeLayouts;
 BOOL YTKACEFeatureEnabled(NSString *key) {
     if ([key hasSuffix:@"AlwaysShowControls"]) return KeepControls;
     if ([key isEqual:@"YTKACE.Preference.Glass.Player"]) return GlassEnabled;
+    if ([key isEqual:@"YTKACE.Preference.Playback.QualityButton"]) return !HiddenFeatures;
     return YES;
 }
 BOOL YTKACELiquidGlassAvailable(void) { return NSClassFromString(@"UIGlassEffect") != nil; }
 NSString *YTKACELocalized(NSString *key) { return key; }
 void YTKACEDownloadLog(NSString *key, NSString *format, ...) { (void)key; (void)format; }
+void YTKACEShowNotice(NSString *message) { (void)message; }
+
+@interface QualityTestPlayer : NSObject
+@property(nonatomic, strong) id activeVideo;
+@end
+@implementation QualityTestPlayer
+@end
+@interface QualityTestPresenter : NSObject
+@property(nonatomic) NSUInteger calls;
+- (void)didPressVideoQuality:(id)sender;
+@end
+@implementation QualityTestPresenter
+- (void)didPressVideoQuality:(id)sender { (void)sender; self.calls++; }
+@end
+@interface QualityTestFormat : NSObject
+@property(nonatomic, copy) NSString *qualityLabel;
+@end
+@implementation QualityTestFormat
+@end
+@interface YTVideoQualitySwitchOriginalController : NSObject
+- (void)singleVideo:(id)video didSelectVideoFormat:(id)format;
+@end
+@implementation YTVideoQualitySwitchOriginalController
+- (void)singleVideo:(id)video didSelectVideoFormat:(id)format { (void)video; (void)format; }
+@end
 
 @interface YTMainAppControlsOverlayView : UIView
 @property(nonatomic, getter=isOverlayVisible) BOOL overlayVisible;
 @property(nonatomic, strong) UIButton *overflowButton;
 @property(nonatomic) BOOL requestedVisible;
+@property(nonatomic, strong) id playerViewController;
+@property(nonatomic, strong) id eventsDelegate;
 @end
 @implementation YTMainAppControlsOverlayView
 - (void)layoutSubviews {
@@ -75,7 +105,10 @@ static UIStackView *Row(UIView *overlay) {
     return nil;
 }
 static UIButton *More(UIStackView *row) {
-    for (UIButton *button in row.arrangedSubviews) if ([button.accessibilityIdentifier isEqual:@"YTKACE More Player Controls"]) return button;
+    for (UIStackView *candidate in row.superview.subviews) {
+        if (![candidate isKindOfClass:UIStackView.class]) continue;
+        for (UIButton *button in candidate.arrangedSubviews) if ([button.accessibilityIdentifier isEqual:@"YTKACE More Player Controls"]) return button;
+    }
     return nil;
 }
 static BOOL Finite(CGRect r) { return std::isfinite(r.origin.x) && std::isfinite(r.origin.y) && std::isfinite(r.size.width) && std::isfinite(r.size.height); }
@@ -100,6 +133,7 @@ static BOOL Finite(CGRect r) { return std::isfinite(r.origin.x) && std::isfinite
 }
 - (void)runTests {
     YTKACEInstallPlayerMenuPresentation();
+    YTKACEInstallQualityControls();
     TestActionTarget *target = [TestActionTarget new];
     YTKACERegisterOverlayConfigurator(@"test-controls", ^(UIView *overlay, UIStackView *stack) {
         target.overlay = overlay;
@@ -112,6 +146,9 @@ static BOOL Finite(CGRect r) { return std::isfinite(r.origin.x) && std::isfinite
     YTMainAppVideoPlayerOverlayView *player = [[YTMainAppVideoPlayerOverlayView alloc] initWithFrame:CGRectMake(0, 80, 414, 233)];
     YTMainAppControlsOverlayView *overlay = [[YTMainAppControlsOverlayView alloc] initWithFrame:player.bounds];
     overlay.overlayVisible = YES;
+    QualityTestPlayer *qualityPlayer = [QualityTestPlayer new]; qualityPlayer.activeVideo = [NSObject new];
+    QualityTestPresenter *qualityPresenter = [QualityTestPresenter new];
+    overlay.playerViewController = qualityPlayer; overlay.eventsDelegate = qualityPresenter;
     [self.window.rootViewController.view addSubview:player]; [player addSubview:overlay];
     NSMutableArray<UIButton *> *native = [NSMutableArray array];
     for (NSNumber *x in @[@8, @258, @308, @358]) {
@@ -127,9 +164,23 @@ static BOOL Finite(CGRect r) { return std::isfinite(r.origin.x) && std::isfinite
     UIStackView *row = Row(overlay);
     Check(row && !row.hidden && row.alpha == 1 && row.frame.origin.y == 4, @"portrait controls must appear in the native top band without YTVideoOverlay");
     UIButton *more = More(row);
+    UIStackView *second = nil;
+    for (UIView *view in overlay.subviews) if ([view.accessibilityIdentifier isEqual:@"YTKACEOverlayControls.SecondRow"]) second = (id)view;
+    Check(second && !second.hidden && second.frame.origin.y == 54, @"overflow must use the next row below the native gear");
     Check(more && !more.hidden && more.menu.children.count > 0, @"portrait overflow must remain accessible");
     Check(CGRectContainsRect(overlay.bounds, row.frame), @"portrait controls must stay within the player");
     for (UIButton *button in native) Check(!CGRectIntersectsRect(row.frame, button.frame), @"native controls must remain unobstructed");
+    CGRect firstBeforeFade = row.frame, secondBeforeFade = second.frame;
+    KeepControls = NO;
+    for (NSNumber *alpha in @[@0.8,@0.3,@0.0,@0.4]) {
+        for (UIButton *button in native) button.alpha = alpha.doubleValue;
+        [overlay layoutSubviews];
+        Check(CGRectEqualToRect(row.frame,firstBeforeFade) && CGRectEqualToRect(second.frame,secondBeforeFade), @"faded native controls must retain their reserved positions");
+    }
+    [overlay setOverlayVisible:NO]; [overlay layoutSubviews];
+    Check(CGRectEqualToRect(row.frame,firstBeforeFade), @"auto-hidden controls must not pack over native buttons");
+    for (UIButton *button in native) button.alpha = 1;
+    [overlay setOverlayVisible:YES]; [overlay layoutSubviews]; KeepControls = YES;
     [row layoutIfNeeded];
     for (UIButton *button in row.arrangedSubviews) if (!button.hidden) Check(button.bounds.size.width >= 44, @"readable controls retain touch size");
     NSUInteger before = NativeLayouts;
@@ -158,9 +209,23 @@ static BOOL Finite(CGRect r) { return std::isfinite(r.origin.x) && std::isfinite
     overlay.frame = CGRectMake(0,0,414,233); player.frame = CGRectMake(0,80,414,233);
     native[1].frame = CGRectMake(258,4,44,44); native[2].frame = CGRectMake(308,4,44,44); native[3].frame = CGRectMake(358,4,44,44);
     [overlay layoutSubviews]; Check(!row.hidden && !more.hidden, @"fullscreen exit must restore portrait row");
-    UIButton *button = row.arrangedSubviews.firstObject;
+    UIButton *button = nil, *qualityButton = nil;
+    for (UIStackView *candidate in @[row,second]) for (UIButton *item in candidate.arrangedSubviews) {
+        if ([item.accessibilityIdentifier isEqual:@"YTKACE Test 0"]) button = item;
+        if ([item.accessibilityIdentifier isEqual:@"YTKACE Quality"]) qualityButton = item;
+    }
     [button sendActionsForControlEvents:UIControlEventTouchUpInside];
     Check(target.calls == 1 && target.overlay == overlay, @"local actions keep player context");
+    Check(qualityButton && [qualityButton.currentTitle isEqual:@"Auto"], @"integrated quality button default");
+    QualityTestFormat *format = [QualityTestFormat new]; format.qualityLabel = @"1080p60 HDR";
+    [[YTVideoQualitySwitchOriginalController new] singleVideo:qualityPlayer.activeVideo didSelectVideoFormat:format];
+    [overlay layoutSubviews];
+    Check([qualityButton.currentTitle isEqual:@"1080p"] && [qualityButton.accessibilityValue isEqual:@"1080p60 HDR"], @"selected quality must update label and retain full accessibility value");
+    [qualityButton sendActionsForControlEvents:UIControlEventTouchUpInside];
+    Check(qualityPresenter.calls == 1, @"quality shortcut must open the native quality selector once");
+    qualityPlayer.activeVideo = [NSObject new]; [overlay layoutSubviews];
+    Check([qualityButton.currentTitle isEqual:@"Auto"], @"quality label must not leak to another video");
+    Check([YTKACEQualityButtonTitle(@"2160p60 HDR") isEqual:@"4K"] && [YTKACEQualityButtonTitle(@"1440p") isEqual:@"2K"], @"compact high-resolution labels");
 
     // Exercise the actual PlayerGlass hook with the user's reported settings:
     // keep-controls off, player glass on, and both button/gesture transitions.

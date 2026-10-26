@@ -1058,3 +1058,7 @@ Licensed under CC BY-NC-SA 4.0." = "YTKACE 使用 SponsorBlock 資料。
 "Metadata only by default. Request details add redacted URL/header fields and bounded JSON previews for new requests. Cookies, authorization and unknown values are masked. Streams are not consumed; binary bodies are not decoded or saved." = "預設只記錄中繼資料。請求明細會為新請求加入去敏的網址／標頭欄位與有長度限制的 JSON 預覽；Cookie、驗證資訊及未知值會遮蔽。輸入串流不會被消耗，二進位本文不解碼也不保存。";
 "Newest first; refreshes every 2 seconds at the top of the list. The rolling log keeps up to 768 KB. Only NSURLSession requests at resume are observed; later headers, redirects, other stacks and responses may be missing." = "由新到舊排列，在清單頂端時每 2 秒更新，最多保留 768 KB 紀錄。僅觀察 NSURLSession 開始執行時的請求；稍後補入的標頭、重新導向、其他網路框架及回應內容可能不會出現。";
 "Use native menus. Player menus open beside the tapped button; settings use sheets." = "使用原生選單。播放器選單從點擊的按鈕旁展開；設定頁使用表單。";
+
+"Quality Button" = "畫質按鈕";
+"Show a quality shortcut beside the native player controls." = "在原生播放器控制項旁顯示畫質捷徑。";
+"Open video quality from the player settings." = "請從播放器設定開啟畫質選單。";

@@ -67,9 +67,6 @@ static void YTKACERegisterTransferRules(void) {
     caption[@"CaptionIsland.MaximumVideoDurationMinutes"] = @{@"default": @5, @"minimum": @0, @"maximum": @180};
     YTKACERegisterSettingsModule(@"CaptionIsland", caption);
     YTKACERegisterSettingsModule(@"PlayerButtons", @{
-        @"YTVideoOverlay-YouQuality-Enabled": YTKACESettingsRule(@YES),
-        @"YTVideoOverlay-YouQuality-Position": @{@"default": @0, @"values": @[@0, @1]},
-        @"YTVideoOverlay-YouQuality-Order": @{@"default": @0, @"minimum": @0, @"maximum": @100},
         @"YTVideoOverlay-CaptionIslandLyrics-Order": @{@"default": @0, @"minimum": @0, @"maximum": @100},
         @"YTVideoOverlay-FrostedGlassBottom": YTKACESettingsRule(@NO)
     });

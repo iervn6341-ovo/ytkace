@@ -61,6 +61,30 @@ int main() {
     assert(!ytkace::planPlayerControls(8,406,NAN,181,8,portrait).fits);
     auto afterGesture = ytkace::planPlayerControls(8,844,4,362,8,{{8,4,44,44},{696,4,148,44}});
     assert(afterGesture.fits && afterGesture.overflowCount == 0 && afterGesture.y == 4);
+    // Fill the first row, then a trailing second row under the native gear.
+    auto toolbar = ytkace::planPlayerToolbar(8,406,4,181,9,portrait);
+    assert(toolbar.fits && YTPCValid(toolbar.first) && YTPCValid(toolbar.second));
+    assert(toolbar.second.y == 54 && toolbar.firstCount + toolbar.secondCount + toolbar.overflowCount == 9);
+    assert(toolbar.second.x >= 330 && toolbar.overflowOnSecond);
+    for (auto obstacle : portrait) {
+        assert(!YTPCIntersects(toolbar.first,YTPCExpand(obstacle,6)));
+        assert(!YTPCIntersects(toolbar.second,YTPCExpand(obstacle,6)));
+    }
+    for (int width = 180; width <= 1024; width += 11) {
+        for (std::size_t n = 1; n <= 16; ++n) {
+            std::vector<YTPCFrame> obstacles{{8,4,44,44},{double(width-152),4,144,44},
+                {width*0.42,86,72,72}};
+            auto rows = ytkace::planPlayerToolbar(8,width-8,4,181,n,obstacles);
+            if (!rows.fits) continue;
+            assert(rows.firstCount + rows.secondCount + rows.overflowCount == n);
+            for (auto frame : {rows.first,rows.second}) if (YTPCValid(frame)) {
+                assert(YTPCContains({8,4,double(width-16),177},frame));
+                for (auto obstacle : obstacles) assert(!YTPCIntersects(frame,YTPCExpand(obstacle,6)));
+            }
+        }
+    }
+    assert(!ytkace::planPlayerToolbar(8,406,NAN,181,9,portrait).fits);
+    assert(!ytkace::planPlayerToolbar(8,406,4,181,0,portrait).fits);
     // Bottom buttons use the fullscreen coordinate space and retain a 44pt touch target.
     YTPCFrame safe{4, 4, 406, 225}, fullscreen{372, 184, 36, 36};
     YTPCFrame bottomNative[]{{8, 195, 84, 22}, fullscreen};

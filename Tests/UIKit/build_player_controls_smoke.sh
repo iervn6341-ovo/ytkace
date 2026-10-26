@@ -11,6 +11,7 @@ xcrun clang++ -fobjc-arc -fblocks -std=c++17 -Wall -Wextra -Werror \
   "$script_dir/PlayerControlsSmoke.mm" "$project_dir/Tweak/UI/OverlayButtonHost.mm" \
   "$project_dir/Tweak/UI/PlayerMenuPresentation.mm" "$project_dir/Tweak/UI/SystemMenu.mm" \
   "$project_dir/Tweak/Features/Playback/PlayerGlass.mm" \
+  "$project_dir/Tweak/Features/Playback/QualityControls.mm" \
   "$project_dir/Tweak/Runtime/Hooking.mm" -o "$app_dir/PlayerControlsSmoke"
 python3 - "$script_dir/PlayerMenuSmoke-Info.plist" "$app_dir/Info.plist" <<'PY'
 import plistlib, sys

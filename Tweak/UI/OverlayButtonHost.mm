@@ -13,6 +13,19 @@
 
 static IMP OriginalControlsOverlayLayout;
 static const void *YTKACEButtonRegistryKey = &YTKACEButtonRegistryKey;
+static const void *YTKACEButtonOrderKey = &YTKACEButtonOrderKey;
+static const void *YTKACESecondRowKey = &YTKACESecondRowKey;
+static const void *YTKACEMoreButtonKey = &YTKACEMoreButtonKey;
+static const void *YTKACENativeGeometryKey = &YTKACENativeGeometryKey;
+@interface YTKACENativeGeometry : NSObject
+@property(nonatomic) CGRect bounds;
+@property(nonatomic) UIEdgeInsets insets;
+@property(nonatomic) CGFloat top;
+@property(nonatomic, weak) UIView *anchor;
+@property(nonatomic, copy) NSArray<NSValue *> *obstacles;
+@end
+@implementation YTKACENativeGeometry
+@end
 static const void *YTKACEPrepareActionKey = &YTKACEPrepareActionKey;
 static IMP OriginalControlsSetOverlayVisible;
 static IMP OriginalControlsSetControlsVisible;
@@ -98,28 +111,6 @@ static void YTKACEFindSettingsControlInView(UIView *view,
     }
 }
 
-static BOOL YTKACEIsTopTrailingControl(UIView *view, UIView *overlay) {
-    CGRect frame = [view convertRect:view.bounds toView:overlay];
-    CGFloat width = CGRectGetWidth(overlay.bounds);
-    CGFloat height = CGRectGetHeight(overlay.bounds);
-    CGFloat centerX = CGRectGetMidX(frame);
-    CGFloat centerY = CGRectGetMidY(frame);
-    return isfinite(centerX) && isfinite(centerY) &&
-        centerX > width * 0.55 && centerY < height * 0.35 &&
-        CGRectIntersectsRect(frame, overlay.bounds);
-}
-
-static UIView *YTKACEOverflowControl(UIView *overlay) {
-    SEL selector = NSSelectorFromString(@"overflowButton");
-    if (![overlay respondsToSelector:selector]) return nil;
-    UIView *button = ((id (*)(id, SEL))objc_msgSend)(overlay, selector);
-    if (![button isKindOfClass:UIView.class] || button.hidden ||
-        button.alpha < 0.05 || CGRectIsEmpty(button.bounds)) {
-        return nil;
-    }
-    return YTKACEIsTopTrailingControl(button, overlay) ? button : nil;
-}
-
 static UIView *YTKACEFindSettingsControl(UIView *overlay, UIView *excluded) {
     UIView *best = nil;
     CGFloat bestScore = -CGFLOAT_MAX;
@@ -191,7 +182,7 @@ static BOOL YTKACEKeepControlsVisible(UIView *overlay) {
 }
 
 static void YTKACESetHostedControlsHidden(UIView *view, BOOL hidden) {
-    if ([view.accessibilityIdentifier isEqualToString:@"YTKACEOverlayControls"]) {
+    if ([view.accessibilityIdentifier hasPrefix:@"YTKACEOverlayControls"]) {
         BOOL visible = !hidden;
         if (view.userInteractionEnabled == visible && fabs(view.alpha - (visible ? 1.0 : 0.0)) < 0.001) return;
         view.userInteractionEnabled = visible;
@@ -410,6 +401,12 @@ UIButton *YTKACEOverlayButton(UIStackView *stack,
                              invoke, OBJC_ASSOCIATION_COPY_NONATOMIC);
     [stack addArrangedSubview:button];
     registry[identifier] = button;
+    NSMutableArray *order = objc_getAssociatedObject(stack, YTKACEButtonOrderKey);
+    if (!order) {
+        order = [NSMutableArray array];
+        objc_setAssociatedObject(stack, YTKACEButtonOrderKey, order, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    [order addObject:identifier];
     return button;
 }
 
@@ -430,7 +427,7 @@ static void YTKACEConfigureOverlayActions(UIView *host) {
 static void YTKACECollectNativeControls(UIView *view, UIView *overlay,
                                         UIStackView *stack, std::vector<YTPCFrame>& obstacles,
                                         NSUInteger depth = 0) {
-    if (view == stack || view.hidden || view.alpha < 0.05 || depth > 12 || obstacles.size() > 128) return;
+    if (view == stack || [view.accessibilityIdentifier hasPrefix:@"YTKACEOverlayControls"] || view.hidden || view.alpha < 0.05 || depth > 12 || obstacles.size() > 128) return;
     NSString *name = NSStringFromClass(view.class);
     if ([view isKindOfClass:UIControl.class] || view.gestureRecognizers.count ||
         [name containsString:@"TransportControls"] || [name containsString:@"PlaybackButton"] ||
@@ -443,10 +440,91 @@ static void YTKACECollectNativeControls(UIView *view, UIView *overlay,
     for (UIView *child in view.subviews) YTKACECollectNativeControls(child, overlay, stack, obstacles, depth + 1);
 }
 
+static UIStackView *YTKACESecondRow(UIView *overlay, UIStackView *first) {
+    UIStackView *row = objc_getAssociatedObject(overlay, YTKACESecondRowKey);
+    if (row) return row;
+    row = [UIStackView new];
+    row.axis = UILayoutConstraintAxisHorizontal;
+    row.alignment = UIStackViewAlignmentCenter;
+    row.spacing = 6;
+    row.clipsToBounds = YES;
+    row.alpha = first.alpha;
+    row.userInteractionEnabled = first.userInteractionEnabled;
+    row.accessibilityIdentifier = @"YTKACEOverlayControls.SecondRow";
+    [overlay addSubview:row];
+    objc_setAssociatedObject(overlay, YTKACESecondRowKey, row, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    return row;
+}
+
+static CGFloat YTKACENativeOpacity(UIView *view, UIView *overlay) {
+    if (!view) return 1;
+    CGFloat alpha = 1;
+    for (UIView *node = view; node; node = node.superview) {
+        if (node.hidden) return 0;
+        alpha *= node.alpha;
+        if (node == overlay) break;
+    }
+    return alpha;
+}
+
+static BOOL YTKACENativeControlGeometry(UIView *overlay, UIStackView *stack,
+                                       CGFloat *top, std::vector<YTPCFrame>& obstacles) {
+    YTKACENativeGeometry *saved = objc_getAssociatedObject(overlay, YTKACENativeGeometryKey);
+    BOOL sameBounds = saved && CGRectEqualToRect(saved.bounds, overlay.bounds) && UIEdgeInsetsEqualToEdgeInsets(saved.insets, overlay.safeAreaInsets);
+    UIView *gear = nil;
+    SEL accessor = NSSelectorFromString(@"overflowButton");
+    if ([overlay respondsToSelector:accessor]) {
+        id candidate = ((id (*)(id, SEL))objc_msgSend)(overlay, accessor);
+        if ([candidate isKindOfClass:UIView.class]) gear = candidate;
+    }
+    gear = gear ?: YTKACEFindSettingsControl(overlay, stack) ?: saved.anchor;
+    SEL visibility = NSSelectorFromString(@"isOverlayVisible");
+    BOOL faded = ([overlay respondsToSelector:visibility] && !((BOOL (*)(id, SEL))objc_msgSend)(overlay, visibility)) ||
+        YTKACENativeOpacity(gear ?: overlay, overlay) < 0.98;
+    if (faded) {
+        // Fading is not removal. Keep the last visible native reservations and
+        // anchor; never slide custom controls into their temporarily empty slots.
+        if (!sameBounds) return NO;
+        *top = saved.top;
+        for (NSValue *value in saved.obstacles) {
+            CGRect r = value.CGRectValue;
+            obstacles.push_back({r.origin.x,r.origin.y,r.size.width,r.size.height});
+        }
+        return YES;
+    }
+    if (gear) {
+        CGRect r = [gear convertRect:gear.bounds toView:overlay];
+        if (YTPCValid({r.origin.x,r.origin.y,r.size.width,r.size.height})) *top = MAX(*top,CGRectGetMidY(r) - 22);
+    }
+    YTKACECollectNativeControls(overlay, overlay, stack, obstacles);
+    YTKACENativeGeometry *snapshot = [YTKACENativeGeometry new];
+    snapshot.bounds = overlay.bounds; snapshot.insets = overlay.safeAreaInsets;
+    snapshot.top = *top; snapshot.anchor = gear;
+    NSMutableArray *frames = [NSMutableArray array];
+    for (auto r : obstacles) if (YTPCValid(r)) [frames addObject:[NSValue valueWithCGRect:CGRectMake(r.x,r.y,r.width,r.height)]];
+    snapshot.obstacles = frames;
+    objc_setAssociatedObject(overlay, YTKACENativeGeometryKey, snapshot, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    return YES;
+}
+
+static void YTKACEPlaceInRow(UIButton *button, UIStackView *row, NSUInteger index) {
+    if (button.superview != row) {
+        if ([button.superview isKindOfClass:UIStackView.class]) [(UIStackView *)button.superview removeArrangedSubview:button];
+        [button removeFromSuperview];
+        [row insertArrangedSubview:button atIndex:MIN(index,row.arrangedSubviews.count)];
+    } else if ([row.arrangedSubviews indexOfObjectIdenticalTo:button] != index) {
+        [row removeArrangedSubview:button];
+        [row insertArrangedSubview:button atIndex:MIN(index,row.arrangedSubviews.count)];
+    }
+}
+
 static void YTKACELayoutPlayerButtons(UIView *overlay, UIStackView *stack) {
     NSMutableArray<UIButton *> *wanted = [NSMutableArray array];
-    UIButton *more = nil;
-    for (UIView *view in stack.arrangedSubviews) {
+    UIButton *more = objc_getAssociatedObject(stack, YTKACEMoreButtonKey);
+    NSDictionary *registry = objc_getAssociatedObject(stack, YTKACEButtonRegistryKey);
+    NSArray *order = objc_getAssociatedObject(stack, YTKACEButtonOrderKey);
+    for (NSString *identifier in order) {
+        UIView *view = registry[identifier];
         if (![view isKindOfClass:UIButton.class]) continue;
         UIButton *button = (UIButton *)view;
         if ([button.accessibilityIdentifier isEqualToString:YTKACEOverflowIdentifier]) {
@@ -466,45 +544,36 @@ static void YTKACELayoutPlayerButtons(UIView *overlay, UIStackView *stack) {
     CGFloat left = CGRectGetMinX(safe) + 8.0;
     CGFloat right = CGRectGetMaxX(safe) - 8.0;
     CGFloat top = CGRectGetMinY(safe) + 4.0;
-    UIView *gear = YTKACEOverflowControl(overlay) ?: YTKACEFindSettingsControl(overlay, stack);
-    if (gear != nil) {
-        CGRect frame = [gear convertRect:gear.bounds toView:overlay];
-        if (YTPCValid({frame.origin.x, frame.origin.y, frame.size.width, frame.size.height}))
-            top = MAX(top, CGRectGetMidY(frame) - 22.0);
-    }
     std::vector<YTPCFrame> obstacles;
-    YTKACECollectNativeControls(overlay, overlay, stack, obstacles);
-    auto plan = ytkace::planPlayerControls(left, right, top, CGRectGetMaxY(safe) - 52.0, wanted.count, obstacles);
-    stack.hidden = !plan.fits;
-    if (!plan.fits) {
-        for (UIView *view in stack.arrangedSubviews)
-            if ([view isKindOfClass:YTKACEPlayerControlButton.class]) ((YTKACEPlayerControlButton *)view).layoutHidden = YES;
-        CGRect empty = CGRectMake(CGRectGetMinX(safe), CGRectGetMinY(safe), 0, 44);
-        if (!CGRectEqualToRect(stack.frame, empty)) stack.frame = empty;
+    UIStackView *second = YTKACESecondRow(overlay, stack);
+    if (!YTKACENativeControlGeometry(overlay, stack, &top, obstacles)) {
+        stack.hidden = YES; second.hidden = YES;
         return;
     }
+    auto plan = ytkace::planPlayerToolbar(left, right, top, CGRectGetMaxY(safe) - 52, wanted.count, obstacles);
+    stack.hidden = !YTPCValid(plan.first);
+    second.hidden = !YTPCValid(plan.second);
+    const NSUInteger shown = plan.firstCount + plan.secondCount;
     for (NSUInteger index = 0; index < wanted.count; ++index) {
         UIButton *button = wanted[index];
-        if ([button isKindOfClass:YTKACEPlayerControlButton.class])
-            ((YTKACEPlayerControlButton *)button).layoutHidden = index >= plan.inlineCount;
-        else button.hidden = index >= plan.inlineCount;
+        ((YTKACEPlayerControlButton *)button).layoutHidden = index >= shown;
+        if (index < plan.firstCount) YTKACEPlaceInRow(button,stack,index);
+        else if (index < shown) YTKACEPlaceInRow(button,second,index - plan.firstCount);
     }
-    if (more != nil) ((YTKACEPlayerControlButton *)more).layoutHidden = plan.overflowCount == 0;
+    if (more) ((YTKACEPlayerControlButton *)more).layoutHidden = plan.overflowCount == 0;
     if (plan.overflowCount != 0) {
         if (more == nil) {
             more = YTKACENativePlayerButton(overlay, YTKACEOverflowIdentifier, @"ellipsis");
             more.accessibilityLabel = YTKACELocalized(@"More player controls");
             more.showsMenuAsPrimaryAction = YES;
-            [stack addArrangedSubview:more];
+            objc_setAssociatedObject(stack, YTKACEMoreButtonKey, more, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         }
-        if (stack.arrangedSubviews.lastObject != more) {
-            [stack removeArrangedSubview:more];
-            [stack addArrangedSubview:more];
-        }
+        UIStackView *row = plan.overflowOnSecond ? second : stack;
+        YTKACEPlaceInRow(more,row,plan.overflowOnSecond ? plan.secondCount : plan.firstCount);
         NSMutableArray<UIAction *> *actions = [NSMutableArray array];
         NSMutableArray *signature = [NSMutableArray array];
         __weak UIButton *weakMore = more;
-        for (NSUInteger index = plan.inlineCount; index < wanted.count; ++index) {
+        for (NSUInteger index = shown; index < wanted.count; ++index) {
             UIButton *button = wanted[index];
             NSString *label = button.accessibilityLabel ?: button.accessibilityIdentifier;
             if ([label hasPrefix:@"YTKACE "]) label = [label substringFromIndex:7];
@@ -532,8 +601,14 @@ static void YTKACELayoutPlayerButtons(UIView *overlay, UIStackView *stack) {
         }
         ((YTKACEPlayerControlButton *)more).layoutHidden = NO;
     }
-    CGRect frame = CGRectMake(plan.x, plan.y, plan.width, 44.0);
-    if (!CGRectEqualToRect(stack.frame, frame)) stack.frame = frame;
+    if (YTPCValid(plan.first)) {
+        CGRect r = CGRectMake(plan.first.x,plan.first.y,plan.first.width,44);
+        if (!CGRectEqualToRect(stack.frame,r)) stack.frame = r;
+    }
+    if (YTPCValid(plan.second)) {
+        CGRect r = CGRectMake(plan.second.x,plan.second.y,plan.second.width,44);
+        if (!CGRectEqualToRect(second.frame,r)) second.frame = r;
+    }
 }
 
 static void YTKACEControlsOverlayLayout(UIView *receiver, SEL selector) {
@@ -548,6 +623,8 @@ static void YTKACEControlsOverlayLayout(UIView *receiver, SEL selector) {
         UIStackView *stack = objc_getAssociatedObject(receiver, YTKACEOverlayStackAssociation);
         if (deferred) {
             if (stack && !stack.hidden) stack.hidden = YES;
+            UIStackView *second = objc_getAssociatedObject(receiver, YTKACESecondRowKey);
+            if (second && !second.hidden) second.hidden = YES;
             YTKACEReportLayoutState(receiver, deferred);
             return;
         }
@@ -561,7 +638,12 @@ static void YTKACEControlsOverlayLayout(UIView *receiver, SEL selector) {
             configure(receiver, stack);
         }
         YTKACELayoutPlayerButtons(receiver, stack);
-        if (stack.superview == receiver && receiver.subviews.lastObject != stack) [receiver bringSubviewToFront:stack];
+        UIView *second = objc_getAssociatedObject(receiver, YTKACESecondRowKey);
+        if (second) {
+            if (receiver.subviews.lastObject != second) [receiver bringSubviewToFront:second];
+            NSUInteger index = [receiver.subviews indexOfObjectIdenticalTo:second];
+            if (index > 0 && receiver.subviews[index - 1] != stack) [receiver insertSubview:stack belowSubview:second];
+        } else if (receiver.subviews.lastObject != stack) [receiver bringSubviewToFront:stack];
         YTKACEReportLayoutState(receiver, stack.hidden ? @"no-free-slot" : @"local-row-visible");
     } @finally {
         objc_setAssociatedObject(receiver, YTKACELayoutInProgress, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);

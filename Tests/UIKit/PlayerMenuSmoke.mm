@@ -29,6 +29,9 @@ static void Later(dispatch_block_t block) {
 @interface YTBottomSheetController : UIViewController @end
 @implementation YTBottomSheetController @end
 
+static UINavigationController *MenuNavigation(UIViewController *presentation) {
+    return [presentation isKindOfClass:UINavigationController.class] ? (id)presentation : (id)presentation.childViewControllers.firstObject;
+}
 @interface PlayerMenuSmoke : UIResponder <UIApplicationDelegate, UIWindowSceneDelegate>
 @property(nonatomic, strong) UIWindow *window;
 @property(nonatomic, strong) UIViewController *root;
@@ -78,14 +81,17 @@ static void Later(dispatch_block_t block) {
 - (void)testOwnedMenu {
     Check(YTKACEPresentSystemMenu(self.root, self.button, @"Player options", nil, self.actions), @"owned menu did not present");
     Later(^{
-        UINavigationController *menu = (id)self.root.presentedViewController;
+        UIViewController *menu = self.root.presentedViewController;
         Check(YTKACEIsPlayerPopover(menu), @"owned menu did not stay a player popover");
         Check(menu.modalPresentationStyle == UIModalPresentationPopover, @"wrong presentation style");
         Check(menu.popoverPresentationController.sourceView == self.button, @"wrong anchor");
         Check([menu.popoverPresentationController.delegate adaptivePresentationStyleForPresentationController:menu.presentationController] == UIModalPresentationNone, @"compact-width adaptation enabled");
         CGRect frame = [menu.view convertRect:menu.view.bounds toView:self.window];
         Check(CGRectContainsRect(CGRectInset(self.window.bounds, -1, -1), frame), @"popover exceeded window");
-        UITableViewController *content = (id)menu.topViewController;
+        UITableViewController *content = (id)MenuNavigation(menu).topViewController;
+        CGFloat slack = content.tableView.bounds.size.height - content.tableView.contentSize.height -
+            content.tableView.contentInset.top - content.tableView.contentInset.bottom;
+        Check(slack < 24, [NSString stringWithFormat:@"short player menu blank footer slack=%.1f table=%@ content=%@ preferred=%@ nav=%.1f child=%@ last=%@ safe=%@ adjusted=%@ navsafe=%@",slack,NSStringFromCGRect(content.tableView.bounds),NSStringFromCGSize(content.tableView.contentSize),NSStringFromCGSize(menu.preferredContentSize),MenuNavigation(menu).navigationBar.bounds.size.height,NSStringFromCGSize(content.preferredContentSize),NSStringFromCGRect([content.tableView rectForRowAtIndexPath:[NSIndexPath indexPathForRow:2 inSection:0]]),NSStringFromUIEdgeInsets(content.tableView.safeAreaInsets),NSStringFromUIEdgeInsets(content.tableView.adjustedContentInset),NSStringFromUIEdgeInsets(menu.view.safeAreaInsets)]);
         UITableViewCell *selected = [content.tableView cellForRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]];
         Check(selected.accessoryType == UITableViewCellAccessoryCheckmark, @"selection lost");
         [content.tableView.delegate tableView:content.tableView didSelectRowAtIndexPath:[NSIndexPath indexPathForRow:1 inSection:0]];
@@ -105,10 +111,29 @@ static void Later(dispatch_block_t block) {
     Later(^{
         UIViewController *menu = self.root.presentedViewController;
         Check(!YTKACEIsPlayerPopover(menu), @"settings incorrectly became a player popover");
+        UINavigationController *navigation = MenuNavigation(menu);
+        UITableViewController *table = (id)navigation.topViewController;
+        CGFloat slack = table.tableView.bounds.size.height - table.tableView.contentSize.height -
+            table.tableView.contentInset.top - table.tableView.contentInset.bottom;
+        Check(slack < 48, @"short settings sheet has excessive blank footer");
         [menu dismissViewControllerAnimated:NO completion:^{
             [settings removeFromSuperview];
-            [self testLongList];
+            [self testTimerList];
         }];
+    });
+}
+- (void)testTimerList {
+    NSMutableArray *actions = [NSMutableArray array];
+    for (NSString *title in @[@"Off",@"10 minutes",@"15 minutes",@"20 minutes",@"30 minutes",@"45 minutes",@"1 hour",@"End of video"])
+        [actions addObject:@{@"title":title}];
+    Check(YTKACEPresentSystemMenu(self.root,self.button,@"Sleep Timer",nil,actions), @"timer menu did not present");
+    Later(^{
+        UIViewController *menu = self.root.presentedViewController;
+        UITableViewController *table = (id)MenuNavigation(menu).topViewController;
+        CGFloat slack = table.tableView.bounds.size.height - table.tableView.contentSize.height -
+            table.tableView.contentInset.top - table.tableView.contentInset.bottom;
+        Check(slack < 24, @"eight-row timer menu has excessive blank footer");
+        [menu dismissViewControllerAnimated:NO completion:^{ [self testLongList]; }];
     });
 }
 - (void)testLongList {
@@ -117,8 +142,8 @@ static void Later(dispatch_block_t block) {
         [actions addObject:@{@"title": [NSString stringWithFormat:@"Option %lu", (unsigned long)index]}];
     Check(YTKACEPresentSystemMenu(self.root, self.button, @"Long menu", nil, actions), @"long menu did not present");
     Later(^{
-        UINavigationController *menu = (id)self.root.presentedViewController;
-        UITableViewController *content = (id)menu.topViewController;
+        UIViewController *menu = self.root.presentedViewController;
+        UITableViewController *content = (id)MenuNavigation(menu).topViewController;
         Check(content.tableView.contentSize.height > content.tableView.bounds.size.height, @"long list not scrollable");
         [menu dismissViewControllerAnimated:NO completion:^{
             [self.button addTarget:self action:@selector(openNative:) forControlEvents:UIControlEventTouchUpInside];
