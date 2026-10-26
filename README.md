@@ -78,8 +78,10 @@ retains PoomSmart's MIT notice in `YTKACE.bundle/Licenses/YouQuality.txt`.
 
 Buttons fill the native top band, then a second trailing row below the gear, using
 44pt targets, 24pt icons and 6pt spacing. **Player → Player Button Layout** defaults to Expanded: crowded rows scroll
-horizontally without a More button. More Menu restores the compact layout. Downloads
-get the first visible slot when their overlay placement is enabled. Native reservations are cached while controls fade/auto-hide, so
+horizontally without a More button. More Menu restores the compact layout. Download
+and PiP start the second row together, including in wide players; other upper-row
+overflow follows them. If no safe second band exists, single-row/overflow behavior
+is retained. Native reservations are cached while controls fade/auto-hide, so
 opacity changes do not move custom buttons into the cast/CC/gear slots. Rotation
 invalidates the cache. YTKACE does not register with or load YTVideoOverlay;
 CaptionIsland independently retains its existing bottom-button integration.
@@ -116,7 +118,10 @@ and verified actions, without requiring their text to be decoded. It opens besid
 the actual gear and retains that window-space anchor if YouTube hides the controls
 during presentation. Native quality/speed submenus keep the same anchor. Original
 sheet lifecycle/owner dismissal still run; row hierarchy/layout is restored before
-actions. The native gear is identified from the overlay's overflow/settings anchor,
+actions. Zero-height native ELM rows wait for up to three additional layout passes
+(150 ms); rows still collapsed then are omitted, while visible siblings and late
+materialized rows remain available. No replacement labels or heights are invented.
+The native gear is identified from the overlay's overflow/settings anchor,
 separately from registered tweak controls. Other unknown buttons keep the original route.
 The YTKACE button factory registers its own controls, including More; other tweaks
 can explicitly register their own player button with

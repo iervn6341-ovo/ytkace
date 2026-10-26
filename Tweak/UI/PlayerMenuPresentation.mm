@@ -287,10 +287,7 @@ static void Present(UIViewController *receiver, SEL selector, UIViewController *
                     controller.view.alpha = alpha;
                     if (completion) completion();
                     if (!controller.presentingViewController || controller.isBeingDismissed) return;
-                    NSArray *rows = YTKACENativePlayerRows(controller);
-                    if (rows) YTKACEPresentAdaptedPlayerMenu(controller,source,rows);
-                    else os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] gear fallback reason=unavailable-native-rows class=%{public}@ bounds=%{public}@",
-                        NSStringFromClass(controller.class),NSStringFromCGRect(controller.view.bounds));
+                    YTKACEPresentNativeGearMenu(controller,source);
                 });
                 return;
             }

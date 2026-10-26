@@ -5,7 +5,9 @@ For the independent player controls/transition/PlayerGlass regression, build
 Launch `dev.captionisland.player-controls-smoke` on a disposable iPhone simulator
 and read `Documents/result.txt`. It uses the production host and glass hooks with
 fake native classes, including glass on/keep-controls off, repeated transforms,
-compact/expanded two-row packing, horizontally scrollable crowded rows, download priority, native fade/auto-hide geometry reservations and integrated quality
+compact/expanded two-row packing, horizontally scrollable crowded rows, download/PiP
+grouping at the start of the second row in portrait and wide players, native
+fade/auto-hide geometry reservations and integrated quality
 labels, model/controller identity differences, immediate selection/constraint updates,
 Auto reset, old-video callback isolation and repeated native action routing,
 cancelled pans, zero size, native glass reuse and layout reentry. It does not load
@@ -37,7 +39,11 @@ controls keep original presentation without reading action titles. Fresh tweak-s
 and by the production touch-origin observer (called with a view fixture, not HID).
 The known native gear has separate tests requiring an actual popover, native live
 rows without title extraction, a window-space anchor while the gear is hidden,
-anchored submenus, cancellation/reopening and original owner lifecycle. Launch with
+anchored submenus, cancellation/reopening and original owner lifecycle. The gear
+fixture reproduces the device's index-3 ELM control with 398 x -0 bounds and a
+separate row that gains height 80 ms after appearance: the final popover must omit
+only the collapsed row and include the late row, with four native rows in total.
+Launch with
 `--preview-native-gear` and wait for `Documents/gear-preview.txt` to hold that state
 for screenshots. This preview mode does not produce a new full-suite PASS.
 Quality coverage includes absent callbacks, unreadable non-Auto callbacks, explicit

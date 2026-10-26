@@ -16,6 +16,7 @@ static const void *NativeItemIdentifierKey = &NativeItemIdentifierKey;
 static const void *NativeTextProbeKey = &NativeTextProbeKey;
 static const void *NativeOutsideTapKey = &NativeOutsideTapKey;
 static const void *NativeControlModelKey = &NativeControlModelKey;
+static const void *NativeRowsPendingKey = &NativeRowsPendingKey;
 static IMP OriginalSetButton;
 static IMP OriginalActionsForRenderers;
 static IMP OriginalFactories[9];
@@ -330,12 +331,14 @@ void YTKACEInstallNativePlayerMenuAdapter(void) {
         YTKACEInstallClassHook(@"YTActionSheetAction",selectors[index],factories[index],&OriginalFactories[index]);
 }
 
-static NSArray<NSDictionary *> *NativePlayerActions(UIViewController *controller, BOOL nativeViewsOnly) {
+static NSArray<NSDictionary *> *NativePlayerActions(UIViewController *controller, BOOL nativeViewsOnly, BOOL settled = YES) {
     // These links are used by YouTube's default/action/contextual sheet models.
     // Inspect a bounded controller/model graph, never infer actions from labels
     // or replay taps into the old clipped screen coordinates.
     objc_setAssociatedObject(controller,NativeTextRetryKey,nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(controller,NativeRowsPendingKey,nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     [controller loadViewIfNeeded];
+    if (nativeViewsOnly) { [controller.view setNeedsLayout]; [controller.view layoutIfNeeded]; }
     NSMutableArray *queue = [NSMutableArray arrayWithObject:controller];
     NSHashTable *seen = [NSHashTable hashTableWithOptions:NSPointerFunctionsObjectPointerPersonality];
     NSArray *models = nil;
@@ -361,7 +364,7 @@ static NSArray<NSDictionary *> *NativePlayerActions(UIViewController *controller
     }
     NSMutableArray *actions = [NSMutableArray array];
     NSMutableDictionary<NSString *,NSNumber *> *titleSources = [NSMutableDictionary dictionary];
-    NSUInteger spacers = 0;
+    NSUInteger spacers = 0, collapsed = 0;
     for (NSUInteger nativeIndex = 0; nativeIndex < models.count; ++nativeIndex) {
         id model = models[nativeIndex];
         id button = Value(model,@"button");
@@ -372,6 +375,23 @@ static NSArray<NSDictionary *> *NativePlayerActions(UIViewController *controller
             if (spacerClass && [button isKindOfClass:spacerClass] && !handler &&
                 !Nonempty(PlainString(captured[@"title"])) && !Nonempty(Text(button,@"currentTitle")) &&
                 !Nonempty(Text(button,@"currentAttributedTitle")) && !Nonempty(Text(button,@"accessibilityLabel"))) { spacers++; continue; }
+            // Native action arrays include collapsed ELM rows (the device log
+            // reports index 3 at 398 x -0). Give asynchronous ELM layout time
+            // to materialize first. A row still at zero height after that is
+            // absent from the native UI; do not invent a blank 44-point action
+            // or reject all of its visible siblings.
+            if ([button isKindOfClass:UIControl.class] && [button isDescendantOfView:controller.view] &&
+                isfinite([button bounds].size.width) && [button bounds].size.width >= 44 &&
+                isfinite([button bounds].size.height) && [button bounds].size.height == 0) {
+                if (!settled) {
+                    objc_setAssociatedObject(controller,NativeRowsPendingKey,@YES,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                    return nil;
+                }
+                collapsed++;
+                os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] gear collapsed-row index=%lu class=%{public}@ bounds=%{public}@",
+                    (unsigned long)nativeIndex,NSStringFromClass([button class]),NSStringFromCGRect([button bounds]));
+                continue;
+            }
             BOOL enabled = Flag(model,@"isEnabled",Flag(button,@"isEnabled",YES));
             YTKACEMenuNativeRow *row = [button isKindOfClass:UIControl.class] &&
                 [button isDescendantOfView:controller.view] ? [[YTKACEMenuNativeRow alloc] initWithView:button] : nil;
@@ -450,12 +470,38 @@ static NSArray<NSDictionary *> *NativePlayerActions(UIViewController *controller
         [actions addObject:action];
     }
     if (!actions.count) return nil;
-    os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] decoded actions=%lu spacers=%lu titleSources=%{public}@",
-        (unsigned long)actions.count,(unsigned long)spacers,titleSources);
+    os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] decoded actions=%lu spacers=%lu collapsed=%lu titleSources=%{public}@",
+        (unsigned long)actions.count,(unsigned long)spacers,(unsigned long)collapsed,titleSources);
     return actions;
 }
 NSArray<NSDictionary *> *YTKACENativePlayerActions(UIViewController *controller) { return NativePlayerActions(controller,NO); }
 NSArray<NSDictionary *> *YTKACENativePlayerRows(UIViewController *controller) { return NativePlayerActions(controller,YES); }
+
+static void PresentGearAfterLayout(UIViewController *controller, UIView *source, CGFloat alpha, NSUInteger attempt) {
+    if (!controller.presentingViewController || controller.isBeingDismissed || controller.presentedViewController ||
+        !YTKACEIsPlayerMenuSource(source)) { controller.view.alpha = alpha; return; }
+    controller.view.alpha = alpha;
+    NSArray *rows = NativePlayerActions(controller,YES,attempt >= 3);
+    if (rows) {
+        os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] gear layout-ready attempts=%lu",(unsigned long)attempt + 1);
+        YTKACEPresentAdaptedPlayerMenu(controller,source,rows);
+        return;
+    }
+    if ([objc_getAssociatedObject(controller,NativeRowsPendingKey) boolValue] && attempt < 3) {
+        controller.view.alpha = 0;
+        if (!attempt) os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] gear layout-pending reason=zero-height-row");
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,50 * NSEC_PER_MSEC),dispatch_get_main_queue(),^{
+            PresentGearAfterLayout(controller,source,alpha,attempt + 1);
+        });
+        return;
+    }
+    YTKACEEnableNativeMenuOutsideDismissal(controller);
+    os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] gear fallback reason=unavailable-native-rows class=%{public}@ bounds=%{public}@",
+        NSStringFromClass(controller.class),NSStringFromCGRect(controller.view.bounds));
+}
+void YTKACEPresentNativeGearMenu(UIViewController *controller, UIView *source) {
+    PresentGearAfterLayout(controller,source,controller.view.alpha,0);
+}
 
 BOOL YTKACENativeMenuNeedsTextRetry(UIViewController *controller) {
     return [objc_getAssociatedObject(controller,NativeTextRetryKey) boolValue];

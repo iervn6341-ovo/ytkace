@@ -577,9 +577,13 @@ static void YTKACELayoutPlayerButtons(UIView *overlay, UIStackView *stack) {
             ? ((YTKACEPlayerControlButton *)button).featureHidden : button.hidden;
         if (!featureHidden) [wanted addObject:button];
     }
-    for (UIButton *button in wanted.copy) if ([button.accessibilityIdentifier isEqual:@"YTKACE Download"]) {
-        [wanted removeObjectIdenticalTo:button]; [wanted insertObject:button atIndex:0]; break;
-    }
+    NSMutableArray<UIButton *> *lower = [NSMutableArray array];
+    for (NSString *identifier in @[@"YTKACE Download",@"YTKACE PiP"])
+        for (UIButton *button in wanted.copy) if ([button.accessibilityIdentifier isEqual:identifier]) {
+            [wanted removeObjectIdenticalTo:button]; [lower addObject:button]; break;
+        }
+    NSUInteger primaryCount = wanted.count;
+    [wanted addObjectsFromArray:lower];
     CGRect safe = UIEdgeInsetsInsetRect(overlay.bounds, overlay.safeAreaInsets);
     CGFloat left = CGRectGetMinX(safe) + 8.0;
     CGFloat right = CGRectGetMaxX(safe) - 8.0;
@@ -590,7 +594,7 @@ static void YTKACELayoutPlayerButtons(UIView *overlay, UIStackView *stack) {
         ((YTKACEPlayerRow *)stack).viewport.hidden = YES; ((YTKACEPlayerRow *)second).viewport.hidden = YES;
         return;
     }
-    auto plan = ytkace::planPlayerToolbar(left, right, top, CGRectGetMaxY(safe) - 52, wanted.count, obstacles);
+    auto plan = ytkace::planPlayerToolbar(left, right, top, CGRectGetMaxY(safe) - 52, wanted.count, obstacles,lower.count);
     BOOL expanded = [NSUserDefaults.standardUserDefaults integerForKey:@"YTKACE.Preference.Overlay.ButtonLayout"] == 0;
     if (expanded && plan.overflowCount) {
         if (YTPCValid(plan.second)) {
@@ -599,6 +603,13 @@ static void YTKACELayoutPlayerButtons(UIView *overlay, UIStackView *stack) {
             plan.firstCount = wanted.count;
         }
         plan.overflowCount = 0;
+    }
+    if (YTPCValid(plan.second) && lower.count) {
+        // Keep download/PiP immediately visible at the start of the lower row;
+        // any other controls spilling from the upper row follow that group.
+        [wanted removeObjectsInArray:lower];
+        NSIndexSet *positions = [NSIndexSet indexSetWithIndexesInRange:NSMakeRange(MIN(plan.firstCount,primaryCount),lower.count)];
+        [wanted insertObjects:lower atIndexes:positions];
     }
     UIScrollView *firstViewport = ((YTKACEPlayerRow *)stack).viewport;
     UIScrollView *secondViewport = ((YTKACEPlayerRow *)second).viewport;

@@ -155,7 +155,7 @@ static BOOL Finite(CGRect r) { return std::isfinite(r.origin.x) && std::isfinite
     YTKACERegisterOverlayConfigurator(@"test-controls", ^(UIView *overlay, UIStackView *stack) {
         target.overlay = overlay;
         for (int index = 0; index < 8; ++index) {
-            UIButton *button = YTKACEOverlayButton(stack, (index == 7 ? @"YTKACE Download" : [NSString stringWithFormat:@"YTKACE Test %d", index]), @"play", target, @selector(tap:));
+            UIButton *button = YTKACEOverlayButton(stack, (index == 7 ? @"YTKACE Download" : (index == 6 ? @"YTKACE PiP" : [NSString stringWithFormat:@"YTKACE Test %d", index])), @"play", target, @selector(tap:));
             button.hidden = HiddenFeatures;
             target.button = button;
         }
@@ -225,6 +225,9 @@ static BOOL Finite(CGRect r) { return std::isfinite(r.origin.x) && std::isfinite
     native[1].frame = CGRectMake(696,4,44,44); native[2].frame = CGRectMake(746,4,44,44); native[3].frame = CGRectMake(796,4,44,44);
     [overlay layoutSubviews];
     Check(!row.superview.hidden && more.hidden && row.superview.frame.origin.y == 4, @"landscape must restore all inline controls");
+    Check(Find(overlay,@"YTKACE Download").superview == second && Find(overlay,@"YTKACE PiP").superview == second &&
+        second.superview.frame.origin.y == row.superview.frame.origin.y + 50,
+        @"download and PiP must share the second row even when all controls fit on a wide first row");
     for (UIButton *button in row.arrangedSubviews) if (button != more) Check(!button.hidden, @"landscape button visibility");
     overlay.frame = CGRectMake(0,0,414,233); player.frame = CGRectMake(0,80,414,233);
     native[1].frame = CGRectMake(258,4,44,44); native[2].frame = CGRectMake(308,4,44,44); native[3].frame = CGRectMake(358,4,44,44);
@@ -295,7 +298,9 @@ static BOOL Finite(CGRect r) { return std::isfinite(r.origin.x) && std::isfinite
     [NSUserDefaults.standardUserDefaults setInteger:0 forKey:@"YTKACE.Preference.Overlay.ButtonLayout"];
     [overlay layoutSubviews]; [row layoutIfNeeded]; [second layoutIfNeeded];
     Check(!more || more.hidden, @"expanded mode must not collapse actions into More");
-    Check([((UIButton *)row.arrangedSubviews.firstObject).accessibilityIdentifier isEqual:@"YTKACE Download"], @"download must retain an immediately visible slot");
+    Check([((UIButton *)second.arrangedSubviews.firstObject).accessibilityIdentifier isEqual:@"YTKACE Download"] &&
+        [((UIButton *)second.arrangedSubviews[1]).accessibilityIdentifier isEqual:@"YTKACE PiP"],
+        @"download and PiP must be the first controls in the second row in expanded portrait mode");
     NSUInteger expandedCount = 0;
     for (UIStackView *candidate in @[row,second]) for (UIButton *item in candidate.arrangedSubviews) {
         if (item == more) continue;

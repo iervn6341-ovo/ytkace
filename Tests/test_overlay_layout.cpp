@@ -66,6 +66,11 @@ int main() {
     assert(toolbar.fits && YTPCValid(toolbar.first) && YTPCValid(toolbar.second));
     assert(toolbar.second.y == 54 && toolbar.firstCount + toolbar.secondCount + toolbar.overflowCount == 9);
     assert(toolbar.second.x >= 330 && toolbar.overflowOnSecond);
+    auto grouped = ytkace::planPlayerToolbar(8,844,4,362,5,{{8,4,44,44},{696,4,148,44}},2);
+    assert(grouped.firstCount == 3 && grouped.secondCount == 2 && grouped.overflowCount == 0);
+    assert(grouped.second.y == grouped.first.y + 50);
+    auto shortPlayer = ytkace::planPlayerToolbar(8,844,4,48,5,{},2);
+    assert(shortPlayer.firstCount == 5 && shortPlayer.secondCount == 0 && shortPlayer.fits);
     for (auto obstacle : portrait) {
         assert(!YTPCIntersects(toolbar.first,YTPCExpand(obstacle,6)));
         assert(!YTPCIntersects(toolbar.second,YTPCExpand(obstacle,6)));

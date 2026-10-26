@@ -4,6 +4,7 @@ NS_ASSUME_NONNULL_BEGIN
 // still presents the native controller through its original UIKit lifecycle.
 FOUNDATION_EXPORT NSArray<NSDictionary *> * _Nullable YTKACENativePlayerActions(UIViewController *controller);
 FOUNDATION_EXPORT NSArray<NSDictionary *> * _Nullable YTKACENativePlayerRows(UIViewController *controller);
+FOUNDATION_EXPORT void YTKACEPresentNativeGearMenu(UIViewController *controller, UIView *source);
 FOUNDATION_EXPORT BOOL YTKACENativeMenuNeedsTextRetry(UIViewController *controller);
 FOUNDATION_EXPORT void YTKACEEnableNativeMenuOutsideDismissal(UIViewController *controller);
 FOUNDATION_EXPORT void YTKACEPresentAdaptedPlayerMenu(UIViewController *controller,

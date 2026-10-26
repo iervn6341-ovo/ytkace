@@ -110,16 +110,24 @@ inline OverlayLayout planTrailingRow(double left, double right, double y, double
 }
 
 inline PlayerToolbarLayout planPlayerToolbar(double left, double right, double top, double bottom,
-                                              std::size_t count, const std::vector<YTPCFrame>& obstacles) {
+                                              std::size_t count, const std::vector<YTPCFrame>& obstacles,
+                                              std::size_t secondRowCount = 0) {
     PlayerToolbarLayout out;
     auto first = planTrailingRow(left,right,top,bottom,count,obstacles);
     auto slots = [](OverlayLayout row) -> std::size_t {
         return row.fits ? static_cast<std::size_t>(std::llround((row.width + 6) / 50)) : 0;
     };
     const auto firstSlots = slots(first);
-    out.firstCount = std::min(count,firstSlots);
-    const auto remaining = count - out.firstCount;
+    out.firstCount = std::min(count - std::min(count,secondRowCount),firstSlots);
+    auto remaining = count - out.firstCount;
     auto second = planTrailingRow(left,right,top + 50,bottom,remaining,obstacles);
+    // Prefer the requested lower-row group even in a wide player. If there is
+    // no safe lower band, retain the existing single-row/overflow behavior.
+    if (!second.fits && secondRowCount) {
+        out.firstCount = std::min(count,firstSlots);
+        remaining = count - out.firstCount;
+        second = planTrailingRow(left,right,top + 50,bottom,remaining,obstacles);
+    }
     const auto secondSlots = slots(second);
     out.secondCount = std::min(remaining,secondSlots);
     if (out.firstCount + out.secondCount < count) {

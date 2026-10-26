@@ -189,6 +189,7 @@ static NativeTestAction *VirtualAction(NSString *title, NSUInteger mode, dispatc
 @property(nonatomic, strong) id actionsController;
 @property(nonatomic, strong) UIButton *lateTitleButton;
 @property(nonatomic, weak) UIView *hideSourceOnAppearance;
+@property(nonatomic, strong) UIView *lateGeometryButton;
 @end
 @implementation YTBottomSheetController
 - (void)viewDidAppear:(BOOL)animated {
@@ -196,6 +197,11 @@ static NativeTestAction *VirtualAction(NSString *title, NSUInteger mode, dispatc
     self.hideSourceOnAppearance.hidden = YES;
     self.hideSourceOnAppearance.transform = CGAffineTransformMakeScale(0.01,0.01);
     [self.lateTitleButton setTitle:@"Native appearance-time title" forState:UIControlStateNormal];
+    if (self.lateGeometryButton) dispatch_after(dispatch_time(DISPATCH_TIME_NOW,80 * NSEC_PER_MSEC),dispatch_get_main_queue(),^{
+        CGRect frame = self.lateGeometryButton.frame; frame.size.height = 56;
+        self.lateGeometryButton.frame = frame;
+        [self.view setNeedsLayout];
+    });
 }
 @end
 @interface NativeTestOwner : NSObject
@@ -712,15 +718,25 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
     native.modalPresentationStyle = UIModalPresentationCustom; native.transitioningDelegate = self;
     if (![NSProcessInfo.processInfo.arguments containsObject:@"--preview-native-gear"])
         native.hideSourceOnAppearance = self.gearButton;
-    YTDraggableView *panel = [[YTDraggableView alloc] initWithFrame:CGRectMake(20,80,320,88)];
+    YTDraggableView *panel = [[YTDraggableView alloc] initWithFrame:CGRectMake(8,80,398,256)];
     [native.view addSubview:panel];
     NativeOriginAction *model = [NativeOriginAction new]; model.handler = handler;
-    NativeTestOpaqueButton *button = [[NativeTestOpaqueButton alloc] initWithFrame:CGRectMake(0,0,320,56)];
+    NativeTestOpaqueButton *button = [[NativeTestOpaqueButton alloc] initWithFrame:CGRectMake(0,0,398,56)];
     button.opaque = NO; button.backgroundColor = UIColor.clearColor;
     [panel addSubview:button]; model.button = button;
-    NativeTestAction *spacer = [NativeTestAction new]; spacer.button = [[YTSpacerButton alloc] initWithFrame:CGRectMake(0,56,320,32)];
+    NSMutableArray *models = [NSMutableArray arrayWithObject:model];
+    for (NSUInteger index = 1; index <= 4; ++index) {
+        NativeOriginAction *item = [NativeOriginAction new]; item.handler = ^{ Check(NO,@"unselected native row handler must not run"); };
+        NativeTestOpaqueButton *row = [[NativeTestOpaqueButton alloc] initWithFrame:CGRectMake(0,MIN(index,3u) * 56,398,index < 3 ? 56 : -0.0)];
+        [panel addSubview:row]; item.button = row; [models addObject:item];
+        if (index == 4) native.lateGeometryButton = row;
+    }
+    // Match the real device: index 3 remains collapsed in the action array,
+    // while index 4 gains native geometry asynchronously after presentation.
+    NativeTestAction *spacer = [NativeTestAction new]; spacer.button = [[YTSpacerButton alloc] initWithFrame:CGRectMake(0,224,398,32)];
     [panel addSubview:spacer.button];
-    NativeTestOwner *owner = [NativeTestOwner new]; owner.native = native; owner.actions = @[model,spacer];
+    [models addObject:spacer];
+    NativeTestOwner *owner = [NativeTestOwner new]; owner.native = native; owner.actions = models;
     native.actionsController = owner;
     return native;
 }
@@ -754,7 +770,11 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
             @"a gear hidden/scaled by native appearance must retain its pre-presentation window-space anchor");
         Check(NativeOriginReads == 0,@"native gear content must use live rows without requiring title extraction");
         UITableViewController *table = (id)MenuNavigation(menu).topViewController;
-        Check([table.tableView numberOfRowsInSection:0] == 1,@"native gear rows must be present in the actual popover");
+        Check([table.tableView numberOfRowsInSection:0] == 4,
+            @"a persistent zero-height row must not block its visible siblings or the asynchronously materialized row");
+        UIView *collapsedRow = [(NativeTestAction *)[(NativeTestOwner *)self.gearNative.actionsController actions][3] button];
+        Check(self.gearNative.lateGeometryButton.superview != collapsedRow.superview,
+            @"the late row must be borrowed while the collapsed row stays in the native hierarchy");
         if ([NSProcessInfo.processInfo.arguments containsObject:@"--preview-native-gear"]) {
             [@"READY: hidden native gear anchored to window rect" writeToFile:[NSHomeDirectory() stringByAppendingPathComponent:@"Documents/gear-preview.txt"]
                 atomically:YES encoding:NSUTF8StringEncoding error:nil]; return;
@@ -834,7 +854,7 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
         [menu dismissViewControllerAnimated:NO completion:^{
             [settings removeFromSuperview];
             YTKACEPresentSystemMenu(self.root,self.button,@"Player options",nil,self.actions);
-            [@"PASS: native gear and submenu popovers, hidden-gear window anchors, live native rows without title reads, repeat cancel/select/owner lifecycle, tweak routing, bounds, scrolling, settings and rotation\n"
+            [@"PASS: zero-height and delayed native gear rows, native gear and submenu popovers, hidden-gear window anchors, live native rows without title reads, repeat cancel/select/owner lifecycle, tweak routing, bounds, scrolling, settings and rotation\n"
                 writeToFile:ResultPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
         }];
     });
