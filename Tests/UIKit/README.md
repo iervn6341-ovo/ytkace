@@ -32,10 +32,17 @@ selection and disabled actions, long-list scrolling, landscape rotation,
 dismissal-before-callback, native-container
 routing with preserved native lifecycle and glass, unrelated/settings controller scope, and the feature preference.
 Ownership tests use an unregistered native gear with a spoofed tweak identifier,
-a registered tweak gear icon and a registered quality button. Native gear/submenus
-must keep original style, alpha, completion and dismissal gestures without reading
-action titles. Fresh tweak-source tokens are cleared by native control activation
+a registered tweak gear icon and a registered quality button. Unregistered native
+controls keep original presentation without reading action titles. Fresh tweak-source tokens are cleared by native control activation
 and by the production touch-origin observer (called with a view fixture, not HID).
+The known native gear has separate tests requiring an actual popover, native live
+rows without title extraction, a window-space anchor while the gear is hidden,
+anchored submenus, cancellation/reopening and original owner lifecycle. Launch with
+`--preview-native-gear` and wait for `Documents/gear-preview.txt` to hold that state
+for screenshots. This preview mode does not produce a new full-suite PASS.
+Quality coverage includes absent callbacks, unreadable non-Auto callbacks, explicit
+menu choice persistence, temporary missing metadata and confirmed native-control
+activation, as well as a differently wrapped callback model.
 ELM fixtures include yoga children and controller/materialized node chains without
 UIView/subnodes/accessibility text. Native fallback cancellation verifies transformed
 panel inside/outside acceptance using a UITouch location fixture and normal recognizer

@@ -10,6 +10,9 @@
 static const void *PopoverKey = &PopoverKey;
 static const void *TapKey = &TapKey;
 static const void *TweakSourceKey = &TweakSourceKey;
+static const void *NativeGearKey = &NativeGearKey;
+static const void *LastTouchKey = &LastTouchKey;
+static const void *GearAnchorKey = &GearAnchorKey;
 static IMP OriginalSendAction, OriginalPresent, OriginalWindowEvent;
 
 @interface YTKACEPlayerMenuTap : NSObject
@@ -20,6 +23,12 @@ static IMP OriginalSendAction, OriginalPresent, OriginalWindowEvent;
 @end
 @implementation YTKACEPlayerMenuTap
 @end
+@interface YTKACEGearAnchor : NSObject
+@property(nonatomic, weak) UIWindow *window;
+@property(nonatomic) CGRect rect;
+@property(nonatomic) CGRect windowBounds;
+@end
+@implementation YTKACEGearAnchor @end
 
 static BOOL VisibleSource(UIView *source, UIWindow *window) {
     if (!source || !window || source.window != window || CGRectIsEmpty(source.bounds)) return NO;
@@ -36,12 +45,54 @@ void YTKACERegisterTweakPlayerMenuSource(UIView *source) {
     if (![source isKindOfClass:UIControl.class]) return;
     objc_setAssociatedObject(source,TweakSourceKey,@YES,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
+void YTKACERegisterNativeGearMenuSource(UIView *source) {
+    for (UIView *parent = source; parent; parent = parent.superview)
+        if ([parent isKindOfClass:UIControl.class]) { source = parent; break; }
+    if (!source || [objc_getAssociatedObject(source,TweakSourceKey) boolValue]) return;
+    if (![objc_getAssociatedObject(source,NativeGearKey) boolValue])
+        os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] gear registered class=%{public}@ bounds=%{public}@",
+            NSStringFromClass(source.class),NSStringFromCGRect(source.bounds));
+    objc_setAssociatedObject(source,NativeGearKey,@YES,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+BOOL YTKACEIsNativeGearMenuSource(UIView *source) {
+    for (UIView *view = source; view; view = view.superview)
+        if ([objc_getAssociatedObject(view,NativeGearKey) boolValue]) return YES;
+    return NO;
+}
+static UIWindow *SourceWindow(UIView *source) {
+    YTKACEGearAnchor *anchor = objc_getAssociatedObject(source,GearAnchorKey);
+    return source.window ?: anchor.window;
+}
+static CGRect GearRect(UIView *source, UIWindow *window) {
+    YTKACEGearAnchor *anchor = objc_getAssociatedObject(source,GearAnchorKey);
+    BOOL current = source.window == window && !CGRectIsEmpty(source.bounds);
+    CGRect rect = current ? [source convertRect:source.bounds toView:window] : CGRectNull;
+    BOOL valid = !CGRectIsEmpty(rect) && isfinite(rect.origin.x) && isfinite(rect.origin.y) &&
+        isfinite(rect.size.width) && isfinite(rect.size.height) && !CGRectIsEmpty(CGRectIntersection(rect,window.bounds));
+    if (valid && anchor && !VisibleSource(source,window) && !CGRectEqualToRect(anchor.windowBounds,window.bounds))
+        rect = CGRectMake(CGRectGetMidX(rect) - anchor.rect.size.width / 2,
+            CGRectGetMidY(rect) - anchor.rect.size.height / 2,anchor.rect.size.width,anchor.rect.size.height);
+    // Freeze the visible tap rectangle through native hide/scale transitions.
+    // Refresh from real geometry after rotation or when the button is visible.
+    if (valid && (VisibleSource(source,window) || !anchor || !CGRectEqualToRect(anchor.windowBounds,window.bounds))) {
+        anchor = [YTKACEGearAnchor new]; anchor.window = window; anchor.rect = rect; anchor.windowBounds = window.bounds;
+        objc_setAssociatedObject(source,GearAnchorKey,anchor,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    return anchor.window == window ? anchor.rect : CGRectNull;
+}
+static BOOL EligibleSource(UIView *source, UIWindow *window) {
+    if (!YTKACEIsNativeGearMenuSource(source)) return VisibleSource(source,window);
+    // YouTube can hide its controls when the original sheet appears. Preserve
+    // the known gear's geometry instead of losing the anchor at that moment.
+    return window && !CGRectIsEmpty(GearRect(source,window));
+}
 
 BOOL YTKACEIsPlayerMenuSource(UIView *source) {
-    if (!VisibleSource(source, source.window)) return NO;
+    if (!EligibleSource(source, SourceWindow(source))) return NO;
     BOOL tweak = NO;
     for (UIView *view = source; view; view = view.superview) {
-        tweak = tweak || [objc_getAssociatedObject(view,TweakSourceKey) boolValue];
+        tweak = tweak || [objc_getAssociatedObject(view,TweakSourceKey) boolValue] ||
+            [objc_getAssociatedObject(view,NativeGearKey) boolValue];
         for (NSString *name in @[@"YTMainAppControlsOverlayView", @"YTMainAppVideoPlayerOverlayView",
                                  @"YTInlinePlayerBarContainerView", @"YTPlayerView"]) {
             Class cls = NSClassFromString(name);
@@ -56,12 +107,14 @@ static BOOL Enabled(void) {
 }
 
 void YTKACERememberPlayerMenuSource(UIView *source) {
+    for (UIView *view = source; view; view = view.superview)
+        if ([objc_getAssociatedObject(view,TweakSourceKey) boolValue] || [objc_getAssociatedObject(view,NativeGearKey) boolValue]) { source = view; break; }
     if (!Enabled() || !YTKACEIsPlayerMenuSource(source)) return;
     YTKACEPlayerMenuTap *tap = [YTKACEPlayerMenuTap new];
     tap.source = source;
     tap.uptime = NSProcessInfo.processInfo.systemUptime;
     tap.pending = YES;
-    objc_setAssociatedObject(source.window, TapKey, tap, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(SourceWindow(source), TapKey, tap, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
 static CGSize BoundedSize(UIWindow *window, CGSize size) {
@@ -85,12 +138,12 @@ static CGSize BoundedSize(UIWindow *window, CGSize size) {
          willRepositionPopoverToRect:(inout CGRect *)rect inView:(inout UIView **)view {
     UIView *source = self.source;
     UIWindow *window = popover.presentingViewController.view.window;
-    if (!VisibleSource(source, window)) {
+    if (!EligibleSource(source, window)) {
         [popover.presentedViewController dismissViewControllerAnimated:NO completion:nil];
         return;
     }
-    *view = source;
-    *rect = source.bounds;
+    *view = YTKACEIsNativeGearMenuSource(source) ? window : source;
+    *rect = YTKACEIsNativeGearMenuSource(source) ? GearRect(source,window) : [source convertRect:source.bounds toView:*view];
     popover.presentedViewController.preferredContentSize = BoundedSize(window,
         popover.presentedViewController.preferredContentSize);
 }
@@ -105,11 +158,15 @@ static CGSize BoundedSize(UIWindow *window, CGSize size) {
 BOOL YTKACEIsPlayerPopover(UIViewController *controller) {
     return objc_getAssociatedObject(controller, PopoverKey) != nil;
 }
+UIView *YTKACEPlayerMenuSource(UIViewController *controller) {
+    YTKACEPlayerPopoverDelegate *delegate = objc_getAssociatedObject(controller,PopoverKey);
+    return delegate.source;
+}
 
 BOOL YTKACEConfigurePlayerPopover(UIViewController *controller, UIViewController *presenter,
                                    UIView *source, CGSize size) {
     if (!NSThread.isMainThread || !Enabled() || !YTKACEIsPlayerMenuSource(source) ||
-        !VisibleSource(source, presenter.view.window)) return NO;
+        !EligibleSource(source, presenter.view.window)) return NO;
     UIModalPresentationStyle originalStyle = controller.modalPresentationStyle;
     id<UIViewControllerTransitioningDelegate> originalTransition = controller.transitioningDelegate;
     controller.modalPresentationStyle = UIModalPresentationPopover;
@@ -120,20 +177,24 @@ BOOL YTKACEConfigurePlayerPopover(UIViewController *controller, UIViewController
         return NO;
     }
     controller.transitioningDelegate = nil;
-    controller.preferredContentSize = BoundedSize(source.window, size);
+    UIWindow *window = SourceWindow(source);
+    controller.preferredContentSize = BoundedSize(window, size);
     YTKACEPlayerPopoverDelegate *delegate = [YTKACEPlayerPopoverDelegate new];
     delegate.source = source;
     // UIKit holds its delegate weakly. Retain it with the presented controller.
     objc_setAssociatedObject(controller, PopoverKey, delegate, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     popover.delegate = delegate;
-    popover.sourceView = source;
-    popover.sourceRect = source.bounds;
+    popover.sourceView = YTKACEIsNativeGearMenuSource(source) ? window : source;
+    popover.sourceRect = YTKACEIsNativeGearMenuSource(source) ? GearRect(source,window) : [source convertRect:source.bounds toView:popover.sourceView];
     popover.permittedArrowDirections = UIPopoverArrowDirectionAny;
     popover.passthroughViews = nil;
     YTKACERememberPlayerMenuSource(source);
-    YTKACEPlayerMenuTap *tap = objc_getAssociatedObject(source.window, TapKey);
+    YTKACEPlayerMenuTap *tap = objc_getAssociatedObject(window, TapKey);
     tap.menu = controller;
     tap.pending = NO;
+    os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] anchor kind=%{public}@ sourceClass=%{public}@ sourceRect=%{public}@ size=%{public}@",
+        YTKACEIsNativeGearMenuSource(source) ? @"native-gear" : @"tweak",NSStringFromClass(source.class),
+        NSStringFromCGRect(popover.sourceRect),NSStringFromCGSize(controller.preferredContentSize));
     return YES;
 }
 
@@ -152,19 +213,31 @@ static UIView *SourceForPresenter(UIViewController *presenter) {
     UIViewController *ancestor = presenter;
     for (NSUInteger depth = 0; ancestor && depth < 12; ++depth) {
         YTKACEPlayerPopoverDelegate *delegate = objc_getAssociatedObject(ancestor, PopoverKey);
-        if (VisibleSource(delegate.source, presenter.view.window)) return delegate.source;
+        if (EligibleSource(delegate.source, presenter.view.window)) return delegate.source;
         ancestor = ancestor.parentViewController ?: ancestor.presentingViewController;
     }
     YTKACEPlayerMenuTap *tap = objc_getAssociatedObject(presenter.view.window, TapKey);
     if (tap.pending && NSProcessInfo.processInfo.systemUptime - tap.uptime <= 1.5 &&
         [tap.source isDescendantOfView:presenter.view] &&
-        VisibleSource(tap.source, presenter.view.window)) return tap.source;
+        EligibleSource(tap.source, presenter.view.window)) return tap.source;
     return nil;
 }
 
 static void SendAction(UIControl *receiver, SEL selector, SEL action, id target, UIEvent *event) {
     if (NSThread.isMainThread) YTKACEPrepareOverlayAction(receiver);
+    if (NSThread.isMainThread && action == NSSelectorFromString(@"didPressOverflow:")) {
+        for (UIView *view = receiver; view; view = view.superview) {
+            BOOL player = NO;
+            for (NSString *name in @[@"YTMainAppControlsOverlayView",@"YTMainAppVideoPlayerOverlayView",@"YTInlinePlayerBarContainerView",@"YTPlayerView"])
+                if (Class cls = NSClassFromString(name)) player = player || [view isKindOfClass:cls];
+            if (player) { YTKACERegisterNativeGearMenuSource(receiver); break; }
+        }
+    }
+    if (NSThread.isMainThread) [NSNotificationCenter.defaultCenter postNotificationName:YTKACEPlayerMenuTouchSource
+        object:receiver userInfo:@{@"activation":@YES}];
     if (NSThread.isMainThread && Enabled()) {
+        if (receiver.window) objc_setAssociatedObject(receiver.window,LastTouchKey,
+            @{@"class":NSStringFromClass(receiver.class),@"frame":NSStringFromCGRect([receiver convertRect:receiver.bounds toView:receiver.window])},OBJC_ASSOCIATION_COPY_NONATOMIC);
         if (YTKACEIsPlayerMenuSource(receiver)) YTKACERememberPlayerMenuSource(receiver);
         else if (receiver.window) {
             YTKACEPlayerMenuTap *tap = objc_getAssociatedObject(receiver.window, TapKey);
@@ -178,8 +251,12 @@ static void SendAction(UIControl *receiver, SEL selector, SEL action, id target,
 
 void YTKACEUpdatePlayerMenuTouchSource(UIView *target, UIWindow *window) {
     if (!Enabled() || !window) return;
+    if (target) objc_setAssociatedObject(window,LastTouchKey,
+        @{@"class":NSStringFromClass(target.class),@"frame":NSStringFromCGRect([target convertRect:target.bounds toView:window])},OBJC_ASSOCIATION_COPY_NONATOMIC);
+    if (target) [NSNotificationCenter.defaultCenter postNotificationName:YTKACEPlayerMenuTouchSource object:target];
     for (UIView *view = target; view; view = view.superview) {
-        if ([objc_getAssociatedObject(view,TweakSourceKey) boolValue] && YTKACEIsPlayerMenuSource(view)) {
+        if (([objc_getAssociatedObject(view,TweakSourceKey) boolValue] ||
+            [objc_getAssociatedObject(view,NativeGearKey) boolValue]) && YTKACEIsPlayerMenuSource(view)) {
             YTKACERememberPlayerMenuSource(view);
             return;
         }
@@ -202,6 +279,21 @@ static void Present(UIViewController *receiver, SEL selector, UIViewController *
     if (NSThread.isMainThread && Enabled() && !YTKACEIsPlayerPopover(controller) && IsYouTubeMenu(controller)) {
         UIView *source = SourceForPresenter(receiver);
         if (source) {
+            if (YTKACEIsNativeGearMenuSource(source) && !receiver.presentedViewController && OriginalPresent) {
+                YTKACEPlayerMenuTap *tap = objc_getAssociatedObject(SourceWindow(source),TapKey);
+                tap.pending = NO; tap.menu = controller;
+                CGFloat alpha = controller.view.alpha; controller.view.alpha = 0;
+                ((void (*)(id,SEL,id,BOOL,id))OriginalPresent)(receiver,selector,controller,NO,^{
+                    controller.view.alpha = alpha;
+                    if (completion) completion();
+                    if (!controller.presentingViewController || controller.isBeingDismissed) return;
+                    NSArray *rows = YTKACENativePlayerRows(controller);
+                    if (rows) YTKACEPresentAdaptedPlayerMenu(controller,source,rows);
+                    else os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] gear fallback reason=unavailable-native-rows class=%{public}@ bounds=%{public}@",
+                        NSStringFromClass(controller.class),NSStringFromCGRect(controller.view.bounds));
+                });
+                return;
+            }
             os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] origin=tweak route=adapter");
             YTKACEPlayerMenuTap *tap = objc_getAssociatedObject(source.window, TapKey);
             tap.menu = controller;
@@ -243,7 +335,8 @@ static void Present(UIViewController *receiver, SEL selector, UIViewController *
                 return;
             }
         } else {
-            os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] origin=unregistered route=original");
+            os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] origin=unregistered route=original controller=%{public}@ bounds=%{public}@ lastTouch=%{public}@",
+                NSStringFromClass(controller.class),NSStringFromCGRect(controller.view.bounds),objc_getAssociatedObject(receiver.view.window,LastTouchKey) ?: @{});
         }
     }
     if (OriginalPresent) ((void (*)(id, SEL, id, BOOL, id))OriginalPresent)(receiver, selector, controller, animated, completion);

@@ -3,6 +3,8 @@
 #import "../Runtime/Preferences.h"
 #import "../Runtime/Localization.h"
 #import <objc/message.h>
+NSNotificationName const YTKACEPlayerMenuWillSelectAction = @"YTKACEPlayerMenuWillSelectAction";
+NSNotificationName const YTKACEPlayerMenuTouchSource = @"YTKACEPlayerMenuTouchSource";
 
 @interface YTKACEMenuNativeRow ()
 @property(nonatomic, strong) UIView *view;
@@ -307,7 +309,10 @@ void YTKACENotifySystemMenuDismissed(UIViewController *menu) {
     if (action[@"enabled"] && ![action[@"enabled"] boolValue]) return;
     dispatch_block_t handler = action[@"handler"];
     ((YTKACEMenuPresentation *)self.menuPresentation).selectedAction = YES;
-    YTKACERememberPlayerMenuSource(self.menuPresentation.popoverPresentationController.sourceView);
+    UIView *source = YTKACEPlayerMenuSource(self.menuPresentation);
+    YTKACERememberPlayerMenuSource(source);
+    if (source) [NSNotificationCenter.defaultCenter postNotificationName:YTKACEPlayerMenuWillSelectAction
+        object:source userInfo:action];
     // Dismiss before invoking actions which may immediately open another controller.
     // One presentation animation is enough for a submenu transition.
     [self.menuPresentation dismissViewControllerAnimated:NO completion:^{ if (handler) handler(); }];
@@ -334,7 +339,7 @@ BOOL YTKACEPresentSystemMenuWithDismissal(UIViewController *presenter, UIView *s
     controller.title = title.length ? title : YTKACELocalized(@"Options");
     controller.menuSubtitle = subtitle;
     controller.actions = actions;
-    controller.playerPopover = YTKACEIsPlayerMenuSource(source) && source.window == presenter.view.window;
+    controller.playerPopover = YTKACEIsPlayerMenuSource(source);
     UINavigationController *navigation = [[UINavigationController alloc] initWithRootViewController:controller];
     navigation.view.backgroundColor = UIColor.clearColor;
     YTKACEMenuPresentation *presentation = [YTKACEMenuPresentation new];

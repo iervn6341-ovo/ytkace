@@ -111,15 +111,26 @@ material, including Liquid Glass on supported systems, without an extra glass
 layer over the player menu. Selected/disabled actions, subtitles and callbacks
 retain their behavior; settings outside the player keep their existing sheets.
 
-YouTube's native gear and other native buttons, including menus opened from them,
-keep the original YouTube presentation and dismissal flow used by upstream YTKACE.
-Existing glass styling remains. They do not enter the action decoder, replacement
-list or fallback outside-tap handler. Unknown buttons also keep the original route.
+The native gear has a dedicated popover path: keep its laid-out native button rows
+and verified actions, without requiring their text to be decoded. It opens beside
+the actual gear and retains that window-space anchor if YouTube hides the controls
+during presentation. Native quality/speed submenus keep the same anchor. Original
+sheet lifecycle/owner dismissal still run; row hierarchy/layout is restored before
+actions. The native gear is identified from the overlay's overflow/settings anchor,
+separately from registered tweak controls. Other unknown buttons keep the original route.
 The YTKACE button factory registers its own controls, including More; other tweaks
 can explicitly register their own player button with
 `YTKACERegisterTweakPlayerMenuSource`. Icons, names and accessibility identifiers do
 not grant registration. New touches clear a previous tweak source even for native
 controls using UIAction. A pending source is consumed by the next presentation.
+
+Quality labels also update from a confirmed format choice/control activation in the
+active quality context, even if a private callback is missing or supplies a different
+model object. A temporary missing activeVideo does not erase the explicit choice;
+an unreadable non-Auto callback does not turn it back into Auto. Native factory labels
+remain associated with their controls without changing their targets/handlers.
+Format labels are copied before invoking private callbacks. Known video changes
+invalidate the overlay's selected-label cache.
 
 For a registered tweak button (such as the quality shortcut), the presenter recognizes
 YouTube's default/action/contextual player sheet containers.

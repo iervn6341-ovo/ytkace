@@ -1,6 +1,8 @@
 #import <UIKit/UIKit.h>
 
 NS_ASSUME_NONNULL_BEGIN
+FOUNDATION_EXPORT NSNotificationName const YTKACEPlayerMenuWillSelectAction;
+FOUNDATION_EXPORT NSNotificationName const YTKACEPlayerMenuTouchSource;
 // A rendered native row whose text is unavailable through public/object data.
 // Borrow its live view for the list, then restore hierarchy/layout before the
 // native owner closes. Selection still uses the verified action block.

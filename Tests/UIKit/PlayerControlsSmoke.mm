@@ -1,6 +1,7 @@
 #import <UIKit/UIKit.h>
 #import "../../Tweak/UI/OverlayButtonHost.h"
 #import "../../Tweak/UI/PlayerMenuPresentation.h"
+#import "../../Tweak/UI/SystemMenu.h"
 #import "../../Tweak/Runtime/Preferences.h"
 #import "../../Tweak/Runtime/Localization.h"
 #import "../../Tweak/Features/Downloads/DownloadLog.h"
@@ -37,6 +38,13 @@ void YTKACEShowNotice(NSString *message) { (void)message; }
 @implementation QualityTestPresenter
 - (void)didPressVideoQuality:(id)sender { (void)sender; self.calls++; }
 @end
+@interface QualityTestSelectionTarget : NSObject
+@property(nonatomic) NSUInteger calls;
+- (void)choose:(id)sender;
+@end
+@implementation QualityTestSelectionTarget
+- (void)choose:(id)sender { (void)sender; self.calls++; }
+@end
 @interface QualityTestFormat : NSObject
 @property(nonatomic, copy) NSString *qualityLabel;
 @end
@@ -57,7 +65,9 @@ void YTKACEShowNotice(NSString *message) { (void)message; }
 - (void)singleVideo:(id)video didSelectVideoFormat:(id)format { (void)video; (void)format; }
 @end
 
-@interface YTMainAppControlsOverlayView : UIView
+@interface YTMainAppControlsOverlayView : UIView {
+@public UIButton *_settingsButton;
+}
 @property(nonatomic, getter=isOverlayVisible) BOOL overlayVisible;
 @property(nonatomic, strong) UIButton *overflowButton;
 @property(nonatomic) BOOL requestedVisible;
@@ -164,12 +174,14 @@ static BOOL Finite(CGRect r) { return std::isfinite(r.origin.x) && std::isfinite
         UIButton *button = [[UIButton alloc] initWithFrame:CGRectMake(x.doubleValue, 4, 44, 44)];
         [native addObject:button]; [overlay addSubview:button];
     }
-    overlay.overflowButton = native.lastObject;
+    overlay->_settingsButton = native.lastObject;
+    native.lastObject.accessibilityLabel = @"設定";
     for (NSNumber *x in @[@85, @178, @275]) {
         UIButton *button = [[UIButton alloc] initWithFrame:CGRectMake(x.doubleValue, 90, 60, 60)];
         [overlay addSubview:button];
     }
     [overlay layoutSubviews];
+    Check(YTKACEIsNativeGearMenuSource(native.lastObject),@"a Chinese-labelled native gear with only a private settings ivar must be registered");
     UIStackView *row = Row(overlay);
     Check(row && !row.superview.hidden && row.alpha == 1 && row.superview.frame.origin.y == 4, @"portrait controls must appear in the native top band without YTVideoOverlay");
     UIButton *more = More(row);
@@ -225,7 +237,44 @@ static BOOL Finite(CGRect r) { return std::isfinite(r.origin.x) && std::isfinite
     [button sendActionsForControlEvents:UIControlEventTouchUpInside];
     Check(target.calls == 1 && target.overlay == overlay, @"local actions keep player context");
     Check(qualityButton && [qualityButton.currentTitle isEqual:@"Auto"], @"integrated quality button default");
+    YTKACEUpdatePlayerMenuTouchSource(native.lastObject,self.window);
+    [NSNotificationCenter.defaultCenter postNotificationName:YTKACEPlayerMenuWillSelectAction object:native.lastObject
+        userInfo:@{@"qualityEntry":@YES}];
+    [NSNotificationCenter.defaultCenter postNotificationName:YTKACEPlayerMenuWillSelectAction object:native.lastObject
+        userInfo:@{@"selectionTitle":@"1080p60 HDR"}];
+    Check([qualityButton.currentTitle isEqual:@"1080p"],@"native gear to quality submenu choices must update the separate quality button without callbacks");
+    YTKACEUpdatePlayerMenuTouchSource(qualityButton,self.window);
+    [NSNotificationCenter.defaultCenter postNotificationName:YTKACEPlayerMenuWillSelectAction object:qualityButton
+        userInfo:@{@"title":@"1440p60 HDR"}];
+    Check([qualityButton.currentTitle isEqual:@"2K"],@"a quality-menu selection must update without any private callback");
+    [overlay layoutSubviews];
+    Check([qualityButton.currentTitle isEqual:@"2K"],@"the next layout must not erase the selected menu label");
+    [[YTVideoQualitySwitchOriginalController new] singleVideo:videoController.singleVideo didSelectVideoFormat:[NSObject new]];
+    Check([qualityButton.currentTitle isEqual:@"2K"],@"an unreadable non-Auto callback must not erase the explicit menu choice");
+    id originalModel = videoController.singleVideo;
+    videoController.singleVideo = [NSObject new]; [overlay layoutSubviews];
+    Check([qualityButton.currentTitle isEqual:@"2K"],@"model wrapper changes under the same active controller must not erase the menu choice");
+    UIButton *nativeFormat = [UIButton buttonWithType:UIButtonTypeSystem];
+    [nativeFormat setTitle:@"2160p60 HDR" forState:UIControlStateNormal];
+    nativeFormat.frame = CGRectMake(0,0,44,44);
+    [self.window.rootViewController.view addSubview:nativeFormat];
+    QualityTestSelectionTarget *nativeTarget = [QualityTestSelectionTarget new];
+    [nativeFormat sendAction:@selector(choose:) to:nativeTarget forEvent:nil];
+    Check([qualityButton.currentTitle isEqual:@"4K"] && nativeTarget.calls == 1,
+        @"a confirmed native format-control activation must update without private selection callbacks");
+    [nativeFormat removeFromSuperview];
+    videoController.singleVideo = originalModel;
+    [NSNotificationCenter.defaultCenter postNotificationName:YTKACEPlayerMenuWillSelectAction object:qualityButton
+        userInfo:@{@"title":@"Auto (recommended)",@"value":@"1080p"}];
+    Check([qualityButton.currentTitle isEqual:@"Auto"],@"Auto choice must take precedence over its current resolution value");
+    [NSNotificationCenter.defaultCenter postNotificationName:YTKACEPlayerMenuWillSelectAction object:qualityButton
+        userInfo:@{@"title":@"1440p60 HDR"}];
+    qualityPlayer.activeVideo = nil; [overlay layoutSubviews];
+    Check([qualityButton.currentTitle isEqual:@"2K"],@"temporarily unavailable private video metadata must not reset a selected label");
+    qualityPlayer.activeVideo = videoController;
     QualityTestFormat *format = [QualityTestFormat new]; format.qualityLabel = @"1080p60 HDR";
+    [[YTVideoQualitySwitchOriginalController new] singleVideo:[NSObject new] didSelectVideoFormat:format];
+    Check([qualityButton.currentTitle isEqual:@"1080p"],@"an opaque callback identity must still update the active selection context");
     [[YTVideoQualitySwitchOriginalController new] singleVideo:videoController.singleVideo didSelectVideoFormat:format];
     Check([qualityButton.currentTitle isEqual:@"1080p"] && [qualityButton.accessibilityValue isEqual:@"1080p60 HDR"], @"selected quality must update label and retain full accessibility value");
     format.qualityLabel = @"720p60"; [videoController setVideoFormatConstraint:format];

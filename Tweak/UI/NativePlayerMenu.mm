@@ -1,5 +1,6 @@
 #import "NativePlayerMenu.h"
 #import "SystemMenu.h"
+#import "PlayerMenuPresentation.h"
 #import "../Runtime/Hooking.h"
 #import "../Runtime/Preferences.h"
 #import <objc/message.h>
@@ -14,12 +15,31 @@ static const void *NativeTextRetryKey = &NativeTextRetryKey;
 static const void *NativeItemIdentifierKey = &NativeItemIdentifierKey;
 static const void *NativeTextProbeKey = &NativeTextProbeKey;
 static const void *NativeOutsideTapKey = &NativeOutsideTapKey;
+static const void *NativeControlModelKey = &NativeControlModelKey;
+static IMP OriginalSetButton;
 static IMP OriginalActionsForRenderers;
 static IMP OriginalFactories[9];
 @interface YTKACENativeMenuOwner : NSObject
 @property(nonatomic, weak) id value;
 @end
 @implementation YTKACENativeMenuOwner @end
+static void RememberControl(id action, id button) {
+    if (![button isKindOfClass:UIView.class]) return;
+    YTKACENativeMenuOwner *box = [YTKACENativeMenuOwner new]; box.value = action;
+    objc_setAssociatedObject(button,NativeControlModelKey,box,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+static void SetButton(id receiver, SEL cmd, id button) {
+    if (OriginalSetButton) ((void (*)(id,SEL,id))OriginalSetButton)(receiver,cmd,button);
+    RememberControl(receiver,button);
+}
+NSString *YTKACENativeControlTitle(UIView *source) {
+    for (NSUInteger depth = 0; source && depth < 8; ++depth,source = source.superview) {
+        YTKACENativeMenuOwner *box = objc_getAssociatedObject(source,NativeControlModelKey);
+        NSString *title = objc_getAssociatedObject(box.value,NativePresentationKey)[@"title"];
+        if (title.length) return title;
+    }
+    return nil;
+}
 
 static id Value(id object, NSString *name) {
     if (!object) return nil;
@@ -70,6 +90,7 @@ static id Capture(id action, id title, id subtitle, id value, id icon, id second
     if ([secondary isKindOfClass:UIImage.class]) metadata[@"secondary"] = secondary;
     if (selected) metadata[@"selected"] = selected;
     objc_setAssociatedObject(action,NativePresentationKey,metadata,OBJC_ASSOCIATION_COPY_NONATOMIC);
+    RememberControl(action,Value(action,@"button"));
     return action;
 }
 static id SimpleFactory(id cls, SEL cmd, id title, NSInteger style, id handler) {
@@ -291,6 +312,7 @@ static id ActionsForRenderers(id receiver, SEL selector, NSArray *renderers, UIV
 }
 
 void YTKACEInstallNativePlayerMenuAdapter(void) {
+    YTKACEInstallInstanceHook(@"YTActionSheetAction",@"setButton:",(IMP)SetButton,&OriginalSetButton);
     YTKACEInstallInstanceHook(@"YTMenuController",
         @"actionsForRenderers:fromView:entry:shouldLogItems:firstResponder:",
         (IMP)ActionsForRenderers,&OriginalActionsForRenderers);
@@ -308,7 +330,7 @@ void YTKACEInstallNativePlayerMenuAdapter(void) {
         YTKACEInstallClassHook(@"YTActionSheetAction",selectors[index],factories[index],&OriginalFactories[index]);
 }
 
-NSArray<NSDictionary *> *YTKACENativePlayerActions(UIViewController *controller) {
+static NSArray<NSDictionary *> *NativePlayerActions(UIViewController *controller, BOOL nativeViewsOnly) {
     // These links are used by YouTube's default/action/contextual sheet models.
     // Inspect a bounded controller/model graph, never infer actions from labels
     // or replay taps into the old clipped screen coordinates.
@@ -346,6 +368,30 @@ NSArray<NSDictionary *> *YTKACENativePlayerActions(UIViewController *controller)
         NSDictionary *captured = objc_getAssociatedObject(model,NativePresentationKey);
         dispatch_block_t handler = ActionHandler(model);
         Class spacerClass = NSClassFromString(@"YTSpacerButton");
+        if (nativeViewsOnly) {
+            if (spacerClass && [button isKindOfClass:spacerClass] && !handler &&
+                !Nonempty(PlainString(captured[@"title"])) && !Nonempty(Text(button,@"currentTitle")) &&
+                !Nonempty(Text(button,@"currentAttributedTitle")) && !Nonempty(Text(button,@"accessibilityLabel"))) { spacers++; continue; }
+            BOOL enabled = Flag(model,@"isEnabled",Flag(button,@"isEnabled",YES));
+            YTKACEMenuNativeRow *row = [button isKindOfClass:UIControl.class] &&
+                [button isDescendantOfView:controller.view] ? [[YTKACEMenuNativeRow alloc] initWithView:button] : nil;
+            if (!row || (enabled && !handler)) {
+                os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] gear row-unavailable index=%lu class=%{public}@ handler=%d bounds=%{public}@ parent=%{public}@",
+                    (unsigned long)nativeIndex,button ? NSStringFromClass([button class]) : @"none",handler != nil,
+                    [button isKindOfClass:UIView.class] ? NSStringFromCGRect([button bounds]) : @"none",
+                    [button isKindOfClass:UIView.class] ? NSStringFromClass([[button superview] class]) : @"none");
+                return nil;
+            }
+            NSMutableDictionary *item = [@{@"nativeRow":row,@"enabled":@(enabled)} mutableCopy];
+            NSString *identifier = objc_getAssociatedObject(model,NativeItemIdentifierKey);
+            if ([identifier isEqual:@"menu_item_video_quality"]) item[@"qualityEntry"] = @YES;
+            NSString *selectionTitle = Nonempty(PlainString(captured[@"title"])) ?: Nonempty(Text(button,@"currentTitle"))
+                ?: Nonempty(Text(Value(button,@"titleLabel"),@"text"));
+            if (selectionTitle) item[@"selectionTitle"] = selectionTitle;
+            if (handler) item[@"handler"] = handler;
+            [actions addObject:item];
+            continue;
+        }
         if (spacerClass && [button isKindOfClass:spacerClass] && !handler &&
             !Nonempty(Text(model,@"title")) && !Nonempty(Text(model,@"attributedTitle")) &&
             !Nonempty(Text(model,@"titleText")) && !Nonempty(Text(model,@"titleString")) && !captured[@"title"] &&
@@ -408,6 +454,8 @@ NSArray<NSDictionary *> *YTKACENativePlayerActions(UIViewController *controller)
         (unsigned long)actions.count,(unsigned long)spacers,titleSources);
     return actions;
 }
+NSArray<NSDictionary *> *YTKACENativePlayerActions(UIViewController *controller) { return NativePlayerActions(controller,NO); }
+NSArray<NSDictionary *> *YTKACENativePlayerRows(UIViewController *controller) { return NativePlayerActions(controller,YES); }
 
 BOOL YTKACENativeMenuNeedsTextRetry(UIViewController *controller) {
     return [objc_getAssociatedObject(controller,NativeTextRetryKey) boolValue];
@@ -499,6 +547,7 @@ void YTKACEEnableNativeMenuOutsideDismissal(UIViewController *controller) {
 
 @interface YTKACENativeMenuSession : NSObject
 @property(nonatomic, weak) UIViewController *native;
+@property(nonatomic, weak) UIView *source;
 @property(nonatomic) CGFloat originalAlpha;
 @property(nonatomic, copy) NSArray<UIView *> *backdrops;
 @property(nonatomic, copy) NSArray<NSNumber *> *backdropAlphas;
@@ -525,7 +574,10 @@ void YTKACEEnableNativeMenuOutsideDismissal(UIViewController *controller) {
     // Keep the real sheet's appearance, dismissal and transitioning delegate.
     // Its original presentation was never changed to a popover. Close it before
     // running an action which can synchronously present the next native page.
-    void (^completion)(void) = ^{ [self restore]; if (action) action(); };
+    void (^completion)(void) = ^{
+        [self restore];
+        if (action) { YTKACERememberPlayerMenuSource(self.source); action(); }
+    };
     // YTDefaultSheetController also owns state used by quality coordinators.
     DismissNativeMenu(native,completion);
 }
@@ -534,6 +586,7 @@ void YTKACEEnableNativeMenuOutsideDismissal(UIViewController *controller) {
 void YTKACEPresentAdaptedPlayerMenu(UIViewController *controller, UIView *source, NSArray<NSDictionary *> *actions) {
     YTKACENativeMenuSession *session = [YTKACENativeMenuSession new];
     session.native = controller;
+    session.source = source;
     session.originalAlpha = controller.view.alpha;
     NSMutableArray *nativeRows = [NSMutableArray array];
     for (NSDictionary *item in actions) if (item[@"nativeRow"]) [nativeRows addObject:item[@"nativeRow"]];

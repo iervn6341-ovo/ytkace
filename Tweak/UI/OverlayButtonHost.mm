@@ -133,7 +133,8 @@ static void YTKACEFindSettingsControlInView(UIView *view,
         NSStringFromClass(view.class)] lowercaseString];
     if (([view isKindOfClass:UIControl.class] ||
          [view isKindOfClass:UIImageView.class]) &&
-        ([hint containsString:@"settings"] || [hint containsString:@"gear"]) &&
+        ([hint containsString:@"settings"] || [hint containsString:@"gear"] ||
+         [hint containsString:@"設定"] || [hint containsString:@"设置"]) &&
         !CGRectIsEmpty(view.bounds)) {
         CGRect frame = [view convertRect:view.bounds toView:coordinateView];
         CGFloat width = CGRectGetWidth(coordinateView.bounds);
@@ -500,12 +501,20 @@ static BOOL YTKACENativeControlGeometry(UIView *overlay, UIStackView *stack,
     YTKACENativeGeometry *saved = objc_getAssociatedObject(overlay, YTKACENativeGeometryKey);
     BOOL sameBounds = saved && CGRectEqualToRect(saved.bounds, overlay.bounds) && UIEdgeInsetsEqualToEdgeInsets(saved.insets, overlay.safeAreaInsets);
     UIView *gear = nil;
-    SEL accessor = NSSelectorFromString(@"overflowButton");
-    if ([overlay respondsToSelector:accessor]) {
-        id candidate = ((id (*)(id, SEL))objc_msgSend)(overlay, accessor);
-        if ([candidate isKindOfClass:UIView.class]) gear = candidate;
+    for (NSString *name in @[@"settingsButton",@"overflowButton"]) {
+        id candidate = nil;
+        SEL accessor = NSSelectorFromString(name);
+        NSMethodSignature *signature = [overlay methodSignatureForSelector:accessor];
+        if (signature.numberOfArguments == 2 && signature.methodReturnType[0] == '@')
+            candidate = ((id (*)(id,SEL))objc_msgSend)(overlay,accessor);
+        if (!candidate) for (NSString *key in @[name,[@"_" stringByAppendingString:name]]) {
+            Ivar ivar = class_getInstanceVariable([overlay class],key.UTF8String);
+            if (ivar && ivar_getTypeEncoding(ivar)[0] == '@') { candidate = object_getIvar(overlay,ivar); if (candidate) break; }
+        }
+        if ([candidate isKindOfClass:UIView.class] && [candidate isDescendantOfView:overlay]) { gear = candidate; break; }
     }
     gear = gear ?: YTKACEFindSettingsControl(overlay, stack) ?: saved.anchor;
+    if (gear) YTKACERegisterNativeGearMenuSource(gear);
     SEL visibility = NSSelectorFromString(@"isOverlayVisible");
     BOOL faded = ([overlay respondsToSelector:visibility] && !((BOOL (*)(id, SEL))objc_msgSend)(overlay, visibility)) ||
         YTKACENativeOpacity(gear ?: overlay, overlay) < 0.98;

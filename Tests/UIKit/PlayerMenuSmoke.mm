@@ -188,10 +188,13 @@ static NativeTestAction *VirtualAction(NSString *title, NSUInteger mode, dispatc
 @property(nonatomic, copy) NSArray *actions;
 @property(nonatomic, strong) id actionsController;
 @property(nonatomic, strong) UIButton *lateTitleButton;
+@property(nonatomic, weak) UIView *hideSourceOnAppearance;
 @end
 @implementation YTBottomSheetController
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];
+    self.hideSourceOnAppearance.hidden = YES;
+    self.hideSourceOnAppearance.transform = CGAffineTransformMakeScale(0.01,0.01);
     [self.lateTitleButton setTitle:@"Native appearance-time title" forState:UIControlStateNormal];
 }
 @end
@@ -239,6 +242,11 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
 @property(nonatomic, strong) UIButton *qualityButton;
 @property(nonatomic, strong) UIButton *nativeButton;
 @property(nonatomic) NSUInteger nativeCompletions;
+@property(nonatomic, strong) UIButton *gearButton;
+@property(nonatomic, strong) YTBottomSheetController *gearNative;
+@property(nonatomic, strong) YTBottomSheetController *gearChild;
+@property(nonatomic) NSUInteger gearRound, gearCallbacks, gearChildCallbacks;
+@property(nonatomic) CGRect gearAnchorRect;
 @property(nonatomic) NSInteger callbacks;
 @property(nonatomic) NSInteger nativeOpens;
 @property(nonatomic, strong) UIViewController *nativeMenu;
@@ -298,7 +306,12 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
     [self.window.windowScene requestGeometryUpdateWithPreferences:portrait errorHandler:^(NSError *error) {
         Check(NO,[@"initial portrait failed: " stringByAppendingString:error.localizedDescription]);
     }];
-    Later(^{ [self testOwnedMenu]; });
+    Later(^{
+        if ([NSProcessInfo.processInfo.arguments containsObject:@"--preview-native-gear"]) {
+            self.button.hidden = YES; self.qualityButton.hidden = YES;
+            [self testGearPopover];
+        } else [self testOwnedMenu];
+    });
 }
 - (NSArray *)actions {
     __weak PlayerMenuSmoke *weak = self;
@@ -351,6 +364,8 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
     dispatch_block_t handler = ^{ calls++; };
     UIImage *icon = [UIImage systemImageNamed:@"gearshape"];
     YTActionSheetAction *factory = [YTActionSheetAction actionWithTitle:@"1080p60" iconImage:icon style:19 handler:handler];
+    factory.button = [UIButton new];
+    Check([YTKACENativeControlTitle(factory.button) isEqual:@"1080p60"],@"native control activation must retain a factory label even when the control title is empty");
     Check(![factory respondsToSelector:NSSelectorFromString(@"title")] && factory.receivedStyle == 19,
         @"factory capture must support absent native title getters without altering arguments");
     YTActionSheetAction *valued = [YTActionSheetAction actionWithTitle:@"Quality" currentValue:@"Auto (720p)" iconImage:icon accessibilityIdentifier:nil handler:handler];
@@ -688,12 +703,87 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
         Later(^{
             Check(!self.root.presentedViewController && owner.dismissals == 1,@"outside cancellation must close the native owner exactly once");
             Check(NativePresentations == 7 && NativeDismissals == 7,@"fallback close must retain native transition callbacks");
-            [self testUnrelated];
+            [self testGearPopover];
+        });
+    });
+}
+- (YTBottomSheetController *)gearController:(dispatch_block_t)handler {
+    YTBottomSheetController *native = [YTBottomSheetController new];
+    native.modalPresentationStyle = UIModalPresentationCustom; native.transitioningDelegate = self;
+    if (![NSProcessInfo.processInfo.arguments containsObject:@"--preview-native-gear"])
+        native.hideSourceOnAppearance = self.gearButton;
+    YTDraggableView *panel = [[YTDraggableView alloc] initWithFrame:CGRectMake(20,80,320,88)];
+    [native.view addSubview:panel];
+    NativeOriginAction *model = [NativeOriginAction new]; model.handler = handler;
+    NativeTestOpaqueButton *button = [[NativeTestOpaqueButton alloc] initWithFrame:CGRectMake(0,0,320,56)];
+    button.opaque = NO; button.backgroundColor = UIColor.clearColor;
+    [panel addSubview:button]; model.button = button;
+    NativeTestAction *spacer = [NativeTestAction new]; spacer.button = [[YTSpacerButton alloc] initWithFrame:CGRectMake(0,56,320,32)];
+    [panel addSubview:spacer.button];
+    NativeTestOwner *owner = [NativeTestOwner new]; owner.native = native; owner.actions = @[model,spacer];
+    native.actionsController = owner;
+    return native;
+}
+- (void)testGearPopover {
+    if (!self.gearButton) {
+        self.gearButton = [UIButton buttonWithType:UIButtonTypeSystem];
+        self.gearButton.frame = CGRectMake(self.button.frame.origin.x,170,44,44);
+        self.gearButton.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
+        [self.gearButton setImage:[UIImage systemImageNamed:@"gearshape.fill"] forState:UIControlStateNormal];
+        [self.button.superview addSubview:self.gearButton];
+        YTKACERegisterNativeGearMenuSource(self.gearButton);
+        __weak PlayerMenuSmoke *weak = self;
+        self.gearNative = [self gearController:^{
+            weak.gearCallbacks++;
+            weak.gearChild = [weak gearController:^{ weak.gearChildCallbacks++; }];
+            [weak.root presentViewController:weak.gearChild animated:NO completion:nil];
+        }];
+    }
+    self.gearButton.hidden = NO;
+    self.gearButton.transform = CGAffineTransformIdentity;
+    self.gearAnchorRect = [self.gearButton convertRect:self.gearButton.bounds toView:self.window];
+    YTKACEUpdatePlayerMenuTouchSource(self.gearButton,self.window);
+    [self.root presentViewController:self.gearNative animated:NO completion:nil];
+    Later(^{
+        UIViewController *menu = self.gearNative.presentedViewController;
+        Check(menu && YTKACEIsPlayerPopover(menu) && menu.modalPresentationStyle == UIModalPresentationPopover,
+            @"the actual native gear route must produce an anchored popover rather than retain a bottom sheet");
+        BOOL preview = [NSProcessInfo.processInfo.arguments containsObject:@"--preview-native-gear"];
+        Check((self.gearButton.hidden || preview) && menu.popoverPresentationController.sourceView == self.window &&
+            CGRectEqualToRect(menu.popoverPresentationController.sourceRect,self.gearAnchorRect),
+            @"a gear hidden/scaled by native appearance must retain its pre-presentation window-space anchor");
+        Check(NativeOriginReads == 0,@"native gear content must use live rows without requiring title extraction");
+        UITableViewController *table = (id)MenuNavigation(menu).topViewController;
+        Check([table.tableView numberOfRowsInSection:0] == 1,@"native gear rows must be present in the actual popover");
+        if ([NSProcessInfo.processInfo.arguments containsObject:@"--preview-native-gear"]) {
+            [@"READY: hidden native gear anchored to window rect" writeToFile:[NSHomeDirectory() stringByAppendingPathComponent:@"Documents/gear-preview.txt"]
+                atomically:YES encoding:NSUTF8StringEncoding error:nil]; return;
+        }
+        if (!self.gearRound) [menu dismissViewControllerAnimated:NO completion:nil];
+        else [table.tableView.delegate tableView:table.tableView didSelectRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]];
+        Later(^{
+            if (!self.gearRound) {
+                Check(!self.root.presentedViewController,@"native gear cancellation must release its original owner");
+                self.gearRound++; [self testGearPopover]; return;
+            }
+            UIViewController *childMenu = self.gearChild.presentedViewController;
+            Check(childMenu && YTKACEIsPlayerPopover(childMenu) && childMenu.popoverPresentationController.sourceView == self.window,
+                @"a gear quality submenu must retain the same window-space gear anchor after its parent closes");
+            UITableViewController *childTable = (id)MenuNavigation(childMenu).topViewController;
+            [childTable.tableView.delegate tableView:childTable.tableView didSelectRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]];
+            Later(^{
+                Check(!self.root.presentedViewController && self.gearCallbacks == 1 && self.gearChildCallbacks == 1,
+                    @"gear and submenu actions must run once and close both native owners");
+                Check([(NativeTestOwner *)self.gearNative.actionsController dismissals] == 2 &&
+                    [(NativeTestOwner *)self.gearChild.actionsController dismissals] == 1,@"native gear owner state must release on every open");
+                Check(NativePresentations == 10 && NativeDismissals == 10,@"gear anchoring must preserve native presentation lifecycle");
+                [self testUnrelated];
+            });
         });
     });
 }
 - (void)testUnrelated {
-        Check(NativePresentations == 7 && NativeDismissals == 7,@"original custom presentation/dismissal callbacks must run for every menu");
+        Check(NativePresentations == 10 && NativeDismissals == 10,@"original custom presentation/dismissal callbacks must run for every menu");
         Check([(NativeTestOwner *)self.adaptedNative.actionsController dismissals] == 6,
             @"original action owner's dismissal API must run on cancellation and selection");
         UIViewController *unrelated = [UIViewController new];
@@ -744,7 +834,7 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
         [menu dismissViewControllerAnimated:NO completion:^{
             [settings removeFromSuperview];
             YTKACEPresentSystemMenu(self.root,self.button,@"Player options",nil,self.actions);
-            [@"PASS: registered tweak versus native button routing, untouched native gear/submenus/gestures, stale-source isolation, tweak adapter rows/restoration/actions, outside cancellation, bounds, scrolling, settings and rotation\n"
+            [@"PASS: native gear and submenu popovers, hidden-gear window anchors, live native rows without title reads, repeat cancel/select/owner lifecycle, tweak routing, bounds, scrolling, settings and rotation\n"
                 writeToFile:ResultPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
         }];
     });
