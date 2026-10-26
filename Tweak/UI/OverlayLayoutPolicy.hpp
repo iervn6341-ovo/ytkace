@@ -72,4 +72,16 @@ inline OverlayLayout planOverlayAvoiding(double left, double right, double top, 
     }
     return best;
 }
+// Follow the native top-button band before considering a second row. Reserving
+// a whole second row up front makes short portrait players lose every action.
+inline OverlayLayout planPlayerControls(double left, double right, double top, double bottom,
+                                        std::size_t count, const std::vector<YTPCFrame>& obstacles) {
+    auto row = planOverlayAvoiding(left, right, top, std::min(bottom, top + 44), count, obstacles);
+    if (row.fits) return row;
+    // If the native top band is full, expose one More target in a free segment
+    // instead of extending a second toolbar over the central transport buttons.
+    row = planOverlayAvoiding(left, right, top, bottom, count ? 1 : 0, obstacles);
+    if (row.fits && count > 1) { row.inlineCount = 0; row.overflowCount = count; }
+    return row;
+}
 } // namespace ytkace

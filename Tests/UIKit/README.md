@@ -1,5 +1,13 @@
 # Player menu UIKit smoke app
 
+For the independent player controls/transition/PlayerGlass regression, build
+`bash Tests/UIKit/build_player_controls_smoke.sh /tmp/PlayerControlsSmoke.app`.
+Launch `dev.captionisland.player-controls-smoke` on a disposable iPhone simulator
+and read `Documents/result.txt`. It uses the production host and glass hooks with
+fake native classes, including glass on/keep-controls off, repeated transforms,
+cancelled pans, zero size, native glass reuse and layout reentry. It does not load
+YTVideoOverlay or simulate YouTube's private transition controller.
+
 From the YTKACE root, build with a selected Xcode:
 
 ```sh

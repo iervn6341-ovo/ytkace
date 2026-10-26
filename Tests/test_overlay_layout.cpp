@@ -51,6 +51,16 @@ int main() {
             assert(layout.inlineCount + layout.overflowCount == count);
         }
     }
+    // Portrait: use the native top band even when central controls block the second row.
+    std::vector<YTPCFrame> portrait{{8,4,44,44}, {258,4,44,44}, {308,4,44,44}, {358,4,44,44},
+                                    {85,90,60,60}, {178,80,60,60}, {275,90,60,60}};
+    auto topBand = ytkace::planPlayerControls(8,406,4,181,8,portrait);
+    assert(topBand.fits && topBand.y == 4 && topBand.overflowCount > 0);
+    for (auto obstacle : portrait) assert(!YTPCIntersects({topBand.x,topBand.y,topBand.width,44},YTPCExpand(obstacle,6)));
+    assert(!ytkace::planPlayerControls(8,406,4,181,8,{{8,0,398,181}}).fits);
+    assert(!ytkace::planPlayerControls(8,406,NAN,181,8,portrait).fits);
+    auto afterGesture = ytkace::planPlayerControls(8,844,4,362,8,{{8,4,44,44},{696,4,148,44}});
+    assert(afterGesture.fits && afterGesture.overflowCount == 0 && afterGesture.y == 4);
     // Bottom buttons use the fullscreen coordinate space and retain a 44pt touch target.
     YTPCFrame safe{4, 4, 406, 225}, fullscreen{372, 184, 36, 36};
     YTPCFrame bottomNative[]{{8, 195, 84, 22}, fullscreen};

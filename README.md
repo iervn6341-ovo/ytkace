@@ -63,16 +63,20 @@ and sleep timers. Menus use an explicit `UIGlassEffect` background when supporte
 respect Reduce Transparency, and retain their original action callbacks. This does
 not replace every server-driven YouTube menu; native host menus need separate adapters.
 
-### Integrated player buttons
+### Player controls
 
-With KACE-Youtube's patched YTVideoOverlay, YTKACE's download, loop, PiP, sleep timer,
-transcript and speed controls share **YouTube Settings → Player buttons** with
-YouQuality and CaptionIsland. Each YTKACE control has visibility, top/bottom and order
-settings. The original YTKACE feature/placement preferences still determine whether
-a control is available. Copy/paste settings also includes these player-button choices.
-The native bars keep 44pt targets and move overflow actions into More; bottom actions
-retain the main overlay's player-event context. Standalone YTKACE keeps its own host
-when the external-button API is unavailable.
+YTKACE owns its player buttons and overflow menu. The native top-control band is
+used first, with 44pt touch targets and 24pt glyphs; actions that do not fit remain
+available in More. It does not load/register with YTVideoOverlay. Existing YTKACE
+feature and download-placement settings still control availability. CaptionIsland
+and YouQuality may independently use their existing YTVideoOverlay integration.
+
+Local layout yields to active pans, controller transitions and invalid geometry,
+then resumes after completion/cancellation. The optional player-glass styling
+reuses native Liquid Glass, avoids full-player material surfaces, and preserves
+native layers during transforms/transition layout. Console diagnostics are tagged
+`[YTKACE PlayerControls]` and `[YTKACE PlayerGlass]`; state messages contain layout
+state/bounds and no video URLs or account details.
 
 ### Telemetry Audit
 

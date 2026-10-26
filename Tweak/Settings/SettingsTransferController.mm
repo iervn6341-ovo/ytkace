@@ -66,21 +66,13 @@ static void YTKACERegisterTransferRules(void) {
     caption[@"CaptionIsland.ReturnHomeMode"] = @{@"default": @0, @"values": @[@0, @1]};
     caption[@"CaptionIsland.MaximumVideoDurationMinutes"] = @{@"default": @5, @"minimum": @0, @"maximum": @180};
     YTKACERegisterSettingsModule(@"CaptionIsland", caption);
-    NSMutableDictionary *playerButtons = [@{
+    YTKACERegisterSettingsModule(@"PlayerButtons", @{
         @"YTVideoOverlay-YouQuality-Enabled": YTKACESettingsRule(@YES),
         @"YTVideoOverlay-YouQuality-Position": @{@"default": @0, @"values": @[@0, @1]},
         @"YTVideoOverlay-YouQuality-Order": @{@"default": @0, @"minimum": @0, @"maximum": @100},
         @"YTVideoOverlay-CaptionIslandLyrics-Order": @{@"default": @0, @"minimum": @0, @"maximum": @100},
         @"YTVideoOverlay-FrostedGlassBottom": YTKACESettingsRule(@NO)
-    } mutableCopy];
-    for (NSString *name in @[@"YTKACEDownload", @"YTKACELoop", @"YTKACEPiP", @"YTKACESleepTimer",
-                             @"YTKACETranscript", @"YTKACESlower", @"YTKACESpeed", @"YTKACEFaster"]) {
-        NSString *prefix = [@"YTVideoOverlay-" stringByAppendingString:name];
-        playerButtons[[prefix stringByAppendingString:@"-Enabled"]] = YTKACESettingsRule(@YES);
-        playerButtons[[prefix stringByAppendingString:@"-Position"]] = @{@"default": @0, @"values": @[@0, @1]};
-        playerButtons[[prefix stringByAppendingString:@"-Order"]] = @{@"default": @0, @"minimum": @0, @"maximum": @100};
-    }
-    YTKACERegisterSettingsModule(@"PlayerButtons", playerButtons);
+    });
 }
 
 @interface YTKACESettingsTransferController : NSObject <UIDocumentPickerDelegate>
