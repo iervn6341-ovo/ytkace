@@ -136,11 +136,20 @@ original sheet if text is still unavailable.
 Empty, handler-less `YTSpacerButton` entries are structural spacing and do not
 become choices or invalidate the list. Named spacers and unknown rows are retained
 or fall back normally. ELM text recovery follows bounded node children and virtual
-accessibility containers, including indexed containers; it does not force node
+accessibility containers, including indexed containers. It also follows ASDisplayNode
+`yogaChildren` and `controller`, then ELM controller `children/materializedInstance/node`,
+for layer-backed text absent from the UIView and subnodes trees. It does not force node
 views to load or click coordinates. Navigation/service renderer text is retained
 when available. Failure diagnostics include a bounded class/count probe and known
 menu identifier, without displayed text. Regression covers trailing spacers and
 non-UILabel element rows through both quality and gear anchors.
+
+Native fallbacks opened from a player button accept taps outside known YouTube
+panels to close through their original action owner. Hit testing uses the panel's
+current transformed bounds, rejects touches inside controls and leaves drags intact.
+Unrecognized panels and unrelated dialogs retain native behavior. Simulator checks
+cover the touch delegate and dismissal callbacks with stand-in views; actual YouTube
+private layouts still require device validation.
 
 ### Settings transfer for integrated tweaks
 

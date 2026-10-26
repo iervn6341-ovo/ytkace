@@ -1,4 +1,5 @@
 #import <UIKit/UIKit.h>
+#import <UIKit/UIGestureRecognizerSubclass.h>
 #import "../../Tweak/UI/SystemMenu.h"
 #import "../../Tweak/UI/PlayerMenuPresentation.h"
 #import "../../Tweak/UI/NativePlayerMenu.h"
@@ -81,9 +82,17 @@ static void Later(dispatch_block_t block) {
 @implementation YTMenuItemElementsMDCButton @end
 @interface NativeTestNode : NSObject
 @property(nonatomic, copy) NSArray *subnodes;
+@property(nonatomic, copy) NSArray *yogaChildren;
+@property(nonatomic, strong) id controller;
 @property(nonatomic, copy) NSAttributedString *attributedText;
 @end
 @implementation NativeTestNode @end
+@interface NativeTestNodeController : NSObject
+@property(nonatomic, copy) NSArray *children;
+@property(nonatomic, strong) id materializedInstance;
+@property(nonatomic, strong) id node;
+@end
+@implementation NativeTestNodeController @end
 @interface NativeTestNodeView : UIView
 @property(nonatomic, strong) NativeTestNode *keepalive_node;
 @end
@@ -107,10 +116,25 @@ static NativeTestAction *VirtualAction(NSString *title, NSUInteger mode, dispatc
         NativeTestNode *root = [NativeTestNode new], *text = [NativeTestNode new];
         text.attributedText = [[NSAttributedString alloc] initWithString:title]; root.subnodes = @[text];
         view.keepalive_node = root;
-    } else {
+    } else if (mode == 2) {
         NativeTestIndexedView *view = [NativeTestIndexedView new]; button.elementView = view;
         view.virtualText = [[UIAccessibilityElement alloc] initWithAccessibilityContainer:view];
         view.virtualText.accessibilityAttributedLabel = [[NSAttributedString alloc] initWithString:title];
+    } else {
+        NativeTestNodeView *view = [NativeTestNodeView new]; button.elementView = view;
+        NativeTestNode *root = [NativeTestNode new], *text = [NativeTestNode new];
+        text.attributedText = [[NSAttributedString alloc] initWithString:title];
+        view.keepalive_node = root;
+        if (mode == 3) root.yogaChildren = @[text];
+        else {
+            NativeTestNodeController *controller = [NativeTestNodeController new];
+            NativeTestNodeController *child = [NativeTestNodeController new];
+            NativeTestNodeController *materialized = [NativeTestNodeController new];
+            root.controller = controller; controller.children = @[child];
+            child.materializedInstance = materialized; materialized.node = text;
+            // Match ELM's node/controller back-reference without looping forever.
+            text.controller = materialized;
+        }
     }
     return action;
 }
@@ -174,6 +198,16 @@ static NSUInteger NativePresentations, NativeDismissals;
     if (completed) NativeDismissals++;
     [super dismissalTransitionDidEnd:completed];
 }
+@end
+
+// A location fixture exercises the production gesture delegate; no HID events
+// or real YouTube private views are injected by this simulator harness.
+@interface NativeTestTouch : UITouch
+@property(nonatomic, weak) UIView *referenceView;
+@property(nonatomic) CGPoint point;
+@end
+@implementation NativeTestTouch
+- (CGPoint)locationInView:(UIView *)view { return [self.referenceView convertPoint:self.point toView:view]; }
 @end
 
 static UINavigationController *MenuNavigation(UIViewController *presentation) {
@@ -321,11 +355,18 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
     Check(YTKACENativePlayerActions(native).count == 1 && !YTKACENativeMenuNeedsTextRetry(native),@"ready native text must clear the retry state");
     NativeTestAction *spacer = [NativeTestAction new]; spacer.button = [YTSpacerButton new];
     NSArray *elements = @[VirtualAction(@"Lock screen",0,handler),VirtualAction(@"Other settings",1,handler),
-        VirtualAction(@"Indexed virtual label",2,handler)];
+        VirtualAction(@"Indexed virtual label",2,handler),VirtualAction(@"Yoga-only text",3,handler),
+        VirtualAction(@"Materialized controller text",4,handler)];
     native.actions = @[spacer,elements[0],spacer,elements[1],elements[2],spacer];
     actions = YTKACENativePlayerActions(native);
     Check(actions.count == 3,@"known empty spacers must not invalidate complete native actions");
-    NSArray *elementTitles = @[@"Lock screen",@"Other settings",@"Indexed virtual label"];
+    native.actions = elements;
+    actions = YTKACENativePlayerActions(native);
+    Check(actions.count == 5 && [actions[3][@"title"] isEqual:@"Yoga-only text"] &&
+        [actions[4][@"title"] isEqual:@"Materialized controller text"],
+        @"layer-backed yoga and controller-only text must survive absent subnodes/views/accessibility");
+    NSArray *elementTitles = @[@"Lock screen",@"Other settings",@"Indexed virtual label",
+        @"Yoga-only text",@"Materialized controller text"];
     for (NSUInteger index = 0; index < actions.count; ++index)
         Check([actions[index][@"title"] isEqual:elementTitles[index]],@"ELM node and non-view accessibility labels must decode");
     ((dispatch_block_t)actions[0][@"handler"])();
@@ -468,8 +509,8 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
             [renderers addObject:renderer];
         }
         NativeTestAction *spacer = [NativeTestAction new]; spacer.button = [YTSpacerButton new];
-        NativeTestAction *ax = VirtualAction(@"Lock screen",0,^{ weak.adaptedCallbacks++; });
-        NativeTestAction *node = VirtualAction(@"Other settings",1,^{ weak.adaptedCallbacks++; });
+        NativeTestAction *ax = VirtualAction(@"Lock screen",3,^{ weak.adaptedCallbacks++; });
+        NativeTestAction *node = VirtualAction(@"Other settings",4,^{ weak.adaptedCallbacks++; });
         NativeTestAction *indexed = VirtualAction(@"Captions",2,^{ weak.adaptedCallbacks++; });
         NativeTestAction *last = [NativeTestAction new]; last.title = @"Final native action";
         last.handler = ^{ weak.adaptedCallbacks++; };
@@ -509,12 +550,57 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
             Check(self.adaptedNative.view.alpha == 1,@"native view alpha must restore on close");
             self.adaptedRound++;
             if (self.adaptedRound < 6) [self testAdaptedNative];
-            else [self testUnrelated];
+            else [self testNativeOutsideDismissal];
+        });
+    });
+}
+- (void)testNativeOutsideDismissal {
+    Check(NativePresentations == 6 && NativeDismissals == 6,@"original callbacks must run for every adapted menu");
+    YTBottomSheetController *native = [YTBottomSheetController new];
+    native.modalPresentationStyle = UIModalPresentationCustom; native.transitioningDelegate = self;
+    NativeTestAction *unreadable = [NativeTestAction new];
+    unreadable.button = [YTMenuItemElementsMDCButton new]; unreadable.handler = ^{};
+    NativeTestOwner *owner = [NativeTestOwner new]; owner.native = native; owner.actions = @[unreadable];
+    native.actionsController = owner;
+    YTDraggableView *panel = [[YTDraggableView alloc] initWithFrame:CGRectMake(30,240,280,300)];
+    [native.view addSubview:panel];
+    YTKACERememberPlayerMenuSource(self.button);
+    [self.root presentViewController:native animated:NO completion:nil];
+    Later(^{
+        Check(!native.presentedViewController && native.view.alpha == 1,@"unreadable rows must retain visible native controls");
+        UIView *container = native.presentationController.containerView;
+        UITapGestureRecognizer *outside = nil;
+        for (UITapGestureRecognizer *gesture in container.gestureRecognizers)
+            if ([NSStringFromClass([gesture.delegate class]) isEqual:@"YTKACENativeOutsideTap"]) outside = gesture;
+        Check(outside != nil && !outside.cancelsTouchesInView,@"native fallback must install a non-cancelling outside recognizer");
+        NativeTestTouch *touch = [NativeTestTouch new]; touch.referenceView = panel;
+        touch.point = CGPointMake(50,50);
+        Check(![outside.delegate gestureRecognizer:outside shouldReceiveTouch:touch],@"inside panel touches must reach native controls");
+        panel.transform = CGAffineTransformMakeTranslation(0,40);
+        touch.referenceView = container; touch.point = [panel convertPoint:CGPointMake(50,-20) toView:container];
+        Check([outside.delegate gestureRecognizer:outside shouldReceiveTouch:touch],@"outside hit testing must use the current transformed panel frame");
+        Features = NO;
+        Check(![outside.delegate gestureRecognizer:outside shouldReceiveTouch:touch],@"disabled menus must not intercept outside taps");
+        Features = YES;
+        panel.hidden = YES;
+        Check(![outside.delegate gestureRecognizer:outside shouldReceiveTouch:touch],@"unknown/hidden panels must keep native behavior");
+        panel.hidden = NO;
+        UIView *hiddenParent = [[UIView alloc] initWithFrame:native.view.bounds];
+        [native.view addSubview:hiddenParent]; [hiddenParent addSubview:panel]; hiddenParent.hidden = YES;
+        Check(![outside.delegate gestureRecognizer:outside shouldReceiveTouch:touch],@"panels under hidden parents must not accept outside cancellation");
+        [native.view addSubview:panel]; [hiddenParent removeFromSuperview];
+        // Drive the existing recognizer's normal target/action delivery after
+        // verifying the exact touch acceptance path above.
+        outside.state = UIGestureRecognizerStateEnded;
+        Later(^{
+            Check(!self.root.presentedViewController && owner.dismissals == 1,@"outside cancellation must close the native owner exactly once");
+            Check(NativePresentations == 7 && NativeDismissals == 7,@"fallback close must retain native transition callbacks");
+            [self testUnrelated];
         });
     });
 }
 - (void)testUnrelated {
-        Check(NativePresentations == 6 && NativeDismissals == 6,@"original custom presentation/dismissal callbacks must run for every adapted menu");
+        Check(NativePresentations == 7 && NativeDismissals == 7,@"original custom presentation/dismissal callbacks must run for every menu");
         Check([(NativeTestOwner *)self.adaptedNative.actionsController dismissals] == 6,
             @"original action owner's dismissal API must run on cancellation and selection");
         UIViewController *unrelated = [UIViewController new];
@@ -565,7 +651,7 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
         [menu dismissViewControllerAnimated:NO completion:^{
             [settings removeFromSuperview];
             YTKACEPresentSystemMenu(self.root,self.button,@"Player options",nil,self.actions);
-            [@"PASS: native spacer and ELM virtual/node/indexed labels, renderer text, quality/gear anchors, six native lifecycle/owner closes, callbacks, bounds, scrolling, settings portrait/landscape and rotation\n"
+            [@"PASS: ELM yoga/controller materialization, virtual/node/indexed labels, spacers, native fallback outside hit/owner close, quality/gear anchors, lifecycle callbacks, bounds, scrolling, settings and rotation\n"
                 writeToFile:ResultPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
         }];
     });

@@ -13,6 +13,7 @@ static const void *NativePresentationKey = &NativePresentationKey;
 static const void *NativeTextRetryKey = &NativeTextRetryKey;
 static const void *NativeItemIdentifierKey = &NativeItemIdentifierKey;
 static const void *NativeTextProbeKey = &NativeTextProbeKey;
+static const void *NativeOutsideTapKey = &NativeOutsideTapKey;
 static IMP OriginalActionsForRenderers;
 static IMP OriginalFactories[9];
 @interface YTKACENativeMenuOwner : NSObject
@@ -138,10 +139,14 @@ static NSString *ElementTitle(id model, id button, NSString **source) {
             ?: Nonempty(Text(object,@"accessibilityAttributedLabel"));
         // ELM renders text in node children and virtual accessibility elements,
         // which are not necessarily UIView descendants or UILabel instances.
-        for (NSString *key in @[@"keepalive_node",@"asyncdisplaykit_node",@"node",@"elementView"])
+        // ASDisplayNode exposes controller/yogaChildren; ELMNodeController
+        // exposes children/materializedInstance. Layer-backed text can live
+        // there even when subnodes and UIView descendants are empty.
+        for (NSString *key in @[@"keepalive_node",@"asyncdisplaykit_node",@"node",@"elementView",
+                                @"controller",@"materializedInstance",@"element"])
             enqueue(Value(object,key),depth + 1);
         BOOL hasAccessibilityArray = NO;
-        for (NSString *key in @[@"subviews",@"subnodes",@"children",@"accessibilityElements"]) {
+        for (NSString *key in @[@"subviews",@"subnodes",@"yogaChildren",@"children",@"accessibilityElements"]) {
             id children = Value(object,key);
             if (![children isKindOfClass:NSArray.class]) continue;
             if ([key isEqual:@"accessibilityElements"] && [children count]) { axContainers++; hasAccessibilityArray = YES; }
@@ -389,6 +394,90 @@ BOOL YTKACENativeMenuNeedsTextRetry(UIViewController *controller) {
     return [objc_getAssociatedObject(controller,NativeTextRetryKey) boolValue];
 }
 
+static void DismissNativeMenu(UIViewController *native, dispatch_block_t completion) {
+    YTKACENativeMenuOwner *box = objc_getAssociatedObject(native,NativeOwnerKey);
+    id owner = box.value;
+    SEL dismiss = @selector(dismissViewControllerAnimated:completion:);
+    NSMethodSignature *signature = [owner methodSignatureForSelector:dismiss];
+    BOOL nativeOwner = owner && ![owner isKindOfClass:UIViewController.class] &&
+        signature.numberOfArguments == 4 && signature.methodReturnType[0] == 'v' &&
+        strchr("Bc",[signature getArgumentTypeAtIndex:2][0]) &&
+        [signature getArgumentTypeAtIndex:3][0] == '@';
+    if (native.presentingViewController && !native.isBeingDismissed && nativeOwner)
+        ((void (*)(id,SEL,BOOL,id))objc_msgSend)(owner,dismiss,NO,completion);
+    else if (native.presentingViewController && !native.isBeingDismissed)
+        [native dismissViewControllerAnimated:NO completion:completion];
+    else if (completion) completion();
+}
+
+// Only native fallbacks opened from a verified player button receive this
+// recognizer. Locate the actual panel on every touch so rotation/dragging cannot
+// turn a stale frame into an outside hit. Unknown layouts keep native behavior.
+static UIView *NativePanel(UIViewController *controller) {
+    NSMutableArray<UIView *> *queue = [NSMutableArray arrayWithObject:controller.view];
+    NSArray *names = @[@"YTDraggableView",@"YTContextualWrapView",@"YTMinimumWidthDialogView",@"GOODialogView"];
+    for (NSUInteger index = 0; index < queue.count && index < 256; ++index) {
+        UIView *view = queue[index];
+        if (view.hidden || view.alpha < 0.05) continue;
+        for (NSString *name in names) {
+            Class cls = NSClassFromString(name);
+            if (cls && [view isKindOfClass:cls] &&
+                !CGRectIsEmpty(view.bounds)) return view;
+        }
+        for (UIView *child in view.subviews) {
+            if (queue.count >= 256) break;
+            [queue addObject:child];
+        }
+    }
+    return nil;
+}
+
+@interface YTKACENativeOutsideTap : NSObject <UIGestureRecognizerDelegate>
+@property(nonatomic, weak) UIViewController *native;
+@property(nonatomic, strong) UITapGestureRecognizer *gesture;
+@end
+@implementation YTKACENativeOutsideTap
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gesture shouldReceiveTouch:(UITouch *)touch {
+    UIViewController *native = self.native;
+    if (!YTKACEFeatureEnabled(@"YTKACE.Preference.Interface.SystemMenus") ||
+        !native.presentingViewController || native.isBeingDismissed || native.presentedViewController ||
+        native.view.hidden || native.view.alpha < 0.05) return NO;
+    UIView *panel = NativePanel(native);
+    if (!panel || panel.window != gesture.view.window || !gesture.view.window) return NO;
+    return CGRectContainsPoint(gesture.view.bounds,[touch locationInView:gesture.view]) &&
+        !CGRectContainsPoint(panel.bounds,[touch locationInView:panel]);
+}
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gesture
+    shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other {
+    (void)gesture; (void)other; return YES;
+}
+- (void)close:(UITapGestureRecognizer *)gesture {
+    if (gesture.state != UIGestureRecognizerStateEnded) return;
+    UIViewController *native = self.native;
+    if (!native.presentingViewController || native.isBeingDismissed || native.presentedViewController) return;
+    [gesture.view removeGestureRecognizer:gesture];
+    os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] native fallback close=outside-tap");
+    DismissNativeMenu(native,nil);
+}
+@end
+
+void YTKACEEnableNativeMenuOutsideDismissal(UIViewController *controller) {
+    UIView *container = controller.presentationController.containerView;
+    if (!YTKACEFeatureEnabled(@"YTKACE.Preference.Interface.SystemMenus") ||
+        !container || !controller.presentingViewController) return;
+    YTKACENativeOutsideTap *previous = objc_getAssociatedObject(controller,NativeOutsideTapKey);
+    [previous.gesture.view removeGestureRecognizer:previous.gesture];
+    YTKACENativeOutsideTap *outside = [YTKACENativeOutsideTap new]; outside.native = controller;
+    outside.gesture = [[UITapGestureRecognizer alloc] initWithTarget:outside action:@selector(close:)];
+    outside.gesture.delegate = outside;
+    outside.gesture.cancelsTouchesInView = NO;
+    [container addGestureRecognizer:outside.gesture];
+    objc_setAssociatedObject(controller,NativeOutsideTapKey,outside,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    UIView *panel = NativePanel(controller);
+    os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] native fallback outside-tap panel=%{public}@",
+        panel ? NSStringFromClass(panel.class) : @"unresolved");
+}
+
 @interface YTKACENativeMenuSession : NSObject
 @property(nonatomic, weak) UIViewController *native;
 @property(nonatomic) CGFloat originalAlpha;
@@ -413,22 +502,9 @@ BOOL YTKACENativeMenuNeedsTextRetry(UIViewController *controller) {
     // Keep the real sheet's appearance, dismissal and transitioning delegate.
     // Its original presentation was never changed to a popover. Close it before
     // running an action which can synchronously present the next native page.
-    YTKACENativeMenuOwner *box = objc_getAssociatedObject(native,NativeOwnerKey);
-    id owner = box.value;
-    SEL dismiss = @selector(dismissViewControllerAnimated:completion:);
-    NSMethodSignature *signature = [owner methodSignatureForSelector:dismiss];
-    BOOL nativeOwner = owner && ![owner isKindOfClass:UIViewController.class] &&
-        signature.numberOfArguments == 4 && signature.methodReturnType[0] == 'v' &&
-        strchr("Bc",[signature getArgumentTypeAtIndex:2][0]) &&
-        [signature getArgumentTypeAtIndex:3][0] == '@';
     void (^completion)(void) = ^{ [self restore]; if (action) action(); };
-    if (native.presentingViewController && !native.isBeingDismissed && nativeOwner) {
-        // YTDefaultSheetController also owns dismissal state used by quality
-        // coordinators. Use its verified close API when exposed, not just UIKit.
-        ((void (*)(id,SEL,BOOL,id))objc_msgSend)(owner,dismiss,NO,completion);
-    } else if (native.presentingViewController && !native.isBeingDismissed)
-        [native dismissViewControllerAnimated:NO completion:completion];
-    else { [self restore]; if (action) action(); }
+    // YTDefaultSheetController also owns state used by quality coordinators.
+    DismissNativeMenu(native,completion);
 }
 @end
 
@@ -457,6 +533,7 @@ void YTKACEPresentAdaptedPlayerMenu(UIViewController *controller, UIView *source
         if (!selected) [session finish:nil];
     })) {
         [session restore];
+        YTKACEEnableNativeMenuOutsideDismissal(controller);
         os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] native fallback reason=anchor-or-presenter");
         return;
     }

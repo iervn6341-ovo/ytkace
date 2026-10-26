@@ -190,7 +190,10 @@ static void Present(UIViewController *receiver, SEL selector, UIViewController *
                     // to retain the original sheet; never fabricate empty labels.
                     NSArray *ready = actions ?: YTKACENativePlayerActions(controller);
                     if (ready) YTKACEPresentAdaptedPlayerMenu(controller,source,ready);
-                    else os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] native fallback reason=missing-label-after-presentation");
+                    else {
+                        YTKACEEnableNativeMenuOutsideDismissal(controller);
+                        os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] native fallback reason=missing-label-after-presentation");
+                    }
                 });
                 return;
             }
@@ -199,6 +202,13 @@ static void Present(UIViewController *receiver, SEL selector, UIViewController *
             os_log(OS_LOG_DEFAULT, "[YTKACE PlayerMenus] native class=%{public}@ style=%ld transition=%{public}@",
                 NSStringFromClass(controller.class), (long)controller.modalPresentationStyle,
                 controller.transitioningDelegate ? NSStringFromClass([controller.transitioningDelegate class]) : @"none");
+            if (OriginalPresent) {
+                ((void (*)(id,SEL,id,BOOL,id))OriginalPresent)(receiver,selector,controller,animated,^{
+                    if (completion) completion();
+                    YTKACEEnableNativeMenuOutsideDismissal(controller);
+                });
+                return;
+            }
         }
     }
     if (OriginalPresent) ((void (*)(id, SEL, id, BOOL, id))OriginalPresent)(receiver, selector, controller, animated, completion);

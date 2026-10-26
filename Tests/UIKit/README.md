@@ -30,6 +30,11 @@ compact-width popover adaptation, visible button anchoring, window containment,
 selection and disabled actions, long-list scrolling, landscape rotation,
 dismissal-before-callback, native-container
 routing with preserved native lifecycle and glass, unrelated/settings controller scope, and the feature preference.
+ELM fixtures include yoga children and controller/materialized node chains without
+UIView/subnodes/accessibility text. Native fallback cancellation verifies transformed
+panel inside/outside acceptance using a UITouch location fixture and normal recognizer
+target/action delivery, including original owner and transition callbacks. It does
+not inject physical touch events.
 It leaves an example player popover visible after passing.
 
 The YouTube view/controller names are stand-ins. This verifies UIKit routing,
