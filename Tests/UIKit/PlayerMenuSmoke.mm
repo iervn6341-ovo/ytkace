@@ -39,6 +39,11 @@ static void Later(dispatch_block_t block) {
 @property(nonatomic, strong) id titleText;
 @end
 @implementation NativeTestAction @end
+static NSUInteger NativeOriginReads;
+@interface NativeOriginAction : NativeTestAction @end
+@implementation NativeOriginAction
+- (NSString *)title { NativeOriginReads++; return nil; }
+@end
 // Reproduce the device's title=0/handler=1 shape: no title getter or title ivar.
 @interface YTActionSheetAction : NSObject
 @property(nonatomic, copy) id handler;
@@ -232,6 +237,8 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
 @property(nonatomic, strong) UIViewController *root;
 @property(nonatomic, strong) UIButton *button;
 @property(nonatomic, strong) UIButton *qualityButton;
+@property(nonatomic, strong) UIButton *nativeButton;
+@property(nonatomic) NSUInteger nativeCompletions;
 @property(nonatomic) NSInteger callbacks;
 @property(nonatomic) NSInteger nativeOpens;
 @property(nonatomic, strong) UIViewController *nativeMenu;
@@ -272,11 +279,19 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
     [self.button setImage:[UIImage systemImageNamed:@"gearshape.fill"] forState:UIControlStateNormal];
     self.button.tintColor = UIColor.whiteColor;
     [overlay addSubview:self.button];
+    YTKACERegisterTweakPlayerMenuSource(self.button);
     self.qualityButton = [UIButton buttonWithType:UIButtonTypeSystem];
     self.qualityButton.frame = CGRectMake(overlay.bounds.size.width - 122,90,44,44);
     self.qualityButton.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
     [self.qualityButton setTitle:@"Auto" forState:UIControlStateNormal];
     [overlay addSubview:self.qualityButton];
+    YTKACERegisterTweakPlayerMenuSource(self.qualityButton);
+    self.nativeButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    self.nativeButton.frame = CGRectMake(20,90,44,44);
+    // A spoofed identifier must not classify a native control as tweak-owned.
+    self.nativeButton.accessibilityIdentifier = @"YTKACE Quality";
+    [self.nativeButton setImage:[UIImage systemImageNamed:@"gearshape.fill"] forState:UIControlStateNormal];
+    [overlay addSubview:self.nativeButton];
     [self.window makeKeyAndVisible];
     UIWindowSceneGeometryPreferencesIOS *portrait = [[UIWindowSceneGeometryPreferencesIOS alloc]
         initWithInterfaceOrientations:UIInterfaceOrientationMaskPortrait];
@@ -297,6 +312,7 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
     [self testMissingActionTitles];
     UIView *clip = [[UIView alloc] initWithFrame:CGRectMake(20,140,44,44)]; clip.clipsToBounds = YES;
     UIButton *clipped = [[UIButton alloc] initWithFrame:CGRectMake(60,0,44,44)];
+    YTKACERegisterTweakPlayerMenuSource(clipped);
     [clip addSubview:clipped]; [self.button.superview addSubview:clip];
     Check(!YTKACEIsPlayerMenuSource(clipped),@"a scrolled/clipped button must not anchor a popup");
     clip.clipsToBounds = NO;
@@ -414,6 +430,7 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
 - (void)testSettingsScope {
     UIButton *settings = [UIButton buttonWithType:UIButtonTypeSystem];
     settings.frame = CGRectMake(20, 160, 100, 44);
+    YTKACERegisterTweakPlayerMenuSource(settings);
     [self.root.view addSubview:settings]; // Outside the player overlay.
     Check(YTKACEPresentSystemMenu(self.root, settings, @"Settings", nil, self.actions), @"settings did not present");
     Later(^{
@@ -456,14 +473,19 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
         UITableViewController *content = (id)MenuNavigation(menu).topViewController;
         Check(content.tableView.contentSize.height > content.tableView.bounds.size.height, @"long list not scrollable");
         [menu dismissViewControllerAnimated:NO completion:^{
-            [self.button addTarget:self action:@selector(openNative:) forControlEvents:UIControlEventTouchUpInside];
-            [self.button sendActionsForControlEvents:UIControlEventTouchUpInside];
+            [self.nativeButton addTarget:self action:@selector(openNative:) forControlEvents:UIControlEventTouchUpInside];
+            YTKACERememberPlayerMenuSource(self.qualityButton);
+            [self.nativeButton sendActionsForControlEvents:UIControlEventTouchUpInside];
             Later(^{ [self verifyNative]; });
         }];
     });
 }
 - (void)openNative:(UIButton *)sender {
     (void)sender;
+    // Simulate the window's origin observation for a native UIAction/touch path
+    // that bypasses sendAction:. A fresh tweak token must be discarded too.
+    YTKACERememberPlayerMenuSource(self.qualityButton);
+    YTKACEUpdatePlayerMenuTouchSource(self.nativeButton,self.window);
     UIViewController *native = self.nativeMenu;
     if (!native) {
         native = [YTBottomSheetController new];
@@ -473,10 +495,15 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
         YTDraggableView *panel = [[YTDraggableView alloc] initWithFrame:CGRectMake(0,0,320,280)];
         panel.backgroundColor = UIColor.systemBackgroundColor;
         [native.view addSubview:panel];
+        NativeOriginAction *opaque = [NativeOriginAction new]; opaque.handler = ^{};
+        ((YTBottomSheetController *)native).actions = @[opaque];
         self.nativeMenu = native;
     }
     self.nativeOpens++;
-    [self.root presentViewController:native animated:NO completion:nil];
+    [self.root presentViewController:native animated:NO completion:^{
+        self.nativeCompletions++;
+        Check(native.view.alpha == 1,@"native origin must not be hidden during original presentation completion");
+    }];
 }
 - (void)verifyNative {
     UIViewController *native = self.root.presentedViewController;
@@ -484,6 +511,13 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
         native.modalPresentationStyle == UIModalPresentationPageSheet && native.transitioningDelegate == self,
         @"native sheet presentation and transitioning delegate must be preserved across repeated opens");
     Check(CGSizeEqualToSize(native.preferredContentSize,CGSizeMake(320,280)), @"native content size must not be replaced by an estimated popover size");
+    Check(!YTKACEIsPlayerMenuSource(self.nativeButton) && YTKACEIsPlayerMenuSource(self.qualityButton),
+        @"source registration, not icon or accessibility identifier, must determine ownership");
+    Check(NativeOriginReads == 0 && self.nativeCompletions == (NSUInteger)self.nativeOpens && !native.presentedViewController,
+        @"native menus must never enter model decoding or create a replacement list");
+    for (UIGestureRecognizer *gesture in native.presentationController.containerView.gestureRecognizers)
+        Check(![NSStringFromClass([gesture.delegate class]) isEqual:@"YTKACENativeOutsideTap"],
+            @"native origin must keep original dismissal gestures without our fallback recognizer");
     UIView *panel = native.view.subviews.firstObject;
     NSUInteger glassCount = 0;
     for (UIView *child in panel.subviews) if ([child isKindOfClass:UIVisualEffectView.class]) {
@@ -491,9 +525,26 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
         Check(!child.userInteractionEnabled && CGRectEqualToRect(child.frame,panel.bounds), @"native glass must only style the panel");
     }
     Check(glassCount == 1, @"native sheet must reuse one Liquid Glass surface");
+    if (self.nativeOpens == 1) {
+        YTBottomSheetController *submenu = [YTBottomSheetController new];
+        submenu.actions = ((YTBottomSheetController *)native).actions;
+        submenu.modalPresentationStyle = UIModalPresentationPageSheet;
+        [native presentViewController:submenu animated:NO completion:nil];
+        Later(^{
+            Check(native.presentedViewController == submenu && !YTKACEIsPlayerPopover(submenu) &&
+                submenu.view.alpha == 1 && NativeOriginReads == 0,@"native gear submenus must stay on the original path");
+            [submenu dismissViewControllerAnimated:NO completion:^{ [self finishNativeOrigin]; }];
+        });
+        return;
+    }
+    [self finishNativeOrigin];
+}
+- (void)finishNativeOrigin {
+    UIViewController *native = self.nativeMenu;
     [native dismissViewControllerAnimated:NO completion:^{
         if (self.nativeOpens < 3) {
-            [self.button sendActionsForControlEvents:UIControlEventTouchUpInside];
+            YTKACERememberPlayerMenuSource(self.qualityButton);
+            [self.nativeButton sendActionsForControlEvents:UIControlEventTouchUpInside];
             Later(^{ [self verifyNative]; });
             return;
         }
@@ -693,7 +744,7 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
         [menu dismissViewControllerAnimated:NO completion:^{
             [settings removeFromSuperview];
             YTKACEPresentSystemMenu(self.root,self.button,@"Player options",nil,self.actions);
-            [@"PASS: live opaque native rows, original hierarchy/constraint restoration, single action delivery, ELM labels, spacers, outside cancellation, quality/gear anchors, lifecycle callbacks, bounds, scrolling, settings and rotation\n"
+            [@"PASS: registered tweak versus native button routing, untouched native gear/submenus/gestures, stale-source isolation, tweak adapter rows/restoration/actions, outside cancellation, bounds, scrolling, settings and rotation\n"
                 writeToFile:ResultPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
         }];
     });

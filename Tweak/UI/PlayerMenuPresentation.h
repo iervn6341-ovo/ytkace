@@ -1,5 +1,11 @@
 #import <UIKit/UIKit.h>
 NS_ASSUME_NONNULL_BEGIN
+// Register only a button created by a tweak. Native YouTube controls must never
+// inherit menu conversion merely because they live in the player overlay.
+FOUNDATION_EXPORT __attribute__((visibility("default"))) void YTKACERegisterTweakPlayerMenuSource(UIView *source);
+// Called for a new window touch, including controls using UIAction rather than
+// sendAction:to:forEvent:. Only remembers registered tweak sources.
+FOUNDATION_EXPORT void YTKACEUpdatePlayerMenuTouchSource(UIView * _Nullable target, UIWindow *window);
 FOUNDATION_EXPORT BOOL YTKACEIsPlayerMenuSource(UIView * _Nullable source);
 // Only for controllers whose content and dismissal lifecycle YTKACE owns.
 FOUNDATION_EXPORT BOOL YTKACEConfigurePlayerPopover(UIViewController *controller,

@@ -104,14 +104,25 @@ resume observer, not a full response/network capture.
 
 ### Player menus beside buttons
 
-With General → Use System Menus enabled, YTKACE player menus use UIKit popovers
+With General → Use System Menus enabled, registered tweak player buttons use UIKit popovers
 on iPhone and iPad, anchored to the visible player button. The popover delegate
 prevents compact-width adaptation into a bottom sheet. UIKit supplies the native
 material, including Liquid Glass on supported systems, without an extra glass
 layer over the player menu. Selected/disabled actions, subtitles and callbacks
 retain their behavior; settings outside the player keep their existing sheets.
 
-The presenter recognizes YouTube's default/action/contextual player sheet containers.
+YouTube's native gear and other native buttons, including menus opened from them,
+keep the original YouTube presentation and dismissal flow used by upstream YTKACE.
+Existing glass styling remains. They do not enter the action decoder, replacement
+list or fallback outside-tap handler. Unknown buttons also keep the original route.
+The YTKACE button factory registers its own controls, including More; other tweaks
+can explicitly register their own player button with
+`YTKACERegisterTweakPlayerMenuSource`. Icons, names and accessibility identifiers do
+not grant registration. New touches clear a previous tweak source even for native
+controls using UIAction. A pending source is consumed by the next presentation.
+
+For a registered tweak button (such as the quality shortcut), the presenter recognizes
+YouTube's default/action/contextual player sheet containers.
 For complete action models it rebuilds their choices as a self-sizing UIKit popover,
 including icons, values, selection and disabled state. The original sheet's modal
 style and transitioning delegate are preserved: it completes its native lifecycle
@@ -156,7 +167,7 @@ when available. Failure diagnostics include a bounded class/count probe and know
 menu identifier, without displayed text. Regression covers trailing spacers and
 non-UILabel element rows through both quality and gear anchors.
 
-Native fallbacks opened from a player button accept taps outside known YouTube
+Native fallbacks opened from a registered tweak button accept taps outside known YouTube
 panels to close through their original action owner. Hit testing uses the panel's
 current transformed bounds, rejects touches inside controls and leaves drags intact.
 Unrecognized panels and unrelated dialogs retain native behavior. Simulator checks

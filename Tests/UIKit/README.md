@@ -31,6 +31,11 @@ compact-width popover adaptation, visible button anchoring, window containment,
 selection and disabled actions, long-list scrolling, landscape rotation,
 dismissal-before-callback, native-container
 routing with preserved native lifecycle and glass, unrelated/settings controller scope, and the feature preference.
+Ownership tests use an unregistered native gear with a spoofed tweak identifier,
+a registered tweak gear icon and a registered quality button. Native gear/submenus
+must keep original style, alpha, completion and dismissal gestures without reading
+action titles. Fresh tweak-source tokens are cleared by native control activation
+and by the production touch-origin observer (called with a view fixture, not HID).
 ELM fixtures include yoga children and controller/materialized node chains without
 UIView/subnodes/accessibility text. Native fallback cancellation verifies transformed
 panel inside/outside acceptance using a UITouch location fixture and normal recognizer

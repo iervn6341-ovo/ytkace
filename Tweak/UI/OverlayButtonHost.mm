@@ -383,6 +383,7 @@ static UIButton *YTKACENativePlayerButton(UIView *overlay, NSString *identifier,
     // 24pt image to ~10pt. Keep a public UIKit button's glyph and hit area separate.
     UIButton *button = [YTKACEPlayerControlButton buttonWithType:UIButtonTypeCustom];
     button.accessibilityIdentifier = identifier;
+    YTKACERegisterTweakPlayerMenuSource(button);
     button.accessibilityLabel = identifier;
     button.tintColor = UIColor.whiteColor;
     [button setImage:image forState:UIControlStateNormal];

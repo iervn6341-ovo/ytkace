@@ -9,12 +9,14 @@
 
 static const void *PopoverKey = &PopoverKey;
 static const void *TapKey = &TapKey;
-static IMP OriginalSendAction, OriginalPresent;
+static const void *TweakSourceKey = &TweakSourceKey;
+static IMP OriginalSendAction, OriginalPresent, OriginalWindowEvent;
 
 @interface YTKACEPlayerMenuTap : NSObject
 @property(nonatomic, weak) UIView *source;
 @property(nonatomic) NSTimeInterval uptime;
 @property(nonatomic, weak) UIViewController *menu;
+@property(nonatomic) BOOL pending;
 @end
 @implementation YTKACEPlayerMenuTap
 @end
@@ -30,13 +32,20 @@ static BOOL VisibleSource(UIView *source, UIWindow *window) {
     return !CGRectIsNull(visible) && !CGRectIsEmpty(visible);
 }
 
+void YTKACERegisterTweakPlayerMenuSource(UIView *source) {
+    if (![source isKindOfClass:UIControl.class]) return;
+    objc_setAssociatedObject(source,TweakSourceKey,@YES,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
 BOOL YTKACEIsPlayerMenuSource(UIView *source) {
     if (!VisibleSource(source, source.window)) return NO;
+    BOOL tweak = NO;
     for (UIView *view = source; view; view = view.superview) {
+        tweak = tweak || [objc_getAssociatedObject(view,TweakSourceKey) boolValue];
         for (NSString *name in @[@"YTMainAppControlsOverlayView", @"YTMainAppVideoPlayerOverlayView",
                                  @"YTInlinePlayerBarContainerView", @"YTPlayerView"]) {
             Class cls = NSClassFromString(name);
-            if (cls && [view isKindOfClass:cls]) return YES;
+            if (cls && [view isKindOfClass:cls]) return tweak;
         }
     }
     return NO;
@@ -51,6 +60,7 @@ void YTKACERememberPlayerMenuSource(UIView *source) {
     YTKACEPlayerMenuTap *tap = [YTKACEPlayerMenuTap new];
     tap.source = source;
     tap.uptime = NSProcessInfo.processInfo.systemUptime;
+    tap.pending = YES;
     objc_setAssociatedObject(source.window, TapKey, tap, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
@@ -123,6 +133,7 @@ BOOL YTKACEConfigurePlayerPopover(UIViewController *controller, UIViewController
     YTKACERememberPlayerMenuSource(source);
     YTKACEPlayerMenuTap *tap = objc_getAssociatedObject(source.window, TapKey);
     tap.menu = controller;
+    tap.pending = NO;
     return YES;
 }
 
@@ -145,8 +156,7 @@ static UIView *SourceForPresenter(UIViewController *presenter) {
         ancestor = ancestor.parentViewController ?: ancestor.presentingViewController;
     }
     YTKACEPlayerMenuTap *tap = objc_getAssociatedObject(presenter.view.window, TapKey);
-    BOOL activeMenu = tap.menu.presentingViewController != nil || tap.menu.isBeingDismissed;
-    if (tap && (activeMenu || NSProcessInfo.processInfo.systemUptime - tap.uptime <= 1.5) &&
+    if (tap.pending && NSProcessInfo.processInfo.systemUptime - tap.uptime <= 1.5 &&
         [tap.source isDescendantOfView:presenter.view] &&
         VisibleSource(tap.source, presenter.view.window)) return tap.source;
     return nil;
@@ -166,13 +176,36 @@ static void SendAction(UIControl *receiver, SEL selector, SEL action, id target,
     if (OriginalSendAction) ((void (*)(id, SEL, SEL, id, id))OriginalSendAction)(receiver, selector, action, target, event);
 }
 
+void YTKACEUpdatePlayerMenuTouchSource(UIView *target, UIWindow *window) {
+    if (!Enabled() || !window) return;
+    for (UIView *view = target; view; view = view.superview) {
+        if ([objc_getAssociatedObject(view,TweakSourceKey) boolValue] && YTKACEIsPlayerMenuSource(view)) {
+            YTKACERememberPlayerMenuSource(view);
+            return;
+        }
+    }
+    YTKACEPlayerMenuTap *tap = objc_getAssociatedObject(window,TapKey);
+    if (target && tap.menu.isViewLoaded && [target isDescendantOfView:tap.menu.view]) return;
+    objc_setAssociatedObject(window,TapKey,nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+static void WindowEvent(UIWindow *receiver, SEL selector, UIEvent *event) {
+    if (NSThread.isMainThread && event.type == UIEventTypeTouches)
+        for (UITouch *touch in event.allTouches)
+            if (touch.phase == UITouchPhaseBegan && touch.window == receiver)
+                YTKACEUpdatePlayerMenuTouchSource(touch.view,receiver);
+    if (OriginalWindowEvent) ((void (*)(id,SEL,id))OriginalWindowEvent)(receiver,selector,event);
+}
+
 static void Present(UIViewController *receiver, SEL selector, UIViewController *controller,
                      BOOL animated, void (^completion)(void)) {
     if (NSThread.isMainThread && Enabled() && !YTKACEIsPlayerPopover(controller) && IsYouTubeMenu(controller)) {
         UIView *source = SourceForPresenter(receiver);
         if (source) {
+            os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] origin=tweak route=adapter");
             YTKACEPlayerMenuTap *tap = objc_getAssociatedObject(source.window, TapKey);
             tap.menu = controller;
+            tap.pending = NO;
             NSArray *actions = YTKACENativePlayerActions(controller);
             BOOL retryText = !actions && YTKACENativeMenuNeedsTextRetry(controller);
             if ((actions || retryText) && !receiver.presentedViewController && OriginalPresent) {
@@ -209,6 +242,8 @@ static void Present(UIViewController *receiver, SEL selector, UIViewController *
                 });
                 return;
             }
+        } else {
+            os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] origin=unregistered route=original");
         }
     }
     if (OriginalPresent) ((void (*)(id, SEL, id, BOOL, id))OriginalPresent)(receiver, selector, controller, animated, completion);
@@ -218,6 +253,7 @@ void YTKACEInstallPlayerMenuPresentation(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         YTKACEInstallNativePlayerMenuAdapter();
+        YTKACEInstallInstanceHook(@"UIWindow", @"sendEvent:", (IMP)WindowEvent, &OriginalWindowEvent);
         YTKACEInstallInstanceHook(@"UIControl", @"sendAction:to:forEvent:", (IMP)SendAction, &OriginalSendAction);
         YTKACEInstallInstanceHook(@"UIViewController", @"presentViewController:animated:completion:", (IMP)Present, &OriginalPresent);
     });
