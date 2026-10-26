@@ -280,6 +280,13 @@ static BOOL Finite(CGRect r) { return std::isfinite(r.origin.x) && std::isfinite
     Check([qualityButton.currentTitle isEqual:@"1080p"],@"an opaque callback identity must still update the active selection context");
     [[YTVideoQualitySwitchOriginalController new] singleVideo:videoController.singleVideo didSelectVideoFormat:format];
     Check([qualityButton.currentTitle isEqual:@"1080p"] && [qualityButton.accessibilityValue isEqual:@"1080p60 HDR"], @"selected quality must update label and retain full accessibility value");
+    [row layoutIfNeeded]; [qualityButton layoutIfNeeded];
+    CGRect qualityTextRect = [qualityButton titleRectForContentRect:[qualityButton contentRectForBounds:qualityButton.bounds]];
+    CGFloat smallestTextWidth = [@"1080p" sizeWithAttributes:@{NSFontAttributeName:
+        [qualityButton.titleLabel.font fontWithSize:qualityButton.titleLabel.font.pointSize * qualityButton.titleLabel.minimumScaleFactor]}].width;
+    Check(qualityButton.titleLabel.adjustsFontSizeToFitWidth && qualityButton.titleLabel.lineBreakMode == NSLineBreakByClipping &&
+        smallestTextWidth <= qualityTextRect.size.width && CGRectContainsRect(qualityButton.bounds,qualityTextRect),
+        @"the entire 1080p label must fit inside its actual 44-point title rectangle without an ellipsis");
     format.qualityLabel = @"720p60"; [videoController setVideoFormatConstraint:format];
     Check([qualityButton.currentTitle isEqual:@"720p"] && videoController.constraintCalls == 1,
         @"direct native constraint updates must refresh immediately and forward the setter once");
@@ -350,6 +357,16 @@ static BOOL Finite(CGRect r) { return std::isfinite(r.origin.x) && std::isfinite
     GlassEnabled = NO; [frosted layoutSubviews];
     Check(fabs(frosted._overlayView.alpha - 0.4) < 0.001, @"restore exact native overlay alpha");
     [@"PASS: standalone portrait/fullscreen controls, compact/expanded rows, scroll reachability, repeated quality actions, feature gates, bounded reentry, exit transitions, geometry recovery, actions and PlayerGlass lifecycle" writeToFile:ResultPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    if ([NSProcessInfo.processInfo.arguments containsObject:@"--preview-quality-label"]) {
+        self.window.rootViewController.view.backgroundColor = UIColor.blackColor;
+        qualityPlayer.activeVideo = videoController; format.qualityLabel = @"1080p60 HDR";
+        [videoController setVideoFormatConstraint:format];
+        [overlay layoutSubviews]; [overlay layoutIfNeeded];
+        UIScrollView *qualityViewport = (id)qualityButton.superview.superview;
+        [qualityViewport scrollRectToVisible:[qualityButton convertRect:qualityButton.bounds toView:qualityViewport] animated:NO];
+        [@"READY: selected 1080p label" writeToFile:[NSHomeDirectory() stringByAppendingPathComponent:@"Documents/quality-preview.txt"]
+            atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    }
 }
 @end
 int main(int argc, char **argv) { @autoreleasepool { return UIApplicationMain(argc, argv, nil, NSStringFromClass(PlayerControlsSmoke.class)); } }

@@ -43,12 +43,19 @@ anchored submenus, cancellation/reopening and original owner lifecycle. The gear
 fixture reproduces the device's index-3 ELM control with 398 x -0 bounds and a
 separate row that gains height 80 ms after appearance: the final popover must omit
 only the collapsed row and include the late row, with four native rows in total.
+A CaptionIsland-shaped factory action is appended at native index 6 with a title,
+icon and subsequently assigned zero-argument handler but no button. The popover
+must have five mixed rows, display that extension's title/icon, close the native
+owner, and execute the extension exactly once before its submenu opens.
 Launch with
 `--preview-native-gear` and wait for `Documents/gear-preview.txt` to hold that state
 for screenshots. This preview mode does not produce a new full-suite PASS.
 Quality coverage includes absent callbacks, unreadable non-Auto callbacks, explicit
 menu choice persistence, temporary missing metadata and confirmed native-control
 activation, as well as a differently wrapped callback model.
+The 1080p check measures the actual button title rectangle and its minimum font
+width. `--preview-quality-label` finishes the controls suite and then holds the
+selected label in view after `Documents/quality-preview.txt` is written.
 ELM fixtures include yoga children and controller/materialized node chains without
 UIView/subnodes/accessibility text. Native fallback cancellation verifies transformed
 panel inside/outside acceptance using a UITouch location fixture and normal recognizer

@@ -40,6 +40,7 @@ static void Later(dispatch_block_t block) {
 @end
 @implementation NativeTestAction @end
 static NSUInteger NativeOriginReads;
+static NSUInteger GearExtensionCalls;
 @interface NativeOriginAction : NativeTestAction @end
 @implementation NativeOriginAction
 - (NSString *)title { NativeOriginReads++; return nil; }
@@ -736,6 +737,10 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
     NativeTestAction *spacer = [NativeTestAction new]; spacer.button = [[YTSpacerButton alloc] initWithFrame:CGRectMake(0,224,398,32)];
     [panel addSubview:spacer.button];
     [models addObject:spacer];
+    YTActionSheetAction *extension = [YTActionSheetAction actionWithTitle:@"字幕動態島"
+        iconImage:[UIImage systemImageNamed:@"captions.bubble"] style:0 handler:nil];
+    extension.handler = ^{ GearExtensionCalls++; handler(); };
+    [models addObject:extension];
     NativeTestOwner *owner = [NativeTestOwner new]; owner.native = native; owner.actions = models;
     native.actionsController = owner;
     return native;
@@ -770,8 +775,12 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
             @"a gear hidden/scaled by native appearance must retain its pre-presentation window-space anchor");
         Check(NativeOriginReads == 0,@"native gear content must use live rows without requiring title extraction");
         UITableViewController *table = (id)MenuNavigation(menu).topViewController;
-        Check([table.tableView numberOfRowsInSection:0] == 4,
-            @"a persistent zero-height row must not block its visible siblings or the asynchronously materialized row");
+        Check([table.tableView numberOfRowsInSection:0] == 5,
+            @"the gear must combine four live rows and a metadata-only extension after omitting the collapsed row");
+        NSIndexPath *extensionIndex = [NSIndexPath indexPathForRow:4 inSection:0];
+        UITableViewCell *extensionCell = [table.tableView.dataSource tableView:table.tableView cellForRowAtIndexPath:extensionIndex];
+        Check([extensionCell.textLabel.text isEqual:@"字幕動態島"] && extensionCell.imageView.image != nil,
+            @"the metadata-only extension must retain its captured title and icon");
         UIView *collapsedRow = [(NativeTestAction *)[(NativeTestOwner *)self.gearNative.actionsController actions][3] button];
         Check(self.gearNative.lateGeometryButton.superview != collapsedRow.superview,
             @"the late row must be borrowed while the collapsed row stays in the native hierarchy");
@@ -780,7 +789,7 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
                 atomically:YES encoding:NSUTF8StringEncoding error:nil]; return;
         }
         if (!self.gearRound) [menu dismissViewControllerAnimated:NO completion:nil];
-        else [table.tableView.delegate tableView:table.tableView didSelectRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]];
+        else [table.tableView.delegate tableView:table.tableView didSelectRowAtIndexPath:extensionIndex];
         Later(^{
             if (!self.gearRound) {
                 Check(!self.root.presentedViewController,@"native gear cancellation must release its original owner");
@@ -792,7 +801,7 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
             UITableViewController *childTable = (id)MenuNavigation(childMenu).topViewController;
             [childTable.tableView.delegate tableView:childTable.tableView didSelectRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]];
             Later(^{
-                Check(!self.root.presentedViewController && self.gearCallbacks == 1 && self.gearChildCallbacks == 1,
+                Check(!self.root.presentedViewController && self.gearCallbacks == 1 && self.gearChildCallbacks == 1 && GearExtensionCalls == 1,
                     @"gear and submenu actions must run once and close both native owners");
                 Check([(NativeTestOwner *)self.gearNative.actionsController dismissals] == 2 &&
                     [(NativeTestOwner *)self.gearChild.actionsController dismissals] == 1,@"native gear owner state must release on every open");

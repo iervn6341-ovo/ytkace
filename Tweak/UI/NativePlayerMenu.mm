@@ -396,21 +396,31 @@ static NSArray<NSDictionary *> *NativePlayerActions(UIViewController *controller
             YTKACEMenuNativeRow *row = [button isKindOfClass:UIControl.class] &&
                 [button isDescendantOfView:controller.view] ? [[YTKACEMenuNativeRow alloc] initWithView:button] : nil;
             if (!row || (enabled && !handler)) {
-                os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] gear row-unavailable index=%lu class=%{public}@ handler=%d bounds=%{public}@ parent=%{public}@",
-                    (unsigned long)nativeIndex,button ? NSStringFromClass([button class]) : @"none",handler != nil,
-                    [button isKindOfClass:UIView.class] ? NSStringFromCGRect([button bounds]) : @"none",
-                    [button isKindOfClass:UIView.class] ? NSStringFromClass([[button superview] class]) : @"none");
-                return nil;
+                // Third-party actions appended to the native model array can
+                // have a captured title/handler and no native button at all.
+                // Let those use the shared metadata row below, alongside the
+                // live ELM rows, rather than rejecting the complete gear menu.
+                NSString *metadataSource = nil;
+                if ((enabled && !handler) || !Nonempty(ActionTitle(model,button,&metadataSource))) {
+                    os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] gear row-unavailable index=%lu class=%{public}@ handler=%d bounds=%{public}@ parent=%{public}@ modelClass=%{public}@",
+                        (unsigned long)nativeIndex,button ? NSStringFromClass([button class]) : @"none",handler != nil,
+                        [button isKindOfClass:UIView.class] ? NSStringFromCGRect([button bounds]) : @"none",
+                        [button isKindOfClass:UIView.class] ? NSStringFromClass([[button superview] class]) : @"none",NSStringFromClass([model class]));
+                    return nil;
+                }
+                os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] gear metadata-row index=%lu modelClass=%{public}@ buttonClass=%{public}@",
+                    (unsigned long)nativeIndex,NSStringFromClass([model class]),button ? NSStringFromClass([button class]) : @"none");
+            } else {
+                NSMutableDictionary *item = [@{@"nativeRow":row,@"enabled":@(enabled)} mutableCopy];
+                NSString *identifier = objc_getAssociatedObject(model,NativeItemIdentifierKey);
+                if ([identifier isEqual:@"menu_item_video_quality"]) item[@"qualityEntry"] = @YES;
+                NSString *selectionTitle = Nonempty(PlainString(captured[@"title"])) ?: Nonempty(Text(button,@"currentTitle"))
+                    ?: Nonempty(Text(Value(button,@"titleLabel"),@"text"));
+                if (selectionTitle) item[@"selectionTitle"] = selectionTitle;
+                if (handler) item[@"handler"] = handler;
+                [actions addObject:item];
+                continue;
             }
-            NSMutableDictionary *item = [@{@"nativeRow":row,@"enabled":@(enabled)} mutableCopy];
-            NSString *identifier = objc_getAssociatedObject(model,NativeItemIdentifierKey);
-            if ([identifier isEqual:@"menu_item_video_quality"]) item[@"qualityEntry"] = @YES;
-            NSString *selectionTitle = Nonempty(PlainString(captured[@"title"])) ?: Nonempty(Text(button,@"currentTitle"))
-                ?: Nonempty(Text(Value(button,@"titleLabel"),@"text"));
-            if (selectionTitle) item[@"selectionTitle"] = selectionTitle;
-            if (handler) item[@"handler"] = handler;
-            [actions addObject:item];
-            continue;
         }
         if (spacerClass && [button isKindOfClass:spacerClass] && !handler &&
             !Nonempty(Text(model,@"title")) && !Nonempty(Text(model,@"attributedTitle")) &&
@@ -455,6 +465,8 @@ static NSArray<NSDictionary *> *NativePlayerActions(UIViewController *controller
         }
         NSMutableDictionary *action = [@{@"enabled":@(enabled),
             @"selected":@(Flag(model,@"visiblySelected",captured[@"selected"] ? [captured[@"selected"] boolValue] : Flag(button,@"isSelected",NO)))} mutableCopy];
+        if (nativeViewsOnly && [objc_getAssociatedObject(model,NativeItemIdentifierKey) isEqual:@"menu_item_video_quality"])
+            action[@"qualityEntry"] = @YES;
         if (title.length) action[@"title"] = title;
         if (nativeRow) action[@"nativeRow"] = nativeRow;
         titleSources[titleSource] = @(titleSources[titleSource].unsignedIntegerValue + 1);

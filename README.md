@@ -72,7 +72,9 @@ quality selector; its selected-format callback updates the compact label (4K, 2K
 is reported. Selection callbacks and the active-video controller resolve to the
 same underlying video model. Labels update immediately, including direct native
 format-constraint changes, without waiting for a player layout pass; callbacks
-for a previous video cannot repaint the current video's button. Existing YouQuality
+for a previous video cannot repaint the current video's button. The single-line
+label fits its 44pt touch target with font scaling and no ellipsis truncation.
+Existing YouQuality
 visibility preferences migrate once. The code
 retains PoomSmart's MIT notice in `YTKACE.bundle/Licenses/YouQuality.txt`.
 
@@ -121,6 +123,9 @@ sheet lifecycle/owner dismissal still run; row hierarchy/layout is restored befo
 actions. Zero-height native ELM rows wait for up to three additional layout passes
 (150 ms); rows still collapsed then are omitted, while visible siblings and late
 materialized rows remain available. No replacement labels or heights are invented.
+Actions appended by other tweaks can have no native button; their readable model
+or captured factory title, icon and verified handler become standard rows in the
+same popover. Opaque native controls continue using their original live views.
 The native gear is identified from the overlay's overflow/settings anchor,
 separately from registered tweak controls. Other unknown buttons keep the original route.
 The YTKACE button factory registers its own controls, including More; other tweaks

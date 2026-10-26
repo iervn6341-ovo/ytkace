@@ -270,6 +270,12 @@ void YTKACEInstallQualityControls(void) {
             UpdateQualityButton(overlay,button);
             [button setImage:nil forState:UIControlStateNormal];
             button.titleLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
+            button.titleLabel.numberOfLines = 1;
+            button.titleLabel.adjustsFontSizeToFitWidth = YES;
+            button.titleLabel.minimumScaleFactor = 0.7;
+            button.titleLabel.lineBreakMode = NSLineBreakByClipping;
+            button.contentEdgeInsets = UIEdgeInsetsZero;
+            button.titleEdgeInsets = UIEdgeInsetsZero;
             [button setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
             button.accessibilityLabel = YTKACELocalized(@"Video Quality");
             button.hidden = !YTKACEFeatureEnabled(QualityButtonKey);
