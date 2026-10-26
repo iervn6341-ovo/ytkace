@@ -6,6 +6,7 @@
 #import "../../Tweak/Features/Downloads/DownloadLog.h"
 
 static BOOL Features = YES;
+NSString * const YTKACEPreferencesDidChangeNotification = @"YTKACEPreferencesDidChange";
 BOOL YTKACEFeatureEnabled(NSString *key) { (void)key; return Features; }
 NSString *YTKACELocalized(NSString *key) { return key; }
 void YTKACEDownloadLog(NSString *identifier, NSString *format, ...) { (void)identifier; (void)format; }

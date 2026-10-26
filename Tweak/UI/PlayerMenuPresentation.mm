@@ -1,4 +1,5 @@
 #import "PlayerMenuPresentation.h"
+#import "OverlayButtonHost.h"
 #import "../Runtime/Hooking.h"
 #import "../Runtime/Preferences.h"
 #import <objc/runtime.h>
@@ -141,6 +142,7 @@ static UIView *SourceForPresenter(UIViewController *presenter) {
 }
 
 static void SendAction(UIControl *receiver, SEL selector, SEL action, id target, UIEvent *event) {
+    if (NSThread.isMainThread) YTKACEPrepareOverlayAction(receiver);
     if (NSThread.isMainThread && Enabled()) {
         if (YTKACEIsPlayerMenuSource(receiver)) YTKACERememberPlayerMenuSource(receiver);
         else if (receiver.window) {

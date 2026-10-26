@@ -10,8 +10,13 @@
 #import <math.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
+#import <dlfcn.h>
 
 static IMP OriginalControlsOverlayLayout;
+static IMP OriginalBottomOverlayLayout;
+static BOOL YTKACESharedPlayerButtons;
+static const void *YTKACEButtonRegistryKey = &YTKACEButtonRegistryKey;
+static const void *YTKACEPrepareActionKey = &YTKACEPrepareActionKey;
 static IMP OriginalControlsSetOverlayVisible;
 static IMP OriginalControlsSetControlsVisible;
 static IMP OriginalVideoSetOverlayVisible;
@@ -23,6 +28,12 @@ static const void *YTKACEOverflowSignatureAssociation = &YTKACEOverflowSignature
 static const void *YTKACEPlayerActionAssociation = &YTKACEPlayerActionAssociation;
 static NSString *const YTKACEOverflowIdentifier = @"YTKACE More Player Controls";
 static NSMutableArray<NSDictionary *> *YTKACEOverlayConfigurators;
+static void YTKACEUpdateSharedButtons(UIView *host);
+
+void YTKACEPrepareOverlayAction(UIView *source) {
+    dispatch_block_t prepare = objc_getAssociatedObject(source, YTKACEPrepareActionKey);
+    if (prepare) prepare();
+}
 
 static void YTKACEFindSettingsControlInView(UIView *view,
                                             UIView *excluded,
@@ -201,6 +212,7 @@ static UIStackView *YTKACEStackForOverlay(UIView *overlay) {
     stack.clipsToBounds = YES;
     stack.translatesAutoresizingMaskIntoConstraints = YES;
     stack.accessibilityIdentifier = @"YTKACEOverlayControls";
+    if (YTKACESharedPlayerButtons) stack.hidden = YES; // Registry only; YTVideoOverlay owns visible placement.
 
     [overlay addSubview:stack];
     objc_setAssociatedObject(overlay,
@@ -229,8 +241,21 @@ static UIImage *YTKACEPlayerGlyph(UIImage *image) {
 @interface YTKACEPlayerControlButton : UIButton
 @property(nonatomic) BOOL featureHidden;
 @property(nonatomic) BOOL layoutHidden;
+@property(nonatomic) BOOL sizeWithPaddingAndInsets;
+@property(nonatomic) BOOL refreshRendererAfterPageStyling;
+@property(nonatomic) CGFloat buttonImageTitlePadding;
+@property(nonatomic) CGFloat minHitTargetSize;
+@property(nonatomic) CGFloat verticalContentPadding;
+@property(nonatomic) NSInteger buttonLayoutStyle;
+@property(nonatomic, strong) UIColor *inkColor;
 @end
 @implementation YTKACEPlayerControlButton
+- (CGSize)intrinsicContentSize { return CGSizeMake(44, 44); }
+- (CGSize)sizeThatFits:(CGSize)size { (void)size; return CGSizeMake(44, 44); }
+- (void)setTitleTypeKind:(NSInteger)kind { (void)kind; }
+- (void)setTitleTypeKind:(NSInteger)kind typeVariant:(NSInteger)variant { (void)kind; (void)variant; }
+- (void)setCustomTitleColor:(UIColor *)color { [self setTitleColor:color forState:UIControlStateNormal]; }
+- (void)setCustomTintColor:(UIColor *)color { self.tintColor = color; }
 - (void)setHidden:(BOOL)hidden {
     _featureHidden = hidden;
     [super setHidden:hidden || _layoutHidden];
@@ -271,7 +296,9 @@ static UIButton *YTKACENativePlayerButton(UIView *overlay, NSString *identifier,
     [button setPreferredSymbolConfiguration:configuration forImageInState:UIControlStateNormal];
     button.imageView.contentMode = UIViewContentModeScaleAspectFit;
     button.clipsToBounds = YES;
-    button.translatesAutoresizingMaskIntoConstraints = NO;
+    button.frame = CGRectMake(0, 0, 44, 44);
+    button.translatesAutoresizingMaskIntoConstraints = YTKACESharedPlayerButtons;
+    if (YTKACESharedPlayerButtons) return button;
     NSLayoutConstraint *width = [button.widthAnchor constraintEqualToConstant:44.0];
     // UIStackView installs a required zero-width constraint for hidden items.
     width.priority = UILayoutPriorityRequired - 1;
@@ -285,6 +312,12 @@ UIButton *YTKACEOverlayButton(UIStackView *stack,
                               NSString *symbolName,
                               id target,
                               SEL action) {
+    NSMutableDictionary *registry = objc_getAssociatedObject(stack, YTKACEButtonRegistryKey);
+    if (!registry) {
+        registry = [NSMutableDictionary dictionary];
+        objc_setAssociatedObject(stack, YTKACEButtonRegistryKey, registry, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    if (registry[identifier]) return registry[identifier];
     for (UIView *view in stack.arrangedSubviews) {
         if ([view.accessibilityIdentifier isEqualToString:identifier] &&
             [view isKindOfClass:UIButton.class]) {
@@ -295,14 +328,105 @@ UIButton *YTKACEOverlayButton(UIStackView *stack,
     UIButton *button = YTKACENativePlayerButton(stack.superview, identifier, symbolName);
     [button addTarget:target action:action forControlEvents:UIControlEventTouchUpInside];
     __weak id weakTarget = target;
+    __weak UIView *weakHost = stack.superview;
+    dispatch_block_t prepare = ^{ if (YTKACESharedPlayerButtons) YTKACEUpdateSharedButtons(weakHost); };
+    objc_setAssociatedObject(button, YTKACEPrepareActionKey, prepare, OBJC_ASSOCIATION_COPY_NONATOMIC);
     void (^invoke)(UIButton *) = ^(UIButton *sender) {
+        prepare();
         id strongTarget = weakTarget;
+        SEL bind = NSSelectorFromString([identifier isEqualToString:@"YTKACE Speed"] ? @"setValueButton:" : @"setButton:");
+        if ([strongTarget respondsToSelector:bind]) ((void (*)(id, SEL, id))objc_msgSend)(strongTarget, bind, sender);
         if (strongTarget != nil) [sender sendAction:action to:strongTarget forEvent:nil];
     };
     objc_setAssociatedObject(button, YTKACEPlayerActionAssociation,
                              invoke, OBJC_ASSOCIATION_COPY_NONATOMIC);
     [stack addArrangedSubview:button];
+    registry[identifier] = button;
     return button;
+}
+
+static UIView *YTKACEControlsContextInView(UIView *view, NSUInteger depth) {
+    if ([view isKindOfClass:NSClassFromString(@"YTMainAppControlsOverlayView")]) return view;
+    if (depth == 0) return nil;
+    for (UIView *child in view.subviews) {
+        UIView *found = YTKACEControlsContextInView(child, depth - 1);
+        if (found) return found;
+    }
+    return nil;
+}
+
+static void YTKACEUpdateSharedButtons(UIView *host) {
+    if (!host) return;
+    UIStackView *stack = YTKACEStackForOverlay(host);
+    // Bottom-bar actions still need the top overlay's eventsDelegate (speed,
+    // loop/autonav). Keep the actual button registry attached to its own host.
+    UIView *context = host;
+    if (![host isKindOfClass:NSClassFromString(@"YTMainAppControlsOverlayView")]) {
+        for (UIView *ancestor = host.superview; ancestor; ancestor = ancestor.superview) {
+            if (![NSStringFromClass(ancestor.class) containsString:@"PlayerOverlay"]) continue;
+            context = YTKACEControlsContextInView(ancestor, 6) ?: host;
+            break;
+        }
+    }
+    NSArray *entries = nil;
+    @synchronized (YTKACEOverlayConfigurators) { entries = [YTKACEOverlayConfigurators copy]; }
+    for (NSDictionary *entry in entries) {
+        if ([entry[@"identifier"] isEqual:@"visibility"] &&
+            ![host isKindOfClass:NSClassFromString(@"YTMainAppControlsOverlayView")]) continue;
+        YTKACEOverlayConfigurator configure = entry[@"block"];
+        configure(context, stack);
+    }
+}
+
+static void YTKACERegisterSharedGroup(NSString *group) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSString *path = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"Frameworks/YTVideoOverlay.dylib"];
+        dlopen(path.fileSystemRepresentation, RTLD_LAZY);
+        Class manager = NSClassFromString(@"YTSettingsSectionItemManager");
+        SEL support = NSSelectorFromString(@"supportsExternalPlayerButtons");
+        YTKACESharedPlayerButtons = [manager respondsToSelector:support] &&
+            ((BOOL (*)(id, SEL))objc_msgSend)(manager, support);
+    });
+    if (!YTKACESharedPlayerButtons) return;
+    NSDictionary *groups = @{
+        @"downloads": @[@[@"YTKACEDownload", @"YTKACE Download"]],
+        @"loop": @[@[@"YTKACELoop", @"YTKACE Loop"]],
+        @"pip": @[@[@"YTKACEPiP", @"YTKACE PiP"]],
+        @"sleeptimer": @[@[@"YTKACESleepTimer", @"YTKACE Sleep Timer"]],
+        @"transcript": @[@[@"YTKACETranscript", @"YTKACE Transcript"]],
+        @"speed": @[@[@"YTKACESlower", @"YTKACE Slower"], @[@"YTKACESpeed", @"YTKACE Speed"], @[@"YTKACEFaster", @"YTKACE Faster"]]
+    };
+    for (NSArray *pair in groups[group]) {
+        NSString *key = pair[0], *identifier = pair[1];
+        [NSUserDefaults.standardUserDefaults registerDefaults:@{
+            [NSString stringWithFormat:@"YTVideoOverlay-%@-Enabled", key]: @YES,
+            [NSString stringWithFormat:@"YTVideoOverlay-%@-Position", key]: @0
+        }];
+        NSDictionary *metadata = @{
+            @"moreTitle": YTKACELocalized(@"More player controls"),
+            @"accessibilityLabel": YTKACELocalized([identifier substringFromIndex:7]),
+            @"selector": @"yTKACEPlayerAction:",
+            @"buttonFactory": [^UIButton *(UIView *host, BOOL top) {
+                (void)top;
+                YTKACEUpdateSharedButtons(host);
+                UIStackView *stack = YTKACEStackForOverlay(host);
+                UIButton *button = objc_getAssociatedObject(stack, YTKACEButtonRegistryKey)[identifier];
+                if (!button) return nil;
+                [stack removeArrangedSubview:button];
+                [button removeFromSuperview];
+                return button;
+            } copy],
+            @"invoke": [^(UIView *host, UIButton *sender) {
+                YTKACEUpdateSharedButtons(host);
+                UIButton *button = objc_getAssociatedObject(YTKACEStackForOverlay(host), YTKACEButtonRegistryKey)[identifier];
+                void (^invoke)(UIButton *) = objc_getAssociatedObject(button, YTKACEPlayerActionAssociation);
+                if (invoke) invoke(sender);
+            } copy]
+        };
+        ((void (*)(id, SEL, id, id))objc_msgSend)(NSClassFromString(@"YTSettingsSectionItemManager"),
+            NSSelectorFromString(@"registerTweak:metadata:"), key, metadata);
+    }
 }
 
 static void YTKACECollectNativeControls(UIView *view, UIView *overlay,
@@ -416,6 +540,11 @@ static void YTKACELayoutPlayerButtons(UIView *overlay, UIStackView *stack) {
 }
 
 static void YTKACEControlsOverlayLayout(UIView *receiver, SEL selector) {
+    if (YTKACESharedPlayerButtons) {
+        YTKACEUpdateSharedButtons(receiver);
+        if (OriginalControlsOverlayLayout) ((void (*)(id, SEL))OriginalControlsOverlayLayout)(receiver, selector);
+        return;
+    }
     if (OriginalControlsOverlayLayout != NULL) {
         ((void (*)(id, SEL))OriginalControlsOverlayLayout)(receiver, selector);
     }
@@ -430,6 +559,11 @@ static void YTKACEControlsOverlayLayout(UIView *receiver, SEL selector) {
         configurator(receiver, stack);
     }
     YTKACELayoutPlayerButtons(receiver, stack);
+}
+
+static void YTKACEBottomOverlayLayout(UIView *receiver, SEL selector) {
+    if (YTKACESharedPlayerButtons) YTKACEUpdateSharedButtons(receiver);
+    if (OriginalBottomOverlayLayout) ((void (*)(id, SEL))OriginalBottomOverlayLayout)(receiver, selector);
 }
 
 void YTKACERegisterOverlayConfigurator(NSString *identifier,
@@ -454,6 +588,9 @@ void YTKACERegisterOverlayConfigurator(NSString *identifier,
             @"block": [configurator copy]
         }];
     }
+    YTKACERegisterSharedGroup(identifier);
+    if (YTKACESharedPlayerButtons) YTKACEInstallInstanceHook(@"YTInlinePlayerBarContainerView", @"layoutSubviews",
+        (IMP)YTKACEBottomOverlayLayout, &OriginalBottomOverlayLayout);
 
     YTKACEInstallInstanceHook(@"YTMainAppControlsOverlayView",
                               @"layoutSubviews",

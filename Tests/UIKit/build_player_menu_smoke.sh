@@ -11,6 +11,7 @@ xcrun clang++ -fobjc-arc -fblocks -std=c++17 -Wall -Wextra -Werror \
   "$script_dir/PlayerMenuSmoke.mm" \
   "$project_dir/Tweak/UI/SystemMenu.mm" \
   "$project_dir/Tweak/UI/PlayerMenuPresentation.mm" \
+  "$project_dir/Tweak/UI/OverlayButtonHost.mm" \
   "$project_dir/Tweak/Runtime/Hooking.mm" -o "$app_dir/PlayerMenuSmoke"
 cp "$script_dir/PlayerMenuSmoke-Info.plist" "$app_dir/Info.plist"
 codesign --force --sign - "$app_dir"
