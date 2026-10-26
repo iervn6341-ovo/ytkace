@@ -34,7 +34,7 @@ static void Later(dispatch_block_t block) {
 @interface NativeTestAction : NSObject
 @property(nonatomic, copy) NSString *title;
 @property(nonatomic, copy) id handler;
-@property(nonatomic, strong) UIButton *button;
+@property(nonatomic, strong) id button;
 @property(nonatomic, strong) id titleText;
 @end
 @implementation NativeTestAction @end
@@ -73,8 +73,50 @@ static void Later(dispatch_block_t block) {
 @implementation NativeTestFormattedText
 - (NSString *)stringWithFormattingRemoved { return self.plain; }
 @end
+@interface YTSpacerButton : UIButton @end
+@implementation YTSpacerButton @end
+@interface YTMenuItemElementsMDCButton : UIControl
+@property(nonatomic, strong) UIView *elementView;
+@end
+@implementation YTMenuItemElementsMDCButton @end
+@interface NativeTestNode : NSObject
+@property(nonatomic, copy) NSArray *subnodes;
+@property(nonatomic, copy) NSAttributedString *attributedText;
+@end
+@implementation NativeTestNode @end
+@interface NativeTestNodeView : UIView
+@property(nonatomic, strong) NativeTestNode *keepalive_node;
+@end
+@implementation NativeTestNodeView @end
+@interface NativeTestIndexedView : UIView
+@property(nonatomic, strong) UIAccessibilityElement *virtualText;
+@end
+@implementation NativeTestIndexedView
+- (NSInteger)accessibilityElementCount { return 1; }
+- (id)accessibilityElementAtIndex:(NSInteger)index { return index == 0 ? self.virtualText : nil; }
+@end
+static NativeTestAction *VirtualAction(NSString *title, NSUInteger mode, dispatch_block_t handler) {
+    NativeTestAction *action = [NativeTestAction new]; action.handler = handler;
+    YTMenuItemElementsMDCButton *button = [YTMenuItemElementsMDCButton new]; action.button = button;
+    if (mode == 0) {
+        button.elementView = [UIView new];
+        UIAccessibilityElement *text = [[UIAccessibilityElement alloc] initWithAccessibilityContainer:button.elementView];
+        text.accessibilityLabel = title; button.elementView.accessibilityElements = @[text];
+    } else if (mode == 1) {
+        NativeTestNodeView *view = [NativeTestNodeView new]; button.elementView = view;
+        NativeTestNode *root = [NativeTestNode new], *text = [NativeTestNode new];
+        text.attributedText = [[NSAttributedString alloc] initWithString:title]; root.subnodes = @[text];
+        view.keepalive_node = root;
+    } else {
+        NativeTestIndexedView *view = [NativeTestIndexedView new]; button.elementView = view;
+        view.virtualText = [[UIAccessibilityElement alloc] initWithAccessibilityContainer:view];
+        view.virtualText.accessibilityAttributedLabel = [[NSAttributedString alloc] initWithString:title];
+    }
+    return action;
+}
 @interface NativeTestRenderer : NSObject
 @property(nonatomic, copy) NSString *menuItemIdentifier;
+@property(nonatomic, strong) id text;
 - (id)menuNavigationItemRenderer;
 @end
 @implementation NativeTestRenderer
@@ -277,6 +319,39 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
     Check(!YTKACENativePlayerActions(native) && YTKACENativeMenuNeedsTextRetry(native),@"appearance-time labels must request one post-presentation retry");
     [pending.button setTitle:@"Ready after appearance" forState:UIControlStateNormal];
     Check(YTKACENativePlayerActions(native).count == 1 && !YTKACENativeMenuNeedsTextRetry(native),@"ready native text must clear the retry state");
+    NativeTestAction *spacer = [NativeTestAction new]; spacer.button = [YTSpacerButton new];
+    NSArray *elements = @[VirtualAction(@"Lock screen",0,handler),VirtualAction(@"Other settings",1,handler),
+        VirtualAction(@"Indexed virtual label",2,handler)];
+    native.actions = @[spacer,elements[0],spacer,elements[1],elements[2],spacer];
+    actions = YTKACENativePlayerActions(native);
+    Check(actions.count == 3,@"known empty spacers must not invalidate complete native actions");
+    NSArray *elementTitles = @[@"Lock screen",@"Other settings",@"Indexed virtual label"];
+    for (NSUInteger index = 0; index < actions.count; ++index)
+        Check([actions[index][@"title"] isEqual:elementTitles[index]],@"ELM node and non-view accessibility labels must decode");
+    ((dispatch_block_t)actions[0][@"handler"])();
+    Check(calls == 2,@"virtual element action must retain the original handler");
+    NativeTestAction *heading = [NativeTestAction new];
+    YTSpacerButton *named = [YTSpacerButton new]; [named setTitle:@"Native heading" forState:UIControlStateNormal];
+    named.enabled = NO; heading.button = named; native.actions = @[heading];
+    Check(YTKACENativePlayerActions(native).count == 1,@"spacers carrying text must not be discarded");
+    NativeTestAction *unknown = [NativeTestAction new]; unknown.button = [UIButton new]; native.actions = @[unknown];
+    Check(!YTKACENativePlayerActions(native),@"unknown empty rows must not be silently discarded");
+    native.actions = @[spacer];
+    Check(!YTKACENativePlayerActions(native),@"a spacer-only native sheet must not create an empty replacement");
+    NativeTestAction *unresolved = [NativeTestAction new]; unresolved.handler = handler;
+    YTMenuItemElementsMDCButton *cyclicButton = [YTMenuItemElementsMDCButton new]; unresolved.button = cyclicButton;
+    NativeTestNodeView *cyclicView = [NativeTestNodeView new]; cyclicButton.elementView = cyclicView;
+    NativeTestNode *cycle = [NativeTestNode new]; cycle.subnodes = @[cycle]; cyclicView.keepalive_node = cycle;
+    native.actions = @[unresolved];
+    Check(!YTKACENativePlayerActions(native) && YTKACENativeMenuNeedsTextRetry(native),@"cyclic node graphs must finish without inventing a label");
+    cycle.subnodes = nil;
+    NativeTestAction *rendererAction = [NativeTestAction new]; rendererAction.handler = handler;
+    NativeTestRenderer *renderer = [NativeTestRenderer new]; renderer.menuItemIdentifier = @"menu_item_captions";
+    NativeTestFormattedText *formattedText = [NativeTestFormattedText new]; formattedText.plain = @"Captions from renderer";
+    renderer.text = formattedText;
+    YTMenuController *builder = [YTMenuController new]; builder.actions = @[rendererAction];
+    native.actions = [builder actionsForRenderers:@[renderer] fromView:self.button entry:nil shouldLogItems:NO firstResponder:nil];
+    Check([YTKACENativePlayerActions(native).firstObject[@"title"] isEqual:@"Captions from renderer"],@"native navigation renderer text must survive absent view text");
 }
 - (void)testSettingsScope {
     UIButton *settings = [UIButton buttonWithType:UIButtonTypeSystem];
@@ -392,7 +467,13 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
             NativeTestRenderer *renderer = [NativeTestRenderer new]; renderer.menuItemIdentifier = name;
             [renderers addObject:renderer];
         }
-        YTMenuController *builder = [YTMenuController new]; builder.actions = @[zero,one,quality];
+        NativeTestAction *spacer = [NativeTestAction new]; spacer.button = [YTSpacerButton new];
+        NativeTestAction *ax = VirtualAction(@"Lock screen",0,^{ weak.adaptedCallbacks++; });
+        NativeTestAction *node = VirtualAction(@"Other settings",1,^{ weak.adaptedCallbacks++; });
+        NativeTestAction *indexed = VirtualAction(@"Captions",2,^{ weak.adaptedCallbacks++; });
+        NativeTestAction *last = [NativeTestAction new]; last.title = @"Final native action";
+        last.handler = ^{ weak.adaptedCallbacks++; };
+        YTMenuController *builder = [YTMenuController new]; builder.actions = @[zero,one,quality,ax,node,indexed,last,spacer];
         NativeTestOwner *owner = [NativeTestOwner new]; owner.native = self.adaptedNative;
         owner.actions = [builder actionsForRenderers:renderers fromView:self.button
             entry:nil shouldLogItems:NO firstResponder:self.nativeResponder];
@@ -412,6 +493,8 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
         for (UIView *view = menu.view; view; view = view.superview)
             Check(!view.hidden && view.alpha > 0,@"replacement menu must not inherit hidden native content");
         Check(native.view.alpha == 0,@"native bottom-sheet content must not show behind the replacement list");
+        UITableViewController *rendered = (id)MenuNavigation(menu).topViewController;
+        Check([rendered.tableView numberOfRowsInSection:0] == 7,@"quality-style trailing spacer must not create a row or reject the list");
         if (self.adaptedRound == 0) [menu dismissViewControllerAnimated:NO completion:nil];
         else {
             UITableViewController *table = (id)MenuNavigation(menu).topViewController;
@@ -425,14 +508,14 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
                 Check(self.nativeResponder.lastSource == self.button,@"element quality route must retain the original native responder and source");
             Check(self.adaptedNative.view.alpha == 1,@"native view alpha must restore on close");
             self.adaptedRound++;
-            if (self.adaptedRound < 4) [self testAdaptedNative];
+            if (self.adaptedRound < 6) [self testAdaptedNative];
             else [self testUnrelated];
         });
     });
 }
 - (void)testUnrelated {
-        Check(NativePresentations == 4 && NativeDismissals == 4,@"original custom presentation/dismissal callbacks must run for every adapted menu");
-        Check([(NativeTestOwner *)self.adaptedNative.actionsController dismissals] == 4,
+        Check(NativePresentations == 6 && NativeDismissals == 6,@"original custom presentation/dismissal callbacks must run for every adapted menu");
+        Check([(NativeTestOwner *)self.adaptedNative.actionsController dismissals] == 6,
             @"original action owner's dismissal API must run on cancellation and selection");
         UIViewController *unrelated = [UIViewController new];
         unrelated.modalPresentationStyle = UIModalPresentationPageSheet;
@@ -482,7 +565,7 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
         [menu dismissViewControllerAnimated:NO completion:^{
             [settings removeFromSuperview];
             YTKACEPresentSystemMenu(self.root,self.button,@"Player options",nil,self.actions);
-            [@"PASS: compact popover, bounds, selection, disabled actions, dismissal ordering, long-list scrolling, repeated native opens, native owner/custom lifecycle, element quality route, settings in portrait/landscape, clipped anchors and rotation\n"
+            [@"PASS: native spacer and ELM virtual/node/indexed labels, renderer text, quality/gear anchors, six native lifecycle/owner closes, callbacks, bounds, scrolling, settings portrait/landscape and rotation\n"
                 writeToFile:ResultPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
         }];
     });

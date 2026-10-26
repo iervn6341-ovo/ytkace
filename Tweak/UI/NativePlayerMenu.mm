@@ -11,6 +11,8 @@ static const void *NativeRouteKey = &NativeRouteKey;
 static const void *NativeOwnerKey = &NativeOwnerKey;
 static const void *NativePresentationKey = &NativePresentationKey;
 static const void *NativeTextRetryKey = &NativeTextRetryKey;
+static const void *NativeItemIdentifierKey = &NativeItemIdentifierKey;
+static const void *NativeTextProbeKey = &NativeTextProbeKey;
 static IMP OriginalActionsForRenderers;
 static IMP OriginalFactories[9];
 @interface YTKACENativeMenuOwner : NSObject
@@ -110,42 +112,84 @@ static id ColoredFactory(id cls, SEL cmd, id title, id color, id icon, id iconCo
     return Capture(action,title,nil,nil,icon,nil,nil);
 }
 
-static NSString *ActionTitle(id model, UIButton *button, NSString **source) {
+static NSString *ElementTitle(id model, id button, NSString **source) {
+    objc_setAssociatedObject(model,NativeTextProbeKey,nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    NSMutableArray *queue = [NSMutableArray array], *depths = [NSMutableArray array];
+    NSHashTable *seen = [NSHashTable hashTableWithOptions:NSPointerFunctionsObjectPointerPersonality];
+    NSMutableDictionary<NSString *,NSNumber *> *classes = [NSMutableDictionary dictionary];
+    auto enqueue = [&](id object, NSUInteger depth) {
+        if (!object || object == NSNull.null || depth > 8 || queue.count >= 128 || [seen containsObject:object]) return;
+        [seen addObject:object]; [queue addObject:object]; [depths addObject:@(depth)];
+    };
+    enqueue(button,0);
+    for (NSString *key in @[@"titleLabel",@"elementView"]) {
+        enqueue(Value(model,key),0); enqueue(Value(button,key),0);
+    }
+    NSString *accessible = nil;
+    NSUInteger axContainers = 0;
+    for (NSUInteger index = 0; index < queue.count; ++index) {
+        id object = queue[index];
+        NSUInteger depth = [depths[index] unsignedIntegerValue];
+        NSString *name = NSStringFromClass([object class]) ?: @"unknown";
+        classes[name] = @(classes[name].unsignedIntegerValue + 1);
+        NSString *text = Nonempty(Text(object,@"attributedText")) ?: Nonempty(Text(object,@"text"));
+        if (text) { *source = [object isKindOfClass:UILabel.class] ? @"label" : @"node"; return text; }
+        accessible = accessible ?: Nonempty(Text(object,@"accessibilityLabel"))
+            ?: Nonempty(Text(object,@"accessibilityAttributedLabel"));
+        // ELM renders text in node children and virtual accessibility elements,
+        // which are not necessarily UIView descendants or UILabel instances.
+        for (NSString *key in @[@"keepalive_node",@"asyncdisplaykit_node",@"node",@"elementView"])
+            enqueue(Value(object,key),depth + 1);
+        BOOL hasAccessibilityArray = NO;
+        for (NSString *key in @[@"subviews",@"subnodes",@"children",@"accessibilityElements"]) {
+            id children = Value(object,key);
+            if (![children isKindOfClass:NSArray.class]) continue;
+            if ([key isEqual:@"accessibilityElements"] && [children count]) { axContainers++; hasAccessibilityArray = YES; }
+            for (id child in children) {
+                enqueue(child,depth + 1);
+                if (queue.count >= 128) break;
+            }
+        }
+        SEL countSelector = @selector(accessibilityElementCount);
+        SEL elementSelector = @selector(accessibilityElementAtIndex:);
+        NSMethodSignature *countSignature = [object methodSignatureForSelector:countSelector];
+        NSMethodSignature *elementSignature = [object methodSignatureForSelector:elementSelector];
+        if (!hasAccessibilityArray && countSignature.numberOfArguments == 2 &&
+            countSignature.methodReturnType[0] == @encode(NSInteger)[0] &&
+            elementSignature.numberOfArguments == 3 && elementSignature.methodReturnType[0] == '@' &&
+            [elementSignature getArgumentTypeAtIndex:2][0] == @encode(NSInteger)[0]) {
+            @try {
+                NSInteger count = ((NSInteger (*)(id,SEL))objc_msgSend)(object,countSelector);
+                if (count > 0 && count <= 32) {
+                    axContainers++;
+                    for (NSInteger item = 0; item < count && queue.count < 128; ++item)
+                        enqueue(((id (*)(id,SEL,NSInteger))objc_msgSend)(object,elementSelector,item),depth + 1);
+                }
+            } @catch (__unused NSException *exception) { /* A virtual container may change while queried. */ }
+        }
+    }
+    if (accessible) { *source = @"accessibility"; return accessible; }
+    // Schema only: never log the actual displayed/accessibility text.
+    objc_setAssociatedObject(model,NativeTextProbeKey,@{@"classes":classes,@"objects":@(queue.count),
+        @"accessibilityContainers":@(axContainers),@"capped":@(queue.count >= 128)},OBJC_ASSOCIATION_COPY_NONATOMIC);
+    return nil;
+}
+
+static NSString *ActionTitle(id model, id button, NSString **source) {
     for (NSString *key in @[@"title",@"attributedTitle",@"titleText",@"titleString"]) {
         NSString *title = Nonempty(Text(model,key));
         if (title) { *source = @"model"; return title; }
     }
-    NSString *captured = objc_getAssociatedObject(model,NativePresentationKey)[@"title"];
-    if (captured.length) { *source = @"factory"; return captured; }
-    NSString *title = Nonempty(button.currentTitle) ?: Nonempty(button.currentAttributedTitle.string)
-        ?: Nonempty(button.configuration.title) ?: Nonempty(button.titleLabel.text);
+    NSDictionary *metadata = objc_getAssociatedObject(model,NativePresentationKey);
+    NSString *captured = metadata[@"title"];
+    if (captured.length) { *source = metadata[@"textSource"] ?: @"factory"; return captured; }
+    NSString *title = Nonempty(Text(button,@"currentTitle")) ?: Nonempty(Text(button,@"currentAttributedTitle"))
+        ?: Nonempty(Text(Value(button,@"configuration"),@"title")) ?: Nonempty(Text(Value(button,@"titleLabel"),@"text"));
     if (title) { *source = @"button"; return title; }
     // Element-backed rows may render their text below the public UIButton.
     // Read the native text/accessibility data; do not replay screen coordinates
     // or invent labels from positional indexes or localized identifier guesses.
-    NSMutableArray<UIView *> *queue = [NSMutableArray array];
-    if (button) [queue addObject:button];
-    for (NSString *key in @[@"titleLabel",@"elementView"]) {
-        id view = Value(model,key);
-        if ([view isKindOfClass:UIView.class]) [queue addObject:view];
-        view = Value(button,key);
-        if ([view isKindOfClass:UIView.class]) [queue addObject:view];
-    }
-    NSString *accessible = nil;
-    for (NSUInteger index = 0; index < queue.count && index < 48; ++index) {
-        UIView *view = queue[index];
-        if ([view isKindOfClass:UILabel.class]) {
-            title = Nonempty(((UILabel *)view).text) ?: Nonempty(((UILabel *)view).attributedText.string);
-            if (title) { *source = @"label"; return title; }
-        }
-        id node = Value(view,@"asyncdisplaykit_node");
-        title = Nonempty(Text(node,@"attributedText")) ?: Nonempty(Text(node,@"text"));
-        if (title) { *source = @"node"; return title; }
-        accessible = accessible ?: Nonempty(view.accessibilityLabel) ?: Nonempty(Text(node,@"accessibilityLabel"));
-        if (queue.count < 48) [queue addObjectsFromArray:view.subviews];
-    }
-    if (accessible) { *source = @"accessibility"; return accessible; }
-    return nil;
+    return ElementTitle(model,button,source);
 }
 static BOOL Flag(id object, NSString *key, BOOL fallback) {
     SEL selector = NSSelectorFromString(key);
@@ -210,6 +254,17 @@ static id ActionsForRenderers(id receiver, SEL selector, NSArray *renderers, UIV
         @"menu_item_playback_speed":@"didPressVarispeed:",@"menu_item_audio_track":@"didPressAudioTrackSwitch:"};
     for (NSUInteger index = 0; index < renderers.count; ++index) {
         NSString *identifier = ItemIdentifier(renderers[index]);
+        if (identifier) objc_setAssociatedObject(actions[index],NativeItemIdentifierKey,identifier,OBJC_ASSOCIATION_COPY_NONATOMIC);
+        if (!objc_getAssociatedObject(actions[index],NativePresentationKey)[@"title"]) {
+            NSString *title = Nonempty(Text(Value(renderers[index],@"menuNavigationItemRenderer"),@"text"))
+                ?: Nonempty(Text(Value(renderers[index],@"menuServiceItemRenderer"),@"text"));
+            if (title) {
+                Capture(actions[index],title,nil,nil,nil,nil,nil);
+                NSMutableDictionary *metadata = [objc_getAssociatedObject(actions[index],NativePresentationKey) mutableCopy];
+                metadata[@"textSource"] = @"renderer";
+                objc_setAssociatedObject(actions[index],NativePresentationKey,metadata,OBJC_ASSOCIATION_COPY_NONATOMIC);
+            }
+        }
         NSString *name = identifier ? routes[identifier] : nil;
         SEL route = name ? NSSelectorFromString(name) : NULL;
         if (!route || ![responder respondsToSelector:route]) continue;
@@ -279,26 +334,39 @@ NSArray<NSDictionary *> *YTKACENativePlayerActions(UIViewController *controller)
     }
     NSMutableArray *actions = [NSMutableArray array];
     NSMutableDictionary<NSString *,NSNumber *> *titleSources = [NSMutableDictionary dictionary];
-    for (id model in models) {
-        UIButton *button = Value(model,@"button");
-        if (![button isKindOfClass:UIButton.class]) button = nil;
+    NSUInteger spacers = 0;
+    for (NSUInteger nativeIndex = 0; nativeIndex < models.count; ++nativeIndex) {
+        id model = models[nativeIndex];
+        id button = Value(model,@"button");
+        NSDictionary *captured = objc_getAssociatedObject(model,NativePresentationKey);
+        dispatch_block_t handler = ActionHandler(model);
+        Class spacerClass = NSClassFromString(@"YTSpacerButton");
+        if (spacerClass && [button isKindOfClass:spacerClass] && !handler &&
+            !Nonempty(Text(model,@"title")) && !Nonempty(Text(model,@"attributedTitle")) &&
+            !Nonempty(Text(model,@"titleText")) && !Nonempty(Text(model,@"titleString")) && !captured[@"title"] &&
+            !Nonempty(Text(button,@"currentTitle")) && !Nonempty(Text(button,@"currentAttributedTitle")) &&
+            !Nonempty(Text(Value(button,@"titleLabel"),@"text")) && !Nonempty(Text(button,@"accessibilityLabel"))) {
+            spacers++;
+            continue;
+        }
         NSString *titleSource = nil;
         NSString *title = ActionTitle(model,button,&titleSource);
-        NSDictionary *captured = objc_getAssociatedObject(model,NativePresentationKey);
-        BOOL enabled = Flag(model,@"isEnabled",button ? button.enabled : YES);
-        dispatch_block_t handler = ActionHandler(model);
+        BOOL enabled = Flag(model,@"isEnabled",Flag(button,@"isEnabled",YES));
         // All-or-nothing: preserve special/custom rows in their native sheet.
         if (!title.length || (enabled && !handler)) {
             BOOL retryText = !title.length && (!enabled || handler);
             objc_setAssociatedObject(controller,NativeTextRetryKey,@(retryText),OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] %{public}@ reason=incomplete-action index=%lu class=%{public}@ title=%d handler=%d buttonClass=%{public}@",
-                retryText ? @"decode-deferred" : @"native fallback",(unsigned long)actions.count,
+            NSString *identifier = objc_getAssociatedObject(model,NativeItemIdentifierKey);
+            if (![identifier hasPrefix:@"menu_item_"] || identifier.length > 128) identifier = @"unknown";
+            os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] %{public}@ reason=incomplete-action index=%lu class=%{public}@ title=%d handler=%d buttonClass=%{public}@ item=%{public}@ probe=%{public}@",
+                retryText ? @"decode-deferred" : @"native fallback",(unsigned long)nativeIndex,
                 NSStringFromClass([model class]),title.length != 0,handler != nil,
-                button ? NSStringFromClass(button.class) : @"none");
+                button ? NSStringFromClass([button class]) : @"none",identifier,
+                objc_getAssociatedObject(model,NativeTextProbeKey) ?: @{});
             return nil;
         }
         NSMutableDictionary *action = [@{@"title":title,@"enabled":@(enabled),
-            @"selected":@(Flag(model,@"visiblySelected",captured[@"selected"] ? [captured[@"selected"] boolValue] : button.selected))} mutableCopy];
+            @"selected":@(Flag(model,@"visiblySelected",captured[@"selected"] ? [captured[@"selected"] boolValue] : Flag(button,@"isSelected",NO)))} mutableCopy];
         titleSources[titleSource] = @(titleSources[titleSource].unsignedIntegerValue + 1);
         if (handler) action[@"handler"] = handler;
         for (NSString *key in @[@"subtitle",@"currentValue"]) {
@@ -311,8 +379,9 @@ NSArray<NSDictionary *> *YTKACENativePlayerActions(UIViewController *controller)
         }
         [actions addObject:action];
     }
-    os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] decoded actions=%lu titleSources=%{public}@",
-        (unsigned long)actions.count,titleSources);
+    if (!actions.count) return nil;
+    os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] decoded actions=%lu spacers=%lu titleSources=%{public}@",
+        (unsigned long)actions.count,(unsigned long)spacers,titleSources);
     return actions;
 }
 

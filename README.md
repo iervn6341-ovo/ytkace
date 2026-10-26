@@ -133,6 +133,15 @@ and separate quality/gear anchors. If the native label is populated during appea
 decoding retries once after the original presentation lifecycle, then restores the
 original sheet if text is still unavailable.
 
+Empty, handler-less `YTSpacerButton` entries are structural spacing and do not
+become choices or invalidate the list. Named spacers and unknown rows are retained
+or fall back normally. ELM text recovery follows bounded node children and virtual
+accessibility containers, including indexed containers; it does not force node
+views to load or click coordinates. Navigation/service renderer text is retained
+when available. Failure diagnostics include a bounded class/count probe and known
+menu identifier, without displayed text. Regression covers trailing spacers and
+non-UILabel element rows through both quality and gear anchors.
+
 ### Settings transfer for integrated tweaks
 
 General contains Copy/Paste Settings and JSON file import/export. Imports preview the
