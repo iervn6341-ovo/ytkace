@@ -69,7 +69,11 @@ YTKACE owns its player buttons, including the integrated YouQuality-style shortc
 Enable **Quality Button** under **Video Quality**. The text opens YouTube's native
 quality selector; its selected-format callback updates the compact label (4K, 2K,
 1080p, etc.) and full accessibility value. A new video shows Auto until a selection
-is reported. Existing YouQuality visibility preferences migrate once. The code
+is reported. Selection callbacks and the active-video controller resolve to the
+same underlying video model. Labels update immediately, including direct native
+format-constraint changes, without waiting for a player layout pass; callbacks
+for a previous video cannot repaint the current video's button. Existing YouQuality
+visibility preferences migrate once. The code
 retains PoomSmart's MIT notice in `YTKACE.bundle/Licenses/YouQuality.txt`.
 
 Buttons fill the native top band, then a second trailing row below the gear, using
@@ -115,7 +119,7 @@ behind the replacement list and closes before the original action runs. Closing 
 tapping outside the list also closes that native session, so quality/submenu state
 can be released. Native content is never cropped into an estimated popover rectangle.
 
-Custom controls, incomplete/unknown action models and unavailable anchors retain
+Unsupported custom controls, incomplete/unknown action models and unavailable anchors retain
 the original sheet, styled by Liquid Glass → Menus and Sheets where supported.
 This is a bounded adapter, not a universal replacement for YouTube's server-driven
 screens. Console tags `[YTKACE PlayerMenus]` and `[YTKACE Quality]` report adaptation,
@@ -131,7 +135,15 @@ callback. `decoded … titleSources=…` diagnostics report source counts only, 
 the text itself. The UIKit regression includes the reported title=0/handler=1 shape
 and separate quality/gear anchors. If the native label is populated during appearance,
 decoding retries once after the original presentation lifecycle, then restores the
-original sheet if text is still unavailable.
+original sheet if neither text nor a supported rendered row is available.
+
+A laid-out `YTMenuItemElementsMDCButton` with a verified action can keep its live
+native content inside the UIKit list even when its ELM text is opaque. No title is
+guessed and no functional row is omitted. The table owns selection so the native
+target is not dispatched a second time. Original parents, frames, constraints and
+interaction are restored before the native owner closes. Unlaid-out/hidden controls
+and unreadable rows while VoiceOver is active retain the native sheet. Diagnostics
+record `preserved native row` and `native-view` title-source counts without text.
 
 Empty, handler-less `YTSpacerButton` entries are structural spacing and do not
 become choices or invalidate the list. Named spacers and unknown rows are retained

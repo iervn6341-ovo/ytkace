@@ -13,9 +13,9 @@
 #import <objc/runtime.h>
 #import <os/log.h>
 
-static IMP OriginalQualitySelection, OriginalRedesignedQualitySelection;
+static IMP OriginalQualitySelection, OriginalRedesignedQualitySelection, OriginalFormatConstraint;
 static const void *SelectedQualityKey = &SelectedQualityKey;
-static NSHashTable<UIView *> *QualityOverlays;
+static NSMapTable<UIView *,UIButton *> *QualityButtons;
 static NSString * const QualityButtonKey = @"YTKACE.Preference.Playback.QualityButton";
 
 NSString *YTKACEQualityButtonTitle(NSString *label) {
@@ -32,10 +32,32 @@ NSString *YTKACEQualityButtonTitle(NSString *label) {
 }
 
 static id QualityObject(id object, NSString *name) {
+    if (!object) return nil;
     SEL selector = NSSelectorFromString(name);
     NSMethodSignature *signature = [object methodSignatureForSelector:selector];
-    if (signature.numberOfArguments != 2 || signature.methodReturnType[0] != '@') return nil;
-    return ((id (*)(id, SEL))objc_msgSend)(object,selector);
+    if (signature.numberOfArguments == 2 && signature.methodReturnType[0] == '@')
+        return ((id (*)(id, SEL))objc_msgSend)(object,selector);
+    for (NSString *key in @[name,[@"_" stringByAppendingString:name]]) {
+        Ivar ivar = class_getInstanceVariable([object class],key.UTF8String);
+        if (ivar && ivar_getTypeEncoding(ivar)[0] == '@') return object_getIvar(object,ivar);
+    }
+    return nil;
+}
+
+// activeVideo is a YTSingleVideoController; selection callbacks can carry its
+// YTSingleVideo model. Key both reads and writes to that same underlying object.
+static id QualityVideo(id video) {
+    return QualityObject(video,@"singleVideo") ?: QualityObject(video,@"videoData") ?: video;
+}
+static id OverlayQualityVideo(UIView *overlay) {
+    return QualityVideo(QualityObject(QualityObject(overlay,@"playerViewController"),@"activeVideo"));
+}
+static void UpdateQualityButton(UIView *overlay, UIButton *button) {
+    id video = OverlayQualityVideo(overlay);
+    NSString *label = video ? objc_getAssociatedObject(video,SelectedQualityKey) : nil;
+    NSString *title = YTKACEQualityButtonTitle(label);
+    if (![button.currentTitle isEqual:title]) [button setTitle:title forState:UIControlStateNormal];
+    button.accessibilityValue = label ?: YTKACELocalized(@"Auto");
 }
 
 static id QualityPresenter(UIView *overlay) {
@@ -73,28 +95,46 @@ static id QualityPresenter(UIView *overlay) {
 }
 @end
 
-static void RememberQuality(id video, id format) {
+static void RememberQuality(id video, id format, NSString *source) {
     NSString *label = QualityObject(format,@"qualityLabel");
     if (![label isKindOfClass:NSString.class]) label = nil;
     dispatch_block_t update = ^{
-        if (video) objc_setAssociatedObject(video,SelectedQualityKey,label,OBJC_ASSOCIATION_COPY_NONATOMIC);
-        for (UIView *overlay in QualityOverlays.allObjects) [overlay setNeedsLayout];
+        id identity = QualityVideo(video);
+        if (identity) objc_setAssociatedObject(identity,SelectedQualityKey,label,OBJC_ASSOCIATION_COPY_NONATOMIC);
+        NSUInteger matched = 0;
+        for (UIView *overlay in QualityButtons.keyEnumerator.allObjects) {
+            if (!identity || OverlayQualityVideo(overlay) != identity) continue;
+            // Update immediately: the host can defer layout during native menu
+            // transitions. A pending layout alone leaves the previous title up.
+            UpdateQualityButton(overlay,[QualityButtons objectForKey:overlay]);
+            [overlay setNeedsLayout]; matched++;
+        }
+        os_log(OS_LOG_DEFAULT,"[YTKACE Quality] selection source=%{public}@ videoClass=%{public}@ identityClass=%{public}@ labelPresent=%d matchedOverlays=%lu",
+            source,video ? NSStringFromClass([video class]) : @"none",
+            identity ? NSStringFromClass([identity class]) : @"none",label.length != 0,(unsigned long)matched);
     };
     if (NSThread.isMainThread) update(); else dispatch_async(dispatch_get_main_queue(),update);
 }
 static void QualitySelection(id self, SEL cmd, id video, id format) {
     if (OriginalQualitySelection) ((void (*)(id,SEL,id,id))OriginalQualitySelection)(self,cmd,video,format);
-    RememberQuality(video,format);
+    RememberQuality(video,format,@"original-selector");
 }
 static void RedesignedQualitySelection(id self, SEL cmd, id video, id format) {
     if (OriginalRedesignedQualitySelection) ((void (*)(id,SEL,id,id))OriginalRedesignedQualitySelection)(self,cmd,video,format);
-    RememberQuality(video,format);
+    RememberQuality(video,format,@"redesigned-selector");
+}
+static void FormatConstraint(id self, SEL cmd, id constraint) {
+    if (OriginalFormatConstraint) ((void (*)(id,SEL,id))OriginalFormatConstraint)(self,cmd,constraint);
+    // Modern native choices can apply the constraint directly. Only display an
+    // actual native quality label, or clear a removed constraint (Auto).
+    if (!constraint || [QualityObject(constraint,@"qualityLabel") isKindOfClass:NSString.class])
+        RememberQuality(self,constraint,@"format-constraint");
 }
 
 void YTKACEInstallQualityControls(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        QualityOverlays = [NSHashTable weakObjectsHashTable];
+        QualityButtons = [NSMapTable weakToWeakObjectsMapTable];
         NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
         NSDictionary *stored = [defaults persistentDomainForName:NSBundle.mainBundle.bundleIdentifier ?: @""];
         id legacy = stored[@"YTVideoOverlay-YouQuality-Enabled"];
@@ -104,21 +144,19 @@ void YTKACEInstallQualityControls(void) {
             (IMP)QualitySelection,&OriginalQualitySelection);
         YTKACEInstallInstanceHook(@"YTVideoQualitySwitchRedesignedController",@"singleVideo:didSelectVideoFormat:",
             (IMP)RedesignedQualitySelection,&OriginalRedesignedQualitySelection);
+        YTKACEInstallInstanceHook(@"YTSingleVideoController",@"setVideoFormatConstraint:",
+            (IMP)FormatConstraint,&OriginalFormatConstraint);
         YTKACERegisterOverlayConfigurator(@"quality", ^(UIView *overlay, UIStackView *stack) {
-            [QualityOverlays addObject:overlay];
             YTKACEQualityControls *controls = YTKACEQualityControls.shared;
             controls.overlay = overlay;
             UIButton *button = YTKACEOverlayButton(stack,@"YTKACE Quality",@"gearshape",controls,@selector(openQuality:));
             controls.button = button;
-            id video = QualityObject(QualityObject(overlay,@"playerViewController"),@"activeVideo");
-            NSString *label = video ? objc_getAssociatedObject(video,SelectedQualityKey) : nil;
-            NSString *title = YTKACEQualityButtonTitle(label);
-            if (![button.currentTitle isEqual:title]) [button setTitle:title forState:UIControlStateNormal];
+            [QualityButtons setObject:button forKey:overlay];
+            UpdateQualityButton(overlay,button);
             [button setImage:nil forState:UIControlStateNormal];
             button.titleLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
             [button setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
             button.accessibilityLabel = YTKACELocalized(@"Video Quality");
-            button.accessibilityValue = label ?: YTKACELocalized(@"Auto");
             button.hidden = !YTKACEFeatureEnabled(QualityButtonKey);
         });
     });

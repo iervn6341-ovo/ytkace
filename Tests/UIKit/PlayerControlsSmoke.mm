@@ -42,6 +42,14 @@ void YTKACEShowNotice(NSString *message) { (void)message; }
 @end
 @implementation QualityTestFormat
 @end
+@interface YTSingleVideoController : NSObject
+@property(nonatomic, strong) id singleVideo;
+@property(nonatomic) NSUInteger constraintCalls;
+- (void)setVideoFormatConstraint:(id)constraint;
+@end
+@implementation YTSingleVideoController
+- (void)setVideoFormatConstraint:(id)constraint { (void)constraint; self.constraintCalls++; }
+@end
 @interface YTVideoQualitySwitchOriginalController : NSObject
 - (void)singleVideo:(id)video didSelectVideoFormat:(id)format;
 @end
@@ -145,7 +153,9 @@ static BOOL Finite(CGRect r) { return std::isfinite(r.origin.x) && std::isfinite
     YTMainAppVideoPlayerOverlayView *player = [[YTMainAppVideoPlayerOverlayView alloc] initWithFrame:CGRectMake(0, 80, 414, 233)];
     YTMainAppControlsOverlayView *overlay = [[YTMainAppControlsOverlayView alloc] initWithFrame:player.bounds];
     overlay.overlayVisible = YES;
-    QualityTestPlayer *qualityPlayer = [QualityTestPlayer new]; qualityPlayer.activeVideo = [NSObject new];
+    QualityTestPlayer *qualityPlayer = [QualityTestPlayer new];
+    YTSingleVideoController *videoController = [YTSingleVideoController new]; videoController.singleVideo = [NSObject new];
+    qualityPlayer.activeVideo = videoController;
     QualityTestPresenter *qualityPresenter = [QualityTestPresenter new];
     overlay.playerViewController = qualityPlayer; overlay.eventsDelegate = qualityPresenter;
     [self.window.rootViewController.view addSubview:player]; [player addSubview:overlay];
@@ -216,13 +226,19 @@ static BOOL Finite(CGRect r) { return std::isfinite(r.origin.x) && std::isfinite
     Check(target.calls == 1 && target.overlay == overlay, @"local actions keep player context");
     Check(qualityButton && [qualityButton.currentTitle isEqual:@"Auto"], @"integrated quality button default");
     QualityTestFormat *format = [QualityTestFormat new]; format.qualityLabel = @"1080p60 HDR";
-    [[YTVideoQualitySwitchOriginalController new] singleVideo:qualityPlayer.activeVideo didSelectVideoFormat:format];
-    [overlay layoutSubviews];
+    [[YTVideoQualitySwitchOriginalController new] singleVideo:videoController.singleVideo didSelectVideoFormat:format];
     Check([qualityButton.currentTitle isEqual:@"1080p"] && [qualityButton.accessibilityValue isEqual:@"1080p60 HDR"], @"selected quality must update label and retain full accessibility value");
+    format.qualityLabel = @"720p60"; [videoController setVideoFormatConstraint:format];
+    Check([qualityButton.currentTitle isEqual:@"720p"] && videoController.constraintCalls == 1,
+        @"direct native constraint updates must refresh immediately and forward the setter once");
+    [videoController setVideoFormatConstraint:nil];
+    Check([qualityButton.currentTitle isEqual:@"Auto"],@"clearing a native constraint must restore Auto immediately");
     [qualityButton sendActionsForControlEvents:UIControlEventTouchUpInside];
     Check(qualityPresenter.calls == 1, @"quality shortcut must open the native quality selector once");
     qualityPlayer.activeVideo = [NSObject new]; [overlay layoutSubviews];
     Check([qualityButton.currentTitle isEqual:@"Auto"], @"quality label must not leak to another video");
+    [[YTVideoQualitySwitchOriginalController new] singleVideo:videoController.singleVideo didSelectVideoFormat:format];
+    Check([qualityButton.currentTitle isEqual:@"Auto"],@"late callbacks for the previous video must not repaint the new video");
     Check([YTKACEQualityButtonTitle(@"2160p60 HDR") isEqual:@"4K"] && [YTKACEQualityButtonTitle(@"1440p") isEqual:@"2K"], @"compact high-resolution labels");
 
     for (int index = 0; index < 3; ++index) [qualityButton sendActionsForControlEvents:UIControlEventTouchUpInside];

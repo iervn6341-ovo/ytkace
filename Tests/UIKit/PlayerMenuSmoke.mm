@@ -80,6 +80,20 @@ static void Later(dispatch_block_t block) {
 @property(nonatomic, strong) UIView *elementView;
 @end
 @implementation YTMenuItemElementsMDCButton @end
+// Render pixels without exposing text/attributedText/accessibility data, just
+// like the device's opaque ELM row. Its original control must remain intact.
+@interface NativeTestOpaqueButton : YTMenuItemElementsMDCButton
+@property(nonatomic) NSUInteger nativeTargetCalls;
+- (void)nativeTap;
+@end
+@implementation NativeTestOpaqueButton
+- (void)drawRect:(CGRect)rect {
+    (void)rect;
+    [@"Native element row" drawAtPoint:CGPointMake(16,16)
+        withAttributes:@{NSFontAttributeName:[UIFont systemFontOfSize:17],NSForegroundColorAttributeName:UIColor.labelColor}];
+}
+- (void)nativeTap { self.nativeTargetCalls++; }
+@end
 @interface NativeTestNode : NSObject
 @property(nonatomic, copy) NSArray *subnodes;
 @property(nonatomic, copy) NSArray *yogaChildren;
@@ -225,6 +239,9 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
 @property(nonatomic) NSInteger adaptedRound;
 @property(nonatomic) NSInteger adaptedCallbacks;
 @property(nonatomic, strong) NativeTestResponder *nativeResponder;
+@property(nonatomic, strong) NativeTestOpaqueButton *opaqueButton;
+@property(nonatomic, strong) UIView *opaqueParent;
+@property(nonatomic, strong) NSLayoutConstraint *opaqueWidth;
 @end
 @implementation PlayerMenuSmoke
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)options {
@@ -509,7 +526,19 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
             [renderers addObject:renderer];
         }
         NativeTestAction *spacer = [NativeTestAction new]; spacer.button = [YTSpacerButton new];
-        NativeTestAction *ax = VirtualAction(@"Lock screen",3,^{ weak.adaptedCallbacks++; });
+        NativeTestAction *ax = [NativeTestAction new]; ax.handler = ^{ weak.adaptedCallbacks++; };
+        self.opaqueParent = [[UIView alloc] initWithFrame:CGRectMake(20,80,320,56)];
+        [self.adaptedNative.view addSubview:self.opaqueParent];
+        self.opaqueButton = [NativeTestOpaqueButton new]; ax.button = self.opaqueButton;
+        self.opaqueButton.opaque = NO; self.opaqueButton.backgroundColor = UIColor.clearColor;
+        [self.opaqueParent addSubview:self.opaqueButton];
+        self.opaqueButton.translatesAutoresizingMaskIntoConstraints = NO;
+        self.opaqueWidth = [self.opaqueButton.widthAnchor constraintEqualToConstant:320];
+        [NSLayoutConstraint activateConstraints:@[self.opaqueWidth,
+            [self.opaqueButton.heightAnchor constraintEqualToConstant:56],
+            [self.opaqueButton.leadingAnchor constraintEqualToAnchor:self.opaqueParent.leadingAnchor],
+            [self.opaqueButton.topAnchor constraintEqualToAnchor:self.opaqueParent.topAnchor]]];
+        [self.opaqueButton addTarget:self.opaqueButton action:@selector(nativeTap) forControlEvents:UIControlEventTouchUpInside];
         NativeTestAction *node = VirtualAction(@"Other settings",4,^{ weak.adaptedCallbacks++; });
         NativeTestAction *indexed = VirtualAction(@"Captions",2,^{ weak.adaptedCallbacks++; });
         NativeTestAction *last = [NativeTestAction new]; last.title = @"Final native action";
@@ -536,6 +565,16 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
         Check(native.view.alpha == 0,@"native bottom-sheet content must not show behind the replacement list");
         UITableViewController *rendered = (id)MenuNavigation(menu).topViewController;
         Check([rendered.tableView numberOfRowsInSection:0] == 7,@"quality-style trailing spacer must not create a row or reject the list");
+        UITableViewCell *opaque = [rendered.tableView cellForRowAtIndexPath:[NSIndexPath indexPathForRow:3 inSection:0]];
+        Check(self.opaqueButton.superview == opaque.contentView && !self.opaqueButton.userInteractionEnabled,
+            @"an unreadable but rendered ELM row must be the same live control inside the popover, with table-owned selection");
+        Check(!self.opaqueWidth.active && !opaque.textLabel.text.length && self.opaqueButton.bounds.size.width > 100,
+            @"borrowed row must lay out at the table width without guessed text or active native-parent constraints");
+        if ([NSProcessInfo.processInfo.arguments containsObject:@"--preview-native-row"]) {
+            [@"READY: live opaque row" writeToFile:[NSHomeDirectory() stringByAppendingPathComponent:@"Documents/preview-ready.txt"]
+                atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            return;
+        }
         if (self.adaptedRound == 0) [menu dismissViewControllerAnimated:NO completion:nil];
         else {
             UITableViewController *table = (id)MenuNavigation(menu).topViewController;
@@ -548,6 +587,9 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
             if (self.adaptedRound == 3)
                 Check(self.nativeResponder.lastSource == self.button,@"element quality route must retain the original native responder and source");
             Check(self.adaptedNative.view.alpha == 1,@"native view alpha must restore on close");
+            Check(self.opaqueButton.superview == self.opaqueParent && self.opaqueWidth.active &&
+                !self.opaqueButton.translatesAutoresizingMaskIntoConstraints && self.opaqueButton.userInteractionEnabled &&
+                self.opaqueButton.nativeTargetCalls == 0,@"native rows must restore hierarchy, constraints and interaction without duplicate native target delivery");
             self.adaptedRound++;
             if (self.adaptedRound < 6) [self testAdaptedNative];
             else [self testNativeOutsideDismissal];
@@ -651,7 +693,7 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
         [menu dismissViewControllerAnimated:NO completion:^{
             [settings removeFromSuperview];
             YTKACEPresentSystemMenu(self.root,self.button,@"Player options",nil,self.actions);
-            [@"PASS: ELM yoga/controller materialization, virtual/node/indexed labels, spacers, native fallback outside hit/owner close, quality/gear anchors, lifecycle callbacks, bounds, scrolling, settings and rotation\n"
+            [@"PASS: live opaque native rows, original hierarchy/constraint restoration, single action delivery, ELM labels, spacers, outside cancellation, quality/gear anchors, lifecycle callbacks, bounds, scrolling, settings and rotation\n"
                 writeToFile:ResultPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
         }];
     });

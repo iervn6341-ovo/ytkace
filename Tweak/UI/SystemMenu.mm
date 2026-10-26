@@ -3,6 +3,88 @@
 #import "../Runtime/Preferences.h"
 #import "../Runtime/Localization.h"
 #import <objc/message.h>
+
+@interface YTKACEMenuNativeRow ()
+@property(nonatomic, strong) UIView *view;
+@property(nonatomic) CGFloat height;
+@property(nonatomic, weak) UIView *parent;
+@property(nonatomic) NSUInteger index;
+@property(nonatomic) CGRect frame;
+@property(nonatomic) UIViewAutoresizing resizing;
+@property(nonatomic) BOOL translates;
+@property(nonatomic) BOOL interaction;
+@property(nonatomic) BOOL mounted;
+@property(nonatomic, copy) NSArray<NSLayoutConstraint *> *constraints;
+@end
+@implementation YTKACEMenuNativeRow
+- (instancetype)initWithView:(UIView *)view {
+    if (!view.superview || !view.window || view.hidden || view.alpha < 0.05 ||
+        !CGAffineTransformIsIdentity(view.transform) ||
+        !isfinite(view.bounds.size.width) || !isfinite(view.bounds.size.height) ||
+        view.bounds.size.width < 44 || view.bounds.size.height < 24 || view.bounds.size.height > 240) return nil;
+    for (UIView *ancestor = view.superview; ancestor; ancestor = ancestor.superview)
+        if (ancestor.hidden || ancestor.alpha < 0.05) return nil;
+    if ((self = [super init])) {
+        _view = view; _height = MAX(44,view.bounds.size.height); _parent = view.superview;
+        _index = [view.superview.subviews indexOfObjectIdenticalTo:view]; _frame = view.frame;
+        _resizing = view.autoresizingMask; _translates = view.translatesAutoresizingMaskIntoConstraints;
+        _interaction = view.userInteractionEnabled;
+        NSMutableArray *constraints = [NSMutableArray array];
+        for (NSLayoutConstraint *constraint in view.constraints)
+            if (constraint.active && constraint.firstItem == view && !constraint.secondItem)
+                [constraints addObject:constraint];
+        UIView *ancestor = view.superview;
+        for (NSUInteger depth = 0; ancestor && depth < 24; ++depth, ancestor = ancestor.superview)
+            for (NSLayoutConstraint *constraint in ancestor.constraints)
+                if (constraint.active && (constraint.firstItem == view || constraint.secondItem == view))
+                    [constraints addObject:constraint];
+        _constraints = constraints;
+    }
+    return self;
+}
+- (void)mountInView:(UIView *)host {
+    [NSLayoutConstraint deactivateConstraints:self.constraints];
+    self.mounted = YES;
+    self.view.translatesAutoresizingMaskIntoConstraints = YES;
+    self.view.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    // A table tap invokes the native block after both menus close. Do not also
+    // dispatch the embedded button's target/action through a second path.
+    self.view.userInteractionEnabled = NO;
+    [host addSubview:self.view]; self.view.frame = host.bounds;
+    [self.view setNeedsLayout]; [self.view layoutIfNeeded];
+}
+- (void)restore {
+    if (!self.mounted) return;
+    self.mounted = NO;
+    [self.view removeFromSuperview];
+    UIView *parent = self.parent;
+    if (parent) [parent insertSubview:self.view atIndex:MIN(self.index,parent.subviews.count)];
+    self.view.translatesAutoresizingMaskIntoConstraints = self.translates;
+    self.view.autoresizingMask = self.resizing; self.view.frame = self.frame;
+    self.view.userInteractionEnabled = self.interaction;
+    for (NSLayoutConstraint *constraint in self.constraints) {
+        id first = constraint.firstItem, second = constraint.secondItem;
+        UIView *a = [first isKindOfClass:UILayoutGuide.class] ? [first owningView] : first;
+        UIView *b = [second isKindOfClass:UILayoutGuide.class] ? [second owningView] : second;
+        if (!parent || ![a isKindOfClass:UIView.class]) continue;
+        if (!second) { constraint.active = YES; continue; }
+        if (![b isKindOfClass:UIView.class]) continue;
+        for (UIView *common = a; common; common = common.superview)
+            if (b == common || [b isDescendantOfView:common]) { constraint.active = YES; break; }
+    }
+}
+@end
+
+@interface YTKACENativeRowCell : UITableViewCell
+@property(nonatomic, strong) YTKACEMenuNativeRow *nativeRow;
+@end
+@implementation YTKACENativeRowCell
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    if (self.nativeRow.view.superview == self.contentView) self.nativeRow.view.frame = self.contentView.bounds;
+}
+@end
+
 @interface YTKACEMenuPresentation : UIViewController
 @property(nonatomic, strong) UINavigationController *contentNavigation;
 @property(nonatomic, copy) void (^dismissalHandler)(BOOL);
@@ -168,10 +250,25 @@ void YTKACENotifySystemMenuDismissed(UIViewController *menu) {
     (void)tableView; (void)section;
     return self.menuSubtitle.length ? UITableViewAutomaticDimension : CGFLOAT_MIN;
 }
+- (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath {
+    (void)tableView;
+    YTKACEMenuNativeRow *row = self.actions[indexPath.row][@"nativeRow"];
+    return row ? row.height : UITableViewAutomaticDimension;
+}
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    NSDictionary *action = self.actions[indexPath.row];
+    YTKACEMenuNativeRow *nativeRow = action[@"nativeRow"];
+    if (nativeRow) {
+        YTKACENativeRowCell *native = [[YTKACENativeRowCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
+        native.nativeRow = nativeRow;
+        native.backgroundColor = UIColor.clearColor;
+        native.contentView.clipsToBounds = YES;
+        native.userInteractionEnabled = !action[@"enabled"] || [action[@"enabled"] boolValue];
+        [nativeRow mountInView:native.contentView];
+        return native;
+    }
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"SystemMenu"];
     if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"SystemMenu"];
-    NSDictionary *action = self.actions[indexPath.row];
     cell.textLabel.text = action[@"title"];
     NSMutableArray *details = [NSMutableArray array];
     for (NSString *key in @[@"subtitle", @"value"]) {
@@ -230,7 +327,8 @@ BOOL YTKACEPresentSystemMenuWithDismissal(UIViewController *presenter, UIView *s
         !YTKACEFeatureEnabled(@"YTKACE.Preference.Interface.SystemMenus") ||
         !presenter.view.window || presenter.presentedViewController || actions.count == 0) return NO;
     for (NSDictionary *action in actions) {
-        if (![action[@"title"] isKindOfClass:NSString.class] || ![action[@"title"] length]) return NO;
+        BOOL nativeRow = [action[@"nativeRow"] isKindOfClass:YTKACEMenuNativeRow.class];
+        if (!nativeRow && (![action[@"title"] isKindOfClass:NSString.class] || ![action[@"title"] length])) return NO;
     }
     YTKACESystemMenuController *controller = [YTKACESystemMenuController new];
     controller.title = title.length ? title : YTKACELocalized(@"Options");

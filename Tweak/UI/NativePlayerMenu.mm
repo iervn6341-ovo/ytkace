@@ -357,8 +357,25 @@ NSArray<NSDictionary *> *YTKACENativePlayerActions(UIViewController *controller)
         NSString *titleSource = nil;
         NSString *title = ActionTitle(model,button,&titleSource);
         BOOL enabled = Flag(model,@"isEnabled",Flag(button,@"isEnabled",YES));
-        // All-or-nothing: preserve special/custom rows in their native sheet.
-        if (!title.length || (enabled && !handler)) {
+        YTKACEMenuNativeRow *nativeRow = nil;
+        Class elementsButton = NSClassFromString(@"YTMenuItemElementsMDCButton");
+        // The reported ELM row has callable behavior and rendered content, but
+        // no text in either its node/controller graph or accessibility data.
+        // Borrow the actual row after native layout instead of rejecting every
+        // choice or inventing a title. VoiceOver keeps the native sheet when
+        // text cannot be recovered; never replace it with an unnamed AX cell.
+        if (!title.length && (!enabled || handler) && !UIAccessibilityIsVoiceOverRunning() &&
+            elementsButton && [button isKindOfClass:elementsButton] &&
+            [button isKindOfClass:UIView.class] && controller.presentingViewController &&
+            [button window] == controller.view.window && [button isDescendantOfView:controller.view]) {
+            nativeRow = [[YTKACEMenuNativeRow alloc] initWithView:button];
+            if (nativeRow) {
+                titleSource = @"native-view";
+                os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] preserved native row index=%lu height=%.0f",
+                    (unsigned long)nativeIndex,nativeRow.height);
+            }
+        }
+        if ((!title.length && !nativeRow) || (enabled && !handler)) {
             BOOL retryText = !title.length && (!enabled || handler);
             objc_setAssociatedObject(controller,NativeTextRetryKey,@(retryText),OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             NSString *identifier = objc_getAssociatedObject(model,NativeItemIdentifierKey);
@@ -370,8 +387,10 @@ NSArray<NSDictionary *> *YTKACENativePlayerActions(UIViewController *controller)
                 objc_getAssociatedObject(model,NativeTextProbeKey) ?: @{});
             return nil;
         }
-        NSMutableDictionary *action = [@{@"title":title,@"enabled":@(enabled),
+        NSMutableDictionary *action = [@{@"enabled":@(enabled),
             @"selected":@(Flag(model,@"visiblySelected",captured[@"selected"] ? [captured[@"selected"] boolValue] : Flag(button,@"isSelected",NO)))} mutableCopy];
+        if (title.length) action[@"title"] = title;
+        if (nativeRow) action[@"nativeRow"] = nativeRow;
         titleSources[titleSource] = @(titleSources[titleSource].unsignedIntegerValue + 1);
         if (handler) action[@"handler"] = handler;
         for (NSString *key in @[@"subtitle",@"currentValue"]) {
@@ -484,10 +503,12 @@ void YTKACEEnableNativeMenuOutsideDismissal(UIViewController *controller) {
 @property(nonatomic, copy) NSArray<UIView *> *backdrops;
 @property(nonatomic, copy) NSArray<NSNumber *> *backdropAlphas;
 @property(nonatomic) BOOL finished;
+@property(nonatomic, copy) NSArray<YTKACEMenuNativeRow *> *nativeRows;
 - (void)finish:(dispatch_block_t)action;
 @end
 @implementation YTKACENativeMenuSession
 - (void)restore {
+    for (YTKACEMenuNativeRow *row in self.nativeRows) [row restore];
     self.native.view.alpha = self.originalAlpha;
     [self.backdrops enumerateObjectsUsingBlock:^(UIView *view, NSUInteger index, BOOL *stop) {
         (void)stop; view.alpha = self.backdropAlphas[index].doubleValue;
@@ -497,6 +518,8 @@ void YTKACEEnableNativeMenuOutsideDismissal(UIViewController *controller) {
 - (void)finish:(dispatch_block_t)action {
     if (self.finished) return;
     self.finished = YES;
+    // Restore borrowed controls before the native owner's dismissal lifecycle.
+    for (YTKACEMenuNativeRow *row in self.nativeRows) [row restore];
     UIViewController *native = self.native;
     os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] adapted close selected=%d",action != nil);
     // Keep the real sheet's appearance, dismissal and transitioning delegate.
@@ -512,6 +535,9 @@ void YTKACEPresentAdaptedPlayerMenu(UIViewController *controller, UIView *source
     YTKACENativeMenuSession *session = [YTKACENativeMenuSession new];
     session.native = controller;
     session.originalAlpha = controller.view.alpha;
+    NSMutableArray *nativeRows = [NSMutableArray array];
+    for (NSDictionary *item in actions) if (item[@"nativeRow"]) [nativeRows addObject:item[@"nativeRow"]];
+    session.nativeRows = nativeRows;
     // The native sheet remains presented, retaining the callbacks/state used by
     // quality and submenu controllers. Its content is replaced visually only.
     NSMutableArray *backdrops = [NSMutableArray array], *alphas = [NSMutableArray array];

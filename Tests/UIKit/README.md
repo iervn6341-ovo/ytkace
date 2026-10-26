@@ -6,7 +6,8 @@ Launch `dev.captionisland.player-controls-smoke` on a disposable iPhone simulato
 and read `Documents/result.txt`. It uses the production host and glass hooks with
 fake native classes, including glass on/keep-controls off, repeated transforms,
 compact/expanded two-row packing, horizontally scrollable crowded rows, download priority, native fade/auto-hide geometry reservations and integrated quality
-labels, per-video state and repeated native action routing,
+labels, model/controller identity differences, immediate selection/constraint updates,
+Auto reset, old-video callback isolation and repeated native action routing,
 cancelled pans, zero size, native glass reuse and layout reentry. It does not load
 YTVideoOverlay or simulate YouTube's private transition controller.
 
@@ -35,6 +36,12 @@ UIView/subnodes/accessibility text. Native fallback cancellation verifies transf
 panel inside/outside acceptance using a UITouch location fixture and normal recognizer
 target/action delivery, including original owner and transition callbacks. It does
 not inject physical touch events.
+An opaque row fixture draws its content without any readable text property. The
+actual control is borrowed into the list and restored with its original constraints
+on cancellation/selection, while the original action executes once.
+For a held visual preview, launch with `--preview-native-row` and wait for
+`Documents/preview-ready.txt`. This mode holds the opaque row popover for screenshots;
+it does not complete the regression or write a new PASS result.
 It leaves an example player popover visible after passing.
 
 The YouTube view/controller names are stand-ins. This verifies UIKit routing,
