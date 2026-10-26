@@ -9,7 +9,10 @@
 
 static const void *NativeRouteKey = &NativeRouteKey;
 static const void *NativeOwnerKey = &NativeOwnerKey;
+static const void *NativePresentationKey = &NativePresentationKey;
+static const void *NativeTextRetryKey = &NativeTextRetryKey;
 static IMP OriginalActionsForRenderers;
+static IMP OriginalFactories[9];
 @interface YTKACENativeMenuOwner : NSObject
 @property(nonatomic, weak) id value;
 @end
@@ -27,10 +30,122 @@ static id Value(id object, NSString *name) {
     }
     return nil;
 }
-static NSString *Text(id object, NSString *key) {
-    id value = Value(object,key);
+static NSString *PlainString(id value) {
     if ([value isKindOfClass:NSAttributedString.class]) return [value string];
-    return [value isKindOfClass:NSString.class] ? value : nil;
+    if ([value isKindOfClass:NSString.class]) return value;
+    id plain = Value(value,@"stringWithFormattingRemoved");
+    if ([plain isKindOfClass:NSString.class]) return plain;
+    id runs = Value(value,@"runsArray");
+    if (![runs isKindOfClass:NSArray.class] || [runs count] > 32) return nil;
+    NSMutableString *result = [NSMutableString string];
+    for (id run in runs) {
+        id text = Value(run,@"text");
+        if ([text isKindOfClass:NSString.class]) [result appendString:text];
+    }
+    return result.length ? result : nil;
+}
+static NSString *Text(id object, NSString *key) {
+    return PlainString(Value(object,key));
+}
+static NSString *Nonempty(NSString *text) {
+    return [text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet].length ? text : nil;
+}
+
+// Recent YTActionSheetAction instances can keep a callable handler while exposing
+// no title getter/ivar. Preserve presentation arguments at the native factories;
+// the original factory and handler still run unchanged.
+static id Capture(id action, id title, id subtitle, id value, id icon, id secondary, NSNumber *selected) {
+    if (!action) return action;
+    NSMutableDictionary *metadata = [objc_getAssociatedObject(action,NativePresentationKey) mutableCopy]
+        ?: [NSMutableDictionary dictionary];
+    for (NSArray *pair in @[@[@"title",title ?: NSNull.null],@[@"subtitle",subtitle ?: NSNull.null],
+                            @[@"value",value ?: NSNull.null]]) {
+        NSString *text = Nonempty(PlainString(pair[1]));
+        if (text) metadata[pair[0]] = text;
+    }
+    if ([icon isKindOfClass:UIImage.class]) metadata[@"icon"] = icon;
+    if ([secondary isKindOfClass:UIImage.class]) metadata[@"secondary"] = secondary;
+    if (selected) metadata[@"selected"] = selected;
+    objc_setAssociatedObject(action,NativePresentationKey,metadata,OBJC_ASSOCIATION_COPY_NONATOMIC);
+    return action;
+}
+static id SimpleFactory(id cls, SEL cmd, id title, NSInteger style, id handler) {
+    id action = ((id (*)(id,SEL,id,NSInteger,id))OriginalFactories[0])(cls,cmd,title,style,handler);
+    return Capture(action,title,nil,nil,nil,nil,nil);
+}
+static id IconStyleFactory(id cls, SEL cmd, id title, id icon, NSInteger style, id handler) {
+    id action = ((id (*)(id,SEL,id,id,NSInteger,id))OriginalFactories[1])(cls,cmd,title,icon,style,handler);
+    return Capture(action,title,nil,nil,icon,nil,nil);
+}
+static id IconFactory(id cls, SEL cmd, id title, id icon, id handler) {
+    id action = ((id (*)(id,SEL,id,id,id))OriginalFactories[2])(cls,cmd,title,icon,handler);
+    return Capture(action,title,nil,nil,icon,nil,nil);
+}
+static id SubtitleFactory(id cls, SEL cmd, id title, id subtitle, id icon, id handler) {
+    id action = ((id (*)(id,SEL,id,id,id,id))OriginalFactories[3])(cls,cmd,title,subtitle,icon,handler);
+    return Capture(action,title,subtitle,nil,icon,nil,nil);
+}
+static id SubtitleIDFactory(id cls, SEL cmd, id title, id subtitle, id icon, id identifier, id handler) {
+    id action = ((id (*)(id,SEL,id,id,id,id,id))OriginalFactories[4])(cls,cmd,title,subtitle,icon,identifier,handler);
+    return Capture(action,title,subtitle,nil,icon,nil,nil);
+}
+static id DetailedFactory(id cls, SEL cmd, id title, id icon, id secondary, id identifier, id handler) {
+    id action = ((id (*)(id,SEL,id,id,id,id,id))OriginalFactories[5])(cls,cmd,title,icon,secondary,identifier,handler);
+    return Capture(action,title,nil,nil,icon,secondary,nil);
+}
+static id ValueFactory(id cls, SEL cmd, id title, id value, id icon, id identifier, id handler) {
+    id action = ((id (*)(id,SEL,id,id,id,id,id))OriginalFactories[6])(cls,cmd,title,value,icon,identifier,handler);
+    return Capture(action,title,nil,value,icon,nil,nil);
+}
+static id SelectableFactory(id cls, SEL cmd, id title, id subtitle, id icon, BOOL selected,
+                           id label, id identifier, id handler) {
+    id action = ((id (*)(id,SEL,id,id,id,BOOL,id,id,id))OriginalFactories[7])(
+        cls,cmd,title,subtitle,icon,selected,label,identifier,handler);
+    return Capture(action,title,subtitle,nil,icon,nil,@(selected));
+}
+static id ColoredFactory(id cls, SEL cmd, id title, id color, id icon, id iconColor, BOOL disable,
+                        id identifier, id handler) {
+    id action = ((id (*)(id,SEL,id,id,id,id,BOOL,id,id))OriginalFactories[8])(
+        cls,cmd,title,color,icon,iconColor,disable,identifier,handler);
+    return Capture(action,title,nil,nil,icon,nil,nil);
+}
+
+static NSString *ActionTitle(id model, UIButton *button, NSString **source) {
+    for (NSString *key in @[@"title",@"attributedTitle",@"titleText",@"titleString"]) {
+        NSString *title = Nonempty(Text(model,key));
+        if (title) { *source = @"model"; return title; }
+    }
+    NSString *captured = objc_getAssociatedObject(model,NativePresentationKey)[@"title"];
+    if (captured.length) { *source = @"factory"; return captured; }
+    NSString *title = Nonempty(button.currentTitle) ?: Nonempty(button.currentAttributedTitle.string)
+        ?: Nonempty(button.configuration.title) ?: Nonempty(button.titleLabel.text);
+    if (title) { *source = @"button"; return title; }
+    // Element-backed rows may render their text below the public UIButton.
+    // Read the native text/accessibility data; do not replay screen coordinates
+    // or invent labels from positional indexes or localized identifier guesses.
+    NSMutableArray<UIView *> *queue = [NSMutableArray array];
+    if (button) [queue addObject:button];
+    for (NSString *key in @[@"titleLabel",@"elementView"]) {
+        id view = Value(model,key);
+        if ([view isKindOfClass:UIView.class]) [queue addObject:view];
+        view = Value(button,key);
+        if ([view isKindOfClass:UIView.class]) [queue addObject:view];
+    }
+    NSString *accessible = nil;
+    for (NSUInteger index = 0; index < queue.count && index < 48; ++index) {
+        UIView *view = queue[index];
+        if ([view isKindOfClass:UILabel.class]) {
+            title = Nonempty(((UILabel *)view).text) ?: Nonempty(((UILabel *)view).attributedText.string);
+            if (title) { *source = @"label"; return title; }
+        }
+        id node = Value(view,@"asyncdisplaykit_node");
+        title = Nonempty(Text(node,@"attributedText")) ?: Nonempty(Text(node,@"text"));
+        if (title) { *source = @"node"; return title; }
+        accessible = accessible ?: Nonempty(view.accessibilityLabel) ?: Nonempty(Text(node,@"accessibilityLabel"));
+        if (queue.count < 48) [queue addObjectsFromArray:view.subviews];
+    }
+    if (accessible) { *source = @"accessibility"; return accessible; }
+    return nil;
 }
 static BOOL Flag(id object, NSString *key, BOOL fallback) {
     SEL selector = NSSelectorFromString(key);
@@ -119,12 +234,25 @@ void YTKACEInstallNativePlayerMenuAdapter(void) {
     YTKACEInstallInstanceHook(@"YTMenuController",
         @"actionsForRenderers:fromView:entry:shouldLogItems:firstResponder:",
         (IMP)ActionsForRenderers,&OriginalActionsForRenderers);
+    NSArray<NSString *> *selectors = @[
+        @"actionWithTitle:style:handler:", @"actionWithTitle:iconImage:style:handler:",
+        @"actionWithTitle:iconImage:handler:", @"actionWithTitle:subtitle:iconImage:handler:",
+        @"actionWithTitle:subtitle:iconImage:accessibilityIdentifier:handler:",
+        @"actionWithTitle:iconImage:secondaryIconImage:accessibilityIdentifier:handler:",
+        @"actionWithTitle:currentValue:iconImage:accessibilityIdentifier:handler:",
+        @"actionWithTitle:subtitle:iconImage:visiblySelected:accessibilityLabel:accessibilityIdentifier:handler:",
+        @"actionWithTitle:titleColor:iconImage:iconColor:disableAutomaticButtonColor:accessibilityIdentifier:handler:"];
+    const IMP factories[] = {(IMP)SimpleFactory,(IMP)IconStyleFactory,(IMP)IconFactory,(IMP)SubtitleFactory,
+        (IMP)SubtitleIDFactory,(IMP)DetailedFactory,(IMP)ValueFactory,(IMP)SelectableFactory,(IMP)ColoredFactory};
+    for (NSUInteger index = 0; index < selectors.count; ++index)
+        YTKACEInstallClassHook(@"YTActionSheetAction",selectors[index],factories[index],&OriginalFactories[index]);
 }
 
 NSArray<NSDictionary *> *YTKACENativePlayerActions(UIViewController *controller) {
     // These links are used by YouTube's default/action/contextual sheet models.
     // Inspect a bounded controller/model graph, never infer actions from labels
     // or replay taps into the old clipped screen coordinates.
+    objc_setAssociatedObject(controller,NativeTextRetryKey,nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     [controller loadViewIfNeeded];
     NSMutableArray *queue = [NSMutableArray arrayWithObject:controller];
     NSHashTable *seen = [NSHashTable hashTableWithOptions:NSPointerFunctionsObjectPointerPersonality];
@@ -150,32 +278,46 @@ NSArray<NSDictionary *> *YTKACENativePlayerActions(UIViewController *controller)
         return nil;
     }
     NSMutableArray *actions = [NSMutableArray array];
+    NSMutableDictionary<NSString *,NSNumber *> *titleSources = [NSMutableDictionary dictionary];
     for (id model in models) {
-        NSString *title = Text(model,@"title");
         UIButton *button = Value(model,@"button");
         if (![button isKindOfClass:UIButton.class]) button = nil;
+        NSString *titleSource = nil;
+        NSString *title = ActionTitle(model,button,&titleSource);
+        NSDictionary *captured = objc_getAssociatedObject(model,NativePresentationKey);
         BOOL enabled = Flag(model,@"isEnabled",button ? button.enabled : YES);
         dispatch_block_t handler = ActionHandler(model);
         // All-or-nothing: preserve special/custom rows in their native sheet.
         if (!title.length || (enabled && !handler)) {
-            os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] native fallback reason=incomplete-action index=%lu class=%{public}@ title=%d handler=%d",
-                (unsigned long)actions.count,NSStringFromClass([model class]),title.length != 0,handler != nil);
+            BOOL retryText = !title.length && (!enabled || handler);
+            objc_setAssociatedObject(controller,NativeTextRetryKey,@(retryText),OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] %{public}@ reason=incomplete-action index=%lu class=%{public}@ title=%d handler=%d buttonClass=%{public}@",
+                retryText ? @"decode-deferred" : @"native fallback",(unsigned long)actions.count,
+                NSStringFromClass([model class]),title.length != 0,handler != nil,
+                button ? NSStringFromClass(button.class) : @"none");
             return nil;
         }
         NSMutableDictionary *action = [@{@"title":title,@"enabled":@(enabled),
-            @"selected":@(Flag(model,@"visiblySelected",button.selected))} mutableCopy];
+            @"selected":@(Flag(model,@"visiblySelected",captured[@"selected"] ? [captured[@"selected"] boolValue] : button.selected))} mutableCopy];
+        titleSources[titleSource] = @(titleSources[titleSource].unsignedIntegerValue + 1);
         if (handler) action[@"handler"] = handler;
         for (NSString *key in @[@"subtitle",@"currentValue"]) {
-            NSString *text = Text(model,key);
+            NSString *text = Text(model,key) ?: captured[[key isEqual:@"currentValue"] ? @"value" : key];
             if (text.length) action[[key isEqual:@"currentValue"] ? @"value" : key] = text;
         }
         for (NSArray *keys in @[@[@"iconImage",@"icon"],@[@"secondaryIconImage",@"secondary"]]) {
-            id image = Value(model,keys[0]);
+            id image = Value(model,keys[0]) ?: captured[keys[1]];
             if ([image isKindOfClass:UIImage.class]) action[keys[1]] = image;
         }
         [actions addObject:action];
     }
+    os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] decoded actions=%lu titleSources=%{public}@",
+        (unsigned long)actions.count,titleSources);
     return actions;
+}
+
+BOOL YTKACENativeMenuNeedsTextRetry(UIViewController *controller) {
+    return [objc_getAssociatedObject(controller,NativeTextRetryKey) boolValue];
 }
 
 @interface YTKACENativeMenuSession : NSObject

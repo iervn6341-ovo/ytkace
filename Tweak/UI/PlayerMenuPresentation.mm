@@ -174,7 +174,8 @@ static void Present(UIViewController *receiver, SEL selector, UIViewController *
             YTKACEPlayerMenuTap *tap = objc_getAssociatedObject(source.window, TapKey);
             tap.menu = controller;
             NSArray *actions = YTKACENativePlayerActions(controller);
-            if (actions && !receiver.presentedViewController && OriginalPresent) {
+            BOOL retryText = !actions && YTKACENativeMenuNeedsTextRetry(controller);
+            if ((actions || retryText) && !receiver.presentedViewController && OriginalPresent) {
                 // Let the real sheet complete its own presentation lifecycle,
                 // without displaying its full-screen-sized content for a frame.
                 // Render its complete action model in an owned UIKit popover.
@@ -183,8 +184,13 @@ static void Present(UIViewController *receiver, SEL selector, UIViewController *
                 ((void (*)(id,SEL,id,BOOL,id))OriginalPresent)(receiver,selector,controller,NO,^{
                     controller.view.alpha = alpha;
                     if (completion) completion();
-                    if (controller.presentingViewController && !controller.isBeingDismissed)
-                        YTKACEPresentAdaptedPlayerMenu(controller,source,actions);
+                    if (!controller.presentingViewController || controller.isBeingDismissed) return;
+                    // Element text can be populated during the native sheet's
+                    // appearance. Retry once after that lifecycle, before deciding
+                    // to retain the original sheet; never fabricate empty labels.
+                    NSArray *ready = actions ?: YTKACENativePlayerActions(controller);
+                    if (ready) YTKACEPresentAdaptedPlayerMenu(controller,source,ready);
+                    else os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] native fallback reason=missing-label-after-presentation");
                 });
                 return;
             }

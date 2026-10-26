@@ -34,8 +34,45 @@ static void Later(dispatch_block_t block) {
 @interface NativeTestAction : NSObject
 @property(nonatomic, copy) NSString *title;
 @property(nonatomic, copy) id handler;
+@property(nonatomic, strong) UIButton *button;
+@property(nonatomic, strong) id titleText;
 @end
 @implementation NativeTestAction @end
+// Reproduce the device's title=0/handler=1 shape: no title getter or title ivar.
+@interface YTActionSheetAction : NSObject
+@property(nonatomic, copy) id handler;
+@property(nonatomic, strong) UIButton *button;
+@property(nonatomic) NSInteger receivedStyle;
+@property(nonatomic) BOOL receivedSelection;
+@property(nonatomic, copy) NSString *receivedValue;
++ (instancetype)actionWithTitle:(NSString *)title iconImage:(UIImage *)icon style:(NSInteger)style handler:(id)handler;
++ (instancetype)actionWithTitle:(NSString *)title currentValue:(NSString *)value iconImage:(UIImage *)icon accessibilityIdentifier:(NSString *)identifier handler:(id)handler;
++ (instancetype)actionWithTitle:(NSString *)title subtitle:(NSString *)subtitle iconImage:(UIImage *)icon visiblySelected:(BOOL)selected accessibilityLabel:(NSString *)label accessibilityIdentifier:(NSString *)identifier handler:(id)handler;
+@end
+@implementation YTActionSheetAction
++ (instancetype)actionWithTitle:(NSString *)title iconImage:(UIImage *)icon style:(NSInteger)style handler:(id)handler {
+    (void)title; (void)icon;
+    YTActionSheetAction *action = [self new]; action.handler = handler; action.receivedStyle = style;
+    return action;
+}
++ (instancetype)actionWithTitle:(NSString *)title currentValue:(NSString *)value iconImage:(UIImage *)icon accessibilityIdentifier:(NSString *)identifier handler:(id)handler {
+    (void)title; (void)icon; (void)identifier;
+    YTActionSheetAction *action = [self new]; action.handler = handler; action.receivedValue = value;
+    return action;
+}
++ (instancetype)actionWithTitle:(NSString *)title subtitle:(NSString *)subtitle iconImage:(UIImage *)icon visiblySelected:(BOOL)selected accessibilityLabel:(NSString *)label accessibilityIdentifier:(NSString *)identifier handler:(id)handler {
+    (void)title; (void)subtitle; (void)icon; (void)label; (void)identifier;
+    YTActionSheetAction *action = [self new]; action.handler = handler; action.receivedSelection = selected;
+    return action;
+}
+@end
+@interface NativeTestFormattedText : NSObject
+@property(nonatomic, copy) NSString *plain;
+- (NSString *)stringWithFormattingRemoved;
+@end
+@implementation NativeTestFormattedText
+- (NSString *)stringWithFormattingRemoved { return self.plain; }
+@end
 @interface NativeTestRenderer : NSObject
 @property(nonatomic, copy) NSString *menuItemIdentifier;
 - (id)menuNavigationItemRenderer;
@@ -65,8 +102,14 @@ static void Later(dispatch_block_t block) {
 @interface YTBottomSheetController : UIViewController
 @property(nonatomic, copy) NSArray *actions;
 @property(nonatomic, strong) id actionsController;
+@property(nonatomic, strong) UIButton *lateTitleButton;
 @end
-@implementation YTBottomSheetController @end
+@implementation YTBottomSheetController
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    [self.lateTitleButton setTitle:@"Native appearance-time title" forState:UIControlStateNormal];
+}
+@end
 @interface NativeTestOwner : NSObject
 @property(nonatomic, copy) NSArray *actions;
 @property(nonatomic, weak) UIViewController *native;
@@ -98,6 +141,7 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
 @property(nonatomic, strong) UIWindow *window;
 @property(nonatomic, strong) UIViewController *root;
 @property(nonatomic, strong) UIButton *button;
+@property(nonatomic, strong) UIButton *qualityButton;
 @property(nonatomic) NSInteger callbacks;
 @property(nonatomic) NSInteger nativeOpens;
 @property(nonatomic, strong) UIViewController *nativeMenu;
@@ -135,6 +179,11 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
     [self.button setImage:[UIImage systemImageNamed:@"gearshape.fill"] forState:UIControlStateNormal];
     self.button.tintColor = UIColor.whiteColor;
     [overlay addSubview:self.button];
+    self.qualityButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    self.qualityButton.frame = CGRectMake(overlay.bounds.size.width - 122,90,44,44);
+    self.qualityButton.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
+    [self.qualityButton setTitle:@"Auto" forState:UIControlStateNormal];
+    [overlay addSubview:self.qualityButton];
     [self.window makeKeyAndVisible];
     UIWindowSceneGeometryPreferencesIOS *portrait = [[UIWindowSceneGeometryPreferencesIOS alloc]
         initWithInterfaceOrientations:UIInterfaceOrientationMaskPortrait];
@@ -152,6 +201,7 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
     ];
 }
 - (void)testOwnedMenu {
+    [self testMissingActionTitles];
     UIView *clip = [[UIView alloc] initWithFrame:CGRectMake(20,140,44,44)]; clip.clipsToBounds = YES;
     UIButton *clipped = [[UIButton alloc] initWithFrame:CGRectMake(60,0,44,44)];
     [clip addSubview:clipped]; [self.button.superview addSubview:clip];
@@ -186,6 +236,47 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
             [self testSettingsScope];
         });
     });
+}
+- (void)testMissingActionTitles {
+    __block NSUInteger calls = 0;
+    dispatch_block_t handler = ^{ calls++; };
+    UIImage *icon = [UIImage systemImageNamed:@"gearshape"];
+    YTActionSheetAction *factory = [YTActionSheetAction actionWithTitle:@"1080p60" iconImage:icon style:19 handler:handler];
+    Check(![factory respondsToSelector:NSSelectorFromString(@"title")] && factory.receivedStyle == 19,
+        @"factory capture must support absent native title getters without altering arguments");
+    YTActionSheetAction *valued = [YTActionSheetAction actionWithTitle:@"Quality" currentValue:@"Auto (720p)" iconImage:icon accessibilityIdentifier:nil handler:handler];
+    YTActionSheetAction *selected = [YTActionSheetAction actionWithTitle:@"2160p" subtitle:@"HDR" iconImage:icon visiblySelected:YES accessibilityLabel:nil accessibilityIdentifier:nil handler:handler];
+    NativeTestAction *button = [NativeTestAction new]; button.handler = handler;
+    button.button = [UIButton buttonWithType:UIButtonTypeCustom]; [button.button setTitle:@"1440p" forState:UIControlStateNormal];
+    NativeTestAction *element = [NativeTestAction new]; element.handler = handler;
+    element.button = [UIButton buttonWithType:UIButtonTypeCustom];
+    UIView *content = [UIView new]; UILabel *label = [UILabel new]; label.text = @"Playback speed";
+    [content addSubview:label]; [element.button addSubview:content];
+    NativeTestAction *accessible = [NativeTestAction new]; accessible.handler = handler;
+    accessible.button = [UIButton buttonWithType:UIButtonTypeCustom];
+    UIView *accessibleView = [UIView new]; accessibleView.accessibilityLabel = @"Captions";
+    [accessible.button addSubview:accessibleView];
+    NativeTestAction *formatted = [NativeTestAction new]; formatted.handler = handler;
+    NativeTestFormattedText *text = [NativeTestFormattedText new]; text.plain = @"Audio track";
+    formatted.titleText = text;
+    YTBottomSheetController *native = [YTBottomSheetController new];
+    native.actions = @[factory,valued,selected,button,element,accessible,formatted];
+    NSArray *actions = YTKACENativePlayerActions(native);
+    Check(actions.count == 7,@"title-less actions must decode through factory/button/element/accessibility/formatted text");
+    NSArray *titles = @[@"1080p60",@"Quality",@"2160p",@"1440p",@"Playback speed",@"Captions",@"Audio track"];
+    for (NSUInteger index = 0; index < titles.count; ++index)
+        Check([actions[index][@"title"] isEqual:titles[index]],@"native display text must be preserved");
+    Check([actions[1][@"value"] isEqual:@"Auto (720p)"] && [valued.receivedValue isEqual:@"Auto (720p)"],@"current-value factory arguments must remain intact");
+    Check([actions[2][@"selected"] boolValue] && selected.receivedSelection &&
+        [actions[2][@"subtitle"] isEqual:@"HDR"] && actions[2][@"icon"] == icon,@"selected/subtitle/icon metadata must survive missing getters");
+    Check(calls == 0,@"reading menu labels must never execute actions");
+    ((dispatch_block_t)actions[0][@"handler"])();
+    Check(calls == 1,@"captured actions must keep the original handler exactly once");
+    NativeTestAction *pending = [NativeTestAction new]; pending.handler = handler;
+    pending.button = [UIButton buttonWithType:UIButtonTypeCustom]; native.actions = @[pending];
+    Check(!YTKACENativePlayerActions(native) && YTKACENativeMenuNeedsTextRetry(native),@"appearance-time labels must request one post-presentation retry");
+    [pending.button setTitle:@"Ready after appearance" forState:UIControlStateNormal];
+    Check(YTKACENativePlayerActions(native).count == 1 && !YTKACENativeMenuNeedsTextRetry(native),@"ready native text must clear the retry state");
 }
 - (void)testSettingsScope {
     UIButton *settings = [UIButton buttonWithType:UIButtonTypeSystem];
@@ -282,15 +373,18 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
         self.adaptedNative.modalPresentationStyle = UIModalPresentationCustom;
         self.adaptedNative.transitioningDelegate = self;
         __weak PlayerMenuSmoke *weak = self;
-        NativeTestAction *zero = [NativeTestAction new]; zero.title = @"Native zero-argument action";
+        NativeTestAction *zero = [NativeTestAction new];
+        zero.button = [UIButton buttonWithType:UIButtonTypeCustom];
         zero.handler = ^{ weak.adaptedCallbacks++; };
+        self.adaptedNative.lateTitleButton = zero.button;
         NativeTestAction *one = [NativeTestAction new]; one.title = @"Native action argument";
         __weak NativeTestAction *weakOne = one;
         one.handler = ^(id selected) {
             Check(selected == weakOne,@"original native action argument must be preserved");
             weak.adaptedCallbacks++;
         };
-        NativeTestAction *quality = [NativeTestAction new]; quality.title = @"Native element quality route";
+        YTActionSheetAction *quality = [YTActionSheetAction actionWithTitle:@"Native element quality route"
+            currentValue:@"Auto" iconImage:nil accessibilityIdentifier:nil handler:nil];
         self.nativeResponder = [NativeTestResponder new];
         self.nativeResponder.callback = ^{ weak.adaptedCallbacks++; };
         NSMutableArray *renderers = [NSMutableArray array];
@@ -304,14 +398,16 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
             entry:nil shouldLogItems:NO firstResponder:self.nativeResponder];
         self.adaptedNative.actionsController = owner;
     }
-    YTKACERememberPlayerMenuSource(self.button);
+    UIButton *source = self.adaptedRound < 2 ? self.qualityButton : self.button;
+    [self.adaptedNative.lateTitleButton setTitle:nil forState:UIControlStateNormal];
+    YTKACERememberPlayerMenuSource(source);
     [self.root presentViewController:self.adaptedNative animated:YES completion:nil];
     Later(^{
         UIViewController *native = self.root.presentedViewController;
         UIViewController *menu = native.presentedViewController;
         Check(native == self.adaptedNative && native.transitioningDelegate == self &&
             native.modalPresentationStyle == UIModalPresentationCustom,@"adaptation must preserve the native sheet lifecycle");
-        Check(menu && YTKACEIsPlayerPopover(menu) && menu.popoverPresentationController.sourceView == self.button,
+        Check(menu && YTKACEIsPlayerPopover(menu) && menu.popoverPresentationController.sourceView == source,
             @"native action model must render beside the player button");
         for (UIView *view = menu.view; view; view = view.superview)
             Check(!view.hidden && view.alpha > 0,@"replacement menu must not inherit hidden native content");

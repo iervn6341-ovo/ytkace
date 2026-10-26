@@ -123,6 +123,16 @@ fallback and action routing without video/account details. Actual YouTube versio
 still require device validation. Bounds adapt to the safe area and the native
 popover repositions on rotation; long option lists remain scrollable.
 
+Native actions without a readable title field recover their text from the native
+factory arguments, button/element labels or accessibility data. Formatted YouTube
+strings are flattened through their text API. Factory capture also retains icons,
+values, subtitles and selection state without changing the original factory or
+callback. `decoded … titleSources=…` diagnostics report source counts only, never
+the text itself. The UIKit regression includes the reported title=0/handler=1 shape
+and separate quality/gear anchors. If the native label is populated during appearance,
+decoding retries once after the original presentation lifecycle, then restores the
+original sheet if text is still unavailable.
+
 ### Settings transfer for integrated tweaks
 
 General contains Copy/Paste Settings and JSON file import/export. Imports preview the
