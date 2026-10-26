@@ -21,6 +21,7 @@ YTKACE_FILES = \
 	Tweak/UI/Notice.mm \
 	Tweak/UI/SystemMenu.mm \
 	Tweak/UI/PlayerMenuPresentation.mm \
+	Tweak/UI/NativePlayerMenu.mm \
 	Tweak/UI/OverlayButtonHost.mm \
 	Tweak/Features/Ads/AdsHooks.mm \
 	Tweak/Features/Ads/PlaybackAdsHooks.mm \

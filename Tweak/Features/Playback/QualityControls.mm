@@ -11,6 +11,7 @@
 #import <UIKit/UIKit.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
+#import <os/log.h>
 
 static IMP OriginalQualitySelection, OriginalRedesignedQualitySelection;
 static const void *SelectedQualityKey = &SelectedQualityKey;
@@ -62,6 +63,11 @@ static id QualityPresenter(UIView *overlay) {
 }
 - (void)openQuality:(UIButton *)sender {
     id presenter = QualityPresenter(self.overlay);
+    UIViewController *controller = [presenter isKindOfClass:UIViewController.class] ? presenter : nil;
+    os_log(OS_LOG_DEFAULT, "[YTKACE Quality] open presenter=%{public}@ presented=%{public}@ dismissing=%d sourceVisible=%d",
+        presenter ? NSStringFromClass([presenter class]) : @"missing",
+        controller.presentedViewController ? NSStringFromClass(controller.presentedViewController.class) : @"none",
+        controller.isBeingDismissed, sender.window != nil && !sender.hidden);
     if (presenter) ((void (*)(id, SEL, id))objc_msgSend)(presenter,NSSelectorFromString(@"didPressVideoQuality:"),sender);
     else YTKACEShowNotice(YTKACELocalized(@"Open video quality from the player settings."));
 }

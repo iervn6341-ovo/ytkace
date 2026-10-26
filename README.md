@@ -73,8 +73,9 @@ is reported. Existing YouQuality visibility preferences migrate once. The code
 retains PoomSmart's MIT notice in `YTKACE.bundle/Licenses/YouQuality.txt`.
 
 Buttons fill the native top band, then a second trailing row below the gear, using
-44pt targets, 24pt icons and 6pt spacing. Only actions that do not fit either safe
-row enter More. Native reservations are cached while controls fade/auto-hide, so
+44pt targets, 24pt icons and 6pt spacing. **Player → Player Button Layout** defaults to Expanded: crowded rows scroll
+horizontally without a More button. More Menu restores the compact layout. Downloads
+get the first visible slot when their overlay placement is enabled. Native reservations are cached while controls fade/auto-hide, so
 opacity changes do not move custom buttons into the cast/CC/gear slots. Rotation
 invalidates the cache. YTKACE does not register with or load YTVideoOverlay;
 CaptionIsland independently retains its existing bottom-button integration.
@@ -106,13 +107,21 @@ material, including Liquid Glass on supported systems, without an extra glass
 layer over the player menu. Selected/disabled actions, subtitles and callbacks
 retain their behavior; settings outside the player keep their existing sheets.
 
-The presenter also recognizes YouTube's YTBottomSheetController,
-YTContextualSheetViewController and YTActionSheetDialogViewController containers
-when launched by a player UIControl. It reuses their content and callbacks rather
-than rebuilding YouTube's server-driven actions. Unrecognized containers, missing
-or hidden anchors, and other app pages keep their original presentation. New
-YouTube versions still require device validation. Bounds adapt to the safe area
-and the native popover repositions on rotation; long option lists remain scrollable.
+The presenter recognizes YouTube's default/action/contextual player sheet containers.
+For complete action models it rebuilds their choices as a self-sizing UIKit popover,
+including icons, values, selection and disabled state. The original sheet's modal
+style and transitioning delegate are preserved: it completes its native lifecycle
+behind the replacement list and closes before the original action runs. Closing or
+tapping outside the list also closes that native session, so quality/submenu state
+can be released. Native content is never cropped into an estimated popover rectangle.
+
+Custom controls, incomplete/unknown action models and unavailable anchors retain
+the original sheet, styled by Liquid Glass → Menus and Sheets where supported.
+This is a bounded adapter, not a universal replacement for YouTube's server-driven
+screens. Console tags `[YTKACE PlayerMenus]` and `[YTKACE Quality]` report adaptation,
+fallback and action routing without video/account details. Actual YouTube versions
+still require device validation. Bounds adapt to the safe area and the native
+popover repositions on rotation; long option lists remain scrollable.
 
 ### Settings transfer for integrated tweaks
 

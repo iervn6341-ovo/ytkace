@@ -100,16 +100,14 @@ static void Check(BOOL ok, NSString *message) {
     [[@"FAIL: " stringByAppendingString:message] writeToFile:ResultPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
     abort();
 }
-static UIStackView *Row(UIView *overlay) {
-    for (UIView *child in overlay.subviews) if ([child.accessibilityIdentifier isEqual:@"YTKACEOverlayControls"]) return (id)child;
+static UIView *Find(UIView *root, NSString *identifier) {
+    if ([root.accessibilityIdentifier isEqual:identifier]) return root;
+    for (UIView *child in root.subviews) { UIView *found = Find(child,identifier); if (found) return found; }
     return nil;
 }
+static UIStackView *Row(UIView *overlay) { return (id)Find(overlay,@"YTKACEOverlayControls"); }
 static UIButton *More(UIStackView *row) {
-    for (UIStackView *candidate in row.superview.subviews) {
-        if (![candidate isKindOfClass:UIStackView.class]) continue;
-        for (UIButton *button in candidate.arrangedSubviews) if ([button.accessibilityIdentifier isEqual:@"YTKACE More Player Controls"]) return button;
-    }
-    return nil;
+    return (id)Find(row.superview.superview,@"YTKACE More Player Controls");
 }
 static BOOL Finite(CGRect r) { return std::isfinite(r.origin.x) && std::isfinite(r.origin.y) && std::isfinite(r.size.width) && std::isfinite(r.size.height); }
 
@@ -132,13 +130,14 @@ static BOOL Finite(CGRect r) { return std::isfinite(r.origin.x) && std::isfinite
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), dispatch_get_main_queue(), ^{ [self runTests]; });
 }
 - (void)runTests {
+    [NSUserDefaults.standardUserDefaults setInteger:1 forKey:@"YTKACE.Preference.Overlay.ButtonLayout"];
     YTKACEInstallPlayerMenuPresentation();
     YTKACEInstallQualityControls();
     TestActionTarget *target = [TestActionTarget new];
     YTKACERegisterOverlayConfigurator(@"test-controls", ^(UIView *overlay, UIStackView *stack) {
         target.overlay = overlay;
         for (int index = 0; index < 8; ++index) {
-            UIButton *button = YTKACEOverlayButton(stack, [NSString stringWithFormat:@"YTKACE Test %d", index], @"play", target, @selector(tap:));
+            UIButton *button = YTKACEOverlayButton(stack, (index == 7 ? @"YTKACE Download" : [NSString stringWithFormat:@"YTKACE Test %d", index]), @"play", target, @selector(tap:));
             button.hidden = HiddenFeatures;
             target.button = button;
         }
@@ -162,23 +161,22 @@ static BOOL Finite(CGRect r) { return std::isfinite(r.origin.x) && std::isfinite
     }
     [overlay layoutSubviews];
     UIStackView *row = Row(overlay);
-    Check(row && !row.hidden && row.alpha == 1 && row.frame.origin.y == 4, @"portrait controls must appear in the native top band without YTVideoOverlay");
+    Check(row && !row.superview.hidden && row.alpha == 1 && row.superview.frame.origin.y == 4, @"portrait controls must appear in the native top band without YTVideoOverlay");
     UIButton *more = More(row);
-    UIStackView *second = nil;
-    for (UIView *view in overlay.subviews) if ([view.accessibilityIdentifier isEqual:@"YTKACEOverlayControls.SecondRow"]) second = (id)view;
-    Check(second && !second.hidden && second.frame.origin.y == 54, @"overflow must use the next row below the native gear");
+    UIStackView *second = (id)Find(overlay,@"YTKACEOverlayControls.SecondRow");
+    Check(second && !second.superview.hidden && second.superview.frame.origin.y == 54, @"overflow must use the next row below the native gear");
     Check(more && !more.hidden && more.menu.children.count > 0, @"portrait overflow must remain accessible");
-    Check(CGRectContainsRect(overlay.bounds, row.frame), @"portrait controls must stay within the player");
-    for (UIButton *button in native) Check(!CGRectIntersectsRect(row.frame, button.frame), @"native controls must remain unobstructed");
-    CGRect firstBeforeFade = row.frame, secondBeforeFade = second.frame;
+    Check(CGRectContainsRect(overlay.bounds, row.superview.frame), @"portrait controls must stay within the player");
+    for (UIButton *button in native) Check(!CGRectIntersectsRect(row.superview.frame, button.frame), @"native controls must remain unobstructed");
+    CGRect firstBeforeFade = row.superview.frame, secondBeforeFade = second.superview.frame;
     KeepControls = NO;
     for (NSNumber *alpha in @[@0.8,@0.3,@0.0,@0.4]) {
         for (UIButton *button in native) button.alpha = alpha.doubleValue;
         [overlay layoutSubviews];
-        Check(CGRectEqualToRect(row.frame,firstBeforeFade) && CGRectEqualToRect(second.frame,secondBeforeFade), @"faded native controls must retain their reserved positions");
+        Check(CGRectEqualToRect(row.superview.frame,firstBeforeFade) && CGRectEqualToRect(second.superview.frame,secondBeforeFade), @"faded native controls must retain their reserved positions");
     }
     [overlay setOverlayVisible:NO]; [overlay layoutSubviews];
-    Check(CGRectEqualToRect(row.frame,firstBeforeFade), @"auto-hidden controls must not pack over native buttons");
+    Check(CGRectEqualToRect(row.superview.frame,firstBeforeFade), @"auto-hidden controls must not pack over native buttons");
     for (UIButton *button in native) button.alpha = 1;
     [overlay setOverlayVisible:YES]; [overlay layoutSubviews]; KeepControls = YES;
     [row layoutIfNeeded];
@@ -187,28 +185,28 @@ static BOOL Finite(CGRect r) { return std::isfinite(r.origin.x) && std::isfinite
     ReenterLayout = YES; [overlay layoutSubviews]; ReenterLayout = NO;
     Check(NativeLayouts == before + 1, @"layout recursion must be bounded");
     for (int i = 0; i < 30; ++i) [overlay layoutSubviews];
-    Check(!row.hidden && More(row) == more, @"repeated layout must preserve the local row and overflow identity");
-    HiddenFeatures = YES; [overlay layoutSubviews]; Check(row.hidden, @"feature gates");
-    HiddenFeatures = NO; [overlay layoutSubviews]; Check(!row.hidden, @"restore feature controls");
+    Check(!row.superview.hidden && More(row) == more, @"repeated layout must preserve the local row and overflow identity");
+    HiddenFeatures = YES; [overlay layoutSubviews]; Check(row.superview.hidden, @"feature gates");
+    HiddenFeatures = NO; [overlay layoutSubviews]; Check(!row.superview.hidden, @"restore feature controls");
     [overlay setOverlayVisible:NO]; Check(overlay.requestedVisible, @"keep-controls preference outside transitions");
     TestPan *pan = [TestPan new]; [player addGestureRecognizer:pan]; pan.testState = UIGestureRecognizerStateChanged;
     [overlay setOverlayVisible:NO]; Check(!overlay.requestedVisible, @"native exit gesture must be allowed to hide controls");
-    [overlay layoutSubviews]; Check(row.hidden, @"defer local layout during interactive pan");
+    [overlay layoutSubviews]; Check(!row.superview.hidden && row.superview.alpha == 0, @"interactive pan freezes geometry while following native visibility");
     pan.testState = UIGestureRecognizerStateCancelled;
-    [overlay setOverlayVisible:YES]; [overlay layoutSubviews]; Check(!row.hidden, @"cancelled pan must recover controls");
-    CGRect valid = row.frame;
+    [overlay setOverlayVisible:YES]; [overlay layoutSubviews]; Check(!row.superview.hidden, @"cancelled pan must recover controls");
+    CGRect valid = row.superview.frame;
     player.transform = CGAffineTransformMakeScale(0, 0);
-    [overlay layoutSubviews]; Check(row.hidden && CGRectEqualToRect(row.frame, valid), @"singular transition must not write invalid geometry");
+    [overlay layoutSubviews]; Check(row.superview.hidden && CGRectEqualToRect(row.superview.frame, valid), @"singular transition must not write invalid geometry");
     player.transform = CGAffineTransformIdentity;
-    [overlay layoutSubviews]; Check(!row.hidden && Finite(row.frame), @"valid geometry must restore controls");
+    [overlay layoutSubviews]; Check(!row.superview.hidden && Finite(row.superview.frame), @"valid geometry must restore controls");
     overlay.frame = CGRectMake(0, 0, 852, 414); player.frame = CGRectMake(0, 0, 852, 414);
     native[1].frame = CGRectMake(696,4,44,44); native[2].frame = CGRectMake(746,4,44,44); native[3].frame = CGRectMake(796,4,44,44);
     [overlay layoutSubviews];
-    Check(!row.hidden && more.hidden && row.frame.origin.y == 4, @"landscape must restore all inline controls");
+    Check(!row.superview.hidden && more.hidden && row.superview.frame.origin.y == 4, @"landscape must restore all inline controls");
     for (UIButton *button in row.arrangedSubviews) if (button != more) Check(!button.hidden, @"landscape button visibility");
     overlay.frame = CGRectMake(0,0,414,233); player.frame = CGRectMake(0,80,414,233);
     native[1].frame = CGRectMake(258,4,44,44); native[2].frame = CGRectMake(308,4,44,44); native[3].frame = CGRectMake(358,4,44,44);
-    [overlay layoutSubviews]; Check(!row.hidden && !more.hidden, @"fullscreen exit must restore portrait row");
+    [overlay layoutSubviews]; Check(!row.superview.hidden && !more.hidden, @"fullscreen exit must restore portrait row");
     UIButton *button = nil, *qualityButton = nil;
     for (UIStackView *candidate in @[row,second]) for (UIButton *item in candidate.arrangedSubviews) {
         if ([item.accessibilityIdentifier isEqual:@"YTKACE Test 0"]) button = item;
@@ -226,6 +224,25 @@ static BOOL Finite(CGRect r) { return std::isfinite(r.origin.x) && std::isfinite
     qualityPlayer.activeVideo = [NSObject new]; [overlay layoutSubviews];
     Check([qualityButton.currentTitle isEqual:@"Auto"], @"quality label must not leak to another video");
     Check([YTKACEQualityButtonTitle(@"2160p60 HDR") isEqual:@"4K"] && [YTKACEQualityButtonTitle(@"1440p") isEqual:@"2K"], @"compact high-resolution labels");
+
+    for (int index = 0; index < 3; ++index) [qualityButton sendActionsForControlEvents:UIControlEventTouchUpInside];
+    Check(qualityPresenter.calls == 4, @"quality shortcut must remain callable across repeated opens");
+    [NSUserDefaults.standardUserDefaults setInteger:0 forKey:@"YTKACE.Preference.Overlay.ButtonLayout"];
+    [overlay layoutSubviews]; [row layoutIfNeeded]; [second layoutIfNeeded];
+    Check(!more || more.hidden, @"expanded mode must not collapse actions into More");
+    Check([((UIButton *)row.arrangedSubviews.firstObject).accessibilityIdentifier isEqual:@"YTKACE Download"], @"download must retain an immediately visible slot");
+    NSUInteger expandedCount = 0;
+    for (UIStackView *candidate in @[row,second]) for (UIButton *item in candidate.arrangedSubviews) {
+        if (item == more) continue;
+        Check(!item.hidden && item.bounds.size.width >= 44, @"expanded controls retain readable touch targets");
+        ++expandedCount;
+    }
+    Check(expandedCount == 9, @"all enabled actions must stay in expanded rows");
+    UIScrollView *viewport = (id)second.superview;
+    Check(viewport.scrollEnabled && viewport.contentSize.width > viewport.bounds.size.width, @"crowded expanded row must scroll horizontally");
+    Check(CGRectContainsRect(overlay.bounds,viewport.frame), @"scroll viewport must remain inside the player");
+    [viewport setContentOffset:CGPointMake(viewport.contentSize.width - viewport.bounds.size.width,0)];
+    Check(viewport.contentOffset.x > 0, @"last expanded action must be reachable");
 
     // Exercise the actual PlayerGlass hook with the user's reported settings:
     // keep-controls off, player glass on, and both button/gesture transitions.
@@ -262,7 +279,7 @@ static BOOL Finite(CGRect r) { return std::isfinite(r.origin.x) && std::isfinite
     Check(glass.hidden && frosted._blurEffectView.alpha > 0, @"reuse native Liquid Glass without another overlay");
     GlassEnabled = NO; [frosted layoutSubviews];
     Check(fabs(frosted._overlayView.alpha - 0.4) < 0.001, @"restore exact native overlay alpha");
-    [@"PASS: standalone portrait/fullscreen controls, overflow, feature gates, bounded reentry, exit transitions, geometry recovery, actions and PlayerGlass lifecycle" writeToFile:ResultPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    [@"PASS: standalone portrait/fullscreen controls, compact/expanded rows, scroll reachability, repeated quality actions, feature gates, bounded reentry, exit transitions, geometry recovery, actions and PlayerGlass lifecycle" writeToFile:ResultPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
 }
 @end
 int main(int argc, char **argv) { @autoreleasepool { return UIApplicationMain(argc, argv, nil, NSStringFromClass(PlayerControlsSmoke.class)); } }

@@ -5,6 +5,10 @@
 #import <objc/message.h>
 @interface YTKACEMenuPresentation : UIViewController
 @property(nonatomic, strong) UINavigationController *contentNavigation;
+@property(nonatomic, copy) void (^dismissalHandler)(BOOL);
+@property(nonatomic) BOOL selectedAction;
+@property(nonatomic) BOOL notifiedDismissal;
+- (void)notifyDismissal;
 @end
 @implementation YTKACEMenuPresentation
 - (void)viewDidLoad {
@@ -17,7 +21,33 @@
     [self.view addSubview:navigation.view];
     [navigation didMoveToParentViewController:self];
 }
+- (void)viewDidDisappear:(BOOL)animated {
+    [super viewDidDisappear:animated];
+    // A popover dismissed by tapping outside does not use our close action.
+    // Wait for UIKit to detach it before closing an adapted native parent.
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (!self.presentingViewController) [self notifyDismissal];
+    });
+}
+- (void)dismissViewControllerAnimated:(BOOL)animated completion:(void (^)(void))completion {
+    [super dismissViewControllerAnimated:animated completion:^{
+        [self notifyDismissal];
+        if (completion) completion();
+    }];
+}
+- (void)notifyDismissal {
+    if (self.notifiedDismissal) return;
+    self.notifiedDismissal = YES;
+    void (^handler)(BOOL) = self.dismissalHandler;
+    self.dismissalHandler = nil;
+    if (handler) handler(self.selectedAction);
+}
 @end
+
+void YTKACENotifySystemMenuDismissed(UIViewController *menu) {
+    if ([menu isKindOfClass:YTKACEMenuPresentation.class])
+        [((YTKACEMenuPresentation *)menu) notifyDismissal];
+}
 
 @class YTKACESystemMenuController;
 @interface YTKACESystemMenuTable : UITableView
@@ -179,6 +209,7 @@
     NSDictionary *action = self.actions[indexPath.row];
     if (action[@"enabled"] && ![action[@"enabled"] boolValue]) return;
     dispatch_block_t handler = action[@"handler"];
+    ((YTKACEMenuPresentation *)self.menuPresentation).selectedAction = YES;
     YTKACERememberPlayerMenuSource(self.menuPresentation.popoverPresentationController.sourceView);
     // Dismiss before invoking actions which may immediately open another controller.
     // One presentation animation is enough for a submenu transition.
@@ -189,6 +220,12 @@
 BOOL YTKACEPresentSystemMenu(UIViewController *presenter, UIView *source,
                              NSString *title, NSString *subtitle,
                              NSArray<NSDictionary *> *actions) {
+    return YTKACEPresentSystemMenuWithDismissal(presenter,source,title,subtitle,actions,nil);
+}
+
+BOOL YTKACEPresentSystemMenuWithDismissal(UIViewController *presenter, UIView *source,
+                             NSString *title, NSString *subtitle,
+                             NSArray<NSDictionary *> *actions, void (^handler)(BOOL)) {
     if (![presenter isKindOfClass:UIViewController.class] ||
         !YTKACEFeatureEnabled(@"YTKACE.Preference.Interface.SystemMenus") ||
         !presenter.view.window || presenter.presentedViewController || actions.count == 0) return NO;
@@ -203,6 +240,7 @@ BOOL YTKACEPresentSystemMenu(UIViewController *presenter, UIView *source,
     UINavigationController *navigation = [[UINavigationController alloc] initWithRootViewController:controller];
     navigation.view.backgroundColor = UIColor.clearColor;
     YTKACEMenuPresentation *presentation = [YTKACEMenuPresentation new];
+    presentation.dismissalHandler = handler;
     presentation.contentNavigation = navigation;
     controller.menuPresentation = presentation;
     presentation.modalPresentationStyle = UIModalPresentationPageSheet;
@@ -224,6 +262,8 @@ BOOL YTKACEPresentSystemMenu(UIViewController *presenter, UIView *source,
     } else {
         UISheetPresentationController *sheet = presentation.sheetPresentationController;
         sheet.prefersGrabberVisible = YES;
+        sheet.prefersEdgeAttachedInCompactHeight = YES;
+        sheet.widthFollowsPreferredContentSizeWhenEdgeAttached = YES;
         sheet.prefersScrollingExpandsWhenScrolledToEdge = NO;
         if (@available(iOS 16.0, *)) {
             __weak UIViewController *weakPresentation = presentation;

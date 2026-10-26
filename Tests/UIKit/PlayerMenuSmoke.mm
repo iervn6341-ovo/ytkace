@@ -1,13 +1,16 @@
 #import <UIKit/UIKit.h>
 #import "../../Tweak/UI/SystemMenu.h"
 #import "../../Tweak/UI/PlayerMenuPresentation.h"
+#import "../../Tweak/UI/NativePlayerMenu.h"
 #import "../../Tweak/Runtime/Preferences.h"
 #import "../../Tweak/Runtime/Localization.h"
 #import "../../Tweak/Features/Downloads/DownloadLog.h"
+#import "../../Tweak/YTKACE.h"
 
 static BOOL Features = YES;
 NSString * const YTKACEPreferencesDidChangeNotification = @"YTKACEPreferencesDidChange";
 BOOL YTKACEFeatureEnabled(NSString *key) { (void)key; return Features; }
+BOOL YTKACELiquidGlassAvailable(void) { return NSClassFromString(@"UIGlassEffect") != nil; }
 NSString *YTKACELocalized(NSString *key) { return key; }
 void YTKACEDownloadLog(NSString *identifier, NSString *format, ...) { (void)identifier; (void)format; }
 static NSString *ResultPath(void) {
@@ -26,17 +29,82 @@ static void Later(dispatch_block_t block) {
 // Stand-ins verify UIKit presentation and hook routing, not YouTube's private layout.
 @interface YTMainAppControlsOverlayView : UIView @end
 @implementation YTMainAppControlsOverlayView @end
-@interface YTBottomSheetController : UIViewController @end
+@interface YTDraggableView : UIView @end
+@implementation YTDraggableView @end
+@interface NativeTestAction : NSObject
+@property(nonatomic, copy) NSString *title;
+@property(nonatomic, copy) id handler;
+@end
+@implementation NativeTestAction @end
+@interface NativeTestRenderer : NSObject
+@property(nonatomic, copy) NSString *menuItemIdentifier;
+- (id)menuNavigationItemRenderer;
+@end
+@implementation NativeTestRenderer
+- (id)menuNavigationItemRenderer { return self; }
+@end
+@interface NativeTestResponder : NSObject
+@property(nonatomic, copy) dispatch_block_t callback;
+@property(nonatomic, weak) UIView *lastSource;
+- (void)didPressVideoQuality:(UIView *)source;
+@end
+@implementation NativeTestResponder
+- (void)didPressVideoQuality:(UIView *)source { self.lastSource = source; self.callback(); }
+@end
+@interface YTMenuController : NSObject
+@property(nonatomic, copy) NSArray *actions;
+- (NSArray *)actionsForRenderers:(NSArray *)renderers fromView:(UIView *)source entry:(id)entry
+                 shouldLogItems:(BOOL)logItems firstResponder:(id)responder;
+@end
+@implementation YTMenuController
+- (NSArray *)actionsForRenderers:(NSArray *)renderers fromView:(UIView *)source entry:(id)entry
+                 shouldLogItems:(BOOL)logItems firstResponder:(id)responder {
+    (void)renderers; (void)source; (void)entry; (void)logItems; (void)responder; return self.actions;
+}
+@end
+@interface YTBottomSheetController : UIViewController
+@property(nonatomic, copy) NSArray *actions;
+@property(nonatomic, strong) id actionsController;
+@end
 @implementation YTBottomSheetController @end
+@interface NativeTestOwner : NSObject
+@property(nonatomic, copy) NSArray *actions;
+@property(nonatomic, weak) UIViewController *native;
+@property(nonatomic) NSUInteger dismissals;
+- (void)dismissViewControllerAnimated:(BOOL)animated completion:(void (^)(void))completion;
+@end
+@implementation NativeTestOwner
+- (void)dismissViewControllerAnimated:(BOOL)animated completion:(void (^)(void))completion {
+    self.dismissals++;
+    [self.native dismissViewControllerAnimated:animated completion:completion];
+}
+@end
+
+static NSUInteger NativePresentations, NativeDismissals;
+@interface NativeTestPresentation : UIPresentationController @end
+@implementation NativeTestPresentation
+- (BOOL)shouldRemovePresentersView { return NO; }
+- (void)presentationTransitionWillBegin { NativePresentations++; [super presentationTransitionWillBegin]; }
+- (void)dismissalTransitionDidEnd:(BOOL)completed {
+    if (completed) NativeDismissals++;
+    [super dismissalTransitionDidEnd:completed];
+}
+@end
 
 static UINavigationController *MenuNavigation(UIViewController *presentation) {
     return [presentation isKindOfClass:UINavigationController.class] ? (id)presentation : (id)presentation.childViewControllers.firstObject;
 }
-@interface PlayerMenuSmoke : UIResponder <UIApplicationDelegate, UIWindowSceneDelegate>
+@interface PlayerMenuSmoke : UIResponder <UIApplicationDelegate, UIWindowSceneDelegate, UIViewControllerTransitioningDelegate>
 @property(nonatomic, strong) UIWindow *window;
 @property(nonatomic, strong) UIViewController *root;
 @property(nonatomic, strong) UIButton *button;
 @property(nonatomic) NSInteger callbacks;
+@property(nonatomic) NSInteger nativeOpens;
+@property(nonatomic, strong) UIViewController *nativeMenu;
+@property(nonatomic, strong) YTBottomSheetController *adaptedNative;
+@property(nonatomic) NSInteger adaptedRound;
+@property(nonatomic) NSInteger adaptedCallbacks;
+@property(nonatomic, strong) NativeTestResponder *nativeResponder;
 @end
 @implementation PlayerMenuSmoke
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)options {
@@ -68,6 +136,11 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
     self.button.tintColor = UIColor.whiteColor;
     [overlay addSubview:self.button];
     [self.window makeKeyAndVisible];
+    UIWindowSceneGeometryPreferencesIOS *portrait = [[UIWindowSceneGeometryPreferencesIOS alloc]
+        initWithInterfaceOrientations:UIInterfaceOrientationMaskPortrait];
+    [self.window.windowScene requestGeometryUpdateWithPreferences:portrait errorHandler:^(NSError *error) {
+        Check(NO,[@"initial portrait failed: " stringByAppendingString:error.localizedDescription]);
+    }];
     Later(^{ [self testOwnedMenu]; });
 }
 - (NSArray *)actions {
@@ -79,6 +152,17 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
     ];
 }
 - (void)testOwnedMenu {
+    UIView *clip = [[UIView alloc] initWithFrame:CGRectMake(20,140,44,44)]; clip.clipsToBounds = YES;
+    UIButton *clipped = [[UIButton alloc] initWithFrame:CGRectMake(60,0,44,44)];
+    [clip addSubview:clipped]; [self.button.superview addSubview:clip];
+    Check(!YTKACEIsPlayerMenuSource(clipped),@"a scrolled/clipped button must not anchor a popup");
+    clip.clipsToBounds = NO;
+    Check(YTKACEIsPlayerMenuSource(clipped),@"visible unclipped player button must be eligible");
+    [clip removeFromSuperview];
+    NativeTestAction *unsupported = [NativeTestAction new]; unsupported.title = @"Unsupported native control";
+    unsupported.handler = @"not a block";
+    YTBottomSheetController *special = [YTBottomSheetController new]; special.actions = @[unsupported];
+    Check(!YTKACENativePlayerActions(special),@"unsupported handlers must keep their native sheet");
     Check(YTKACEPresentSystemMenu(self.root, self.button, @"Player options", nil, self.actions), @"owned menu did not present");
     Later(^{
         UIViewController *menu = self.root.presentedViewController;
@@ -115,7 +199,9 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
         UITableViewController *table = (id)navigation.topViewController;
         CGFloat slack = table.tableView.bounds.size.height - table.tableView.contentSize.height -
             table.tableView.contentInset.top - table.tableView.contentInset.bottom;
-        Check(slack < 48, @"short settings sheet has excessive blank footer");
+        Check(slack < 48, [NSString stringWithFormat:@"short settings sheet blank footer=%.1f window=%@ table=%@ content=%@ preferred=%@",slack,
+            NSStringFromCGRect(self.window.bounds),NSStringFromCGRect(table.tableView.bounds),
+            NSStringFromCGSize(table.tableView.contentSize),NSStringFromCGSize(menu.preferredContentSize)]);
         [menu dismissViewControllerAnimated:NO completion:^{
             [settings removeFromSuperview];
             [self testTimerList];
@@ -154,15 +240,104 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
 }
 - (void)openNative:(UIButton *)sender {
     (void)sender;
-    UIViewController *native = [YTBottomSheetController new];
-    native.modalPresentationStyle = UIModalPresentationPageSheet;
+    UIViewController *native = self.nativeMenu;
+    if (!native) {
+        native = [YTBottomSheetController new];
+        native.modalPresentationStyle = UIModalPresentationPageSheet;
+        native.transitioningDelegate = self;
+        native.preferredContentSize = CGSizeMake(320,280);
+        YTDraggableView *panel = [[YTDraggableView alloc] initWithFrame:CGRectMake(0,0,320,280)];
+        panel.backgroundColor = UIColor.systemBackgroundColor;
+        [native.view addSubview:panel];
+        self.nativeMenu = native;
+    }
+    self.nativeOpens++;
     [self.root presentViewController:native animated:NO completion:nil];
 }
 - (void)verifyNative {
     UIViewController *native = self.root.presentedViewController;
-    Check(YTKACEIsPlayerPopover(native) && native.popoverPresentationController.sourceView == self.button,
-        @"native sheet was not routed to the tapped player button");
+    Check(native == self.nativeMenu && !YTKACEIsPlayerPopover(native) &&
+        native.modalPresentationStyle == UIModalPresentationPageSheet && native.transitioningDelegate == self,
+        @"native sheet presentation and transitioning delegate must be preserved across repeated opens");
+    Check(CGSizeEqualToSize(native.preferredContentSize,CGSizeMake(320,280)), @"native content size must not be replaced by an estimated popover size");
+    UIView *panel = native.view.subviews.firstObject;
+    NSUInteger glassCount = 0;
+    for (UIView *child in panel.subviews) if ([child isKindOfClass:UIVisualEffectView.class]) {
+        ++glassCount;
+        Check(!child.userInteractionEnabled && CGRectEqualToRect(child.frame,panel.bounds), @"native glass must only style the panel");
+    }
+    Check(glassCount == 1, @"native sheet must reuse one Liquid Glass surface");
     [native dismissViewControllerAnimated:NO completion:^{
+        if (self.nativeOpens < 3) {
+            [self.button sendActionsForControlEvents:UIControlEventTouchUpInside];
+            Later(^{ [self verifyNative]; });
+            return;
+        }
+        [self testAdaptedNative];
+    }];
+}
+- (void)testAdaptedNative {
+    if (!self.adaptedNative) {
+        self.adaptedNative = [YTBottomSheetController new];
+        self.adaptedNative.modalPresentationStyle = UIModalPresentationCustom;
+        self.adaptedNative.transitioningDelegate = self;
+        __weak PlayerMenuSmoke *weak = self;
+        NativeTestAction *zero = [NativeTestAction new]; zero.title = @"Native zero-argument action";
+        zero.handler = ^{ weak.adaptedCallbacks++; };
+        NativeTestAction *one = [NativeTestAction new]; one.title = @"Native action argument";
+        __weak NativeTestAction *weakOne = one;
+        one.handler = ^(id selected) {
+            Check(selected == weakOne,@"original native action argument must be preserved");
+            weak.adaptedCallbacks++;
+        };
+        NativeTestAction *quality = [NativeTestAction new]; quality.title = @"Native element quality route";
+        self.nativeResponder = [NativeTestResponder new];
+        self.nativeResponder.callback = ^{ weak.adaptedCallbacks++; };
+        NSMutableArray *renderers = [NSMutableArray array];
+        for (NSString *name in @[@"zero",@"one",@"menu_item_video_quality"]) {
+            NativeTestRenderer *renderer = [NativeTestRenderer new]; renderer.menuItemIdentifier = name;
+            [renderers addObject:renderer];
+        }
+        YTMenuController *builder = [YTMenuController new]; builder.actions = @[zero,one,quality];
+        NativeTestOwner *owner = [NativeTestOwner new]; owner.native = self.adaptedNative;
+        owner.actions = [builder actionsForRenderers:renderers fromView:self.button
+            entry:nil shouldLogItems:NO firstResponder:self.nativeResponder];
+        self.adaptedNative.actionsController = owner;
+    }
+    YTKACERememberPlayerMenuSource(self.button);
+    [self.root presentViewController:self.adaptedNative animated:YES completion:nil];
+    Later(^{
+        UIViewController *native = self.root.presentedViewController;
+        UIViewController *menu = native.presentedViewController;
+        Check(native == self.adaptedNative && native.transitioningDelegate == self &&
+            native.modalPresentationStyle == UIModalPresentationCustom,@"adaptation must preserve the native sheet lifecycle");
+        Check(menu && YTKACEIsPlayerPopover(menu) && menu.popoverPresentationController.sourceView == self.button,
+            @"native action model must render beside the player button");
+        for (UIView *view = menu.view; view; view = view.superview)
+            Check(!view.hidden && view.alpha > 0,@"replacement menu must not inherit hidden native content");
+        Check(native.view.alpha == 0,@"native bottom-sheet content must not show behind the replacement list");
+        if (self.adaptedRound == 0) [menu dismissViewControllerAnimated:NO completion:nil];
+        else {
+            UITableViewController *table = (id)MenuNavigation(menu).topViewController;
+            [table.tableView.delegate tableView:table.tableView didSelectRowAtIndexPath:
+                [NSIndexPath indexPathForRow:self.adaptedRound - 1 inSection:0]];
+        }
+        Later(^{
+            Check(!self.root.presentedViewController,@"closing replacement list must close the native session");
+            Check(self.adaptedCallbacks == self.adaptedRound,@"native selection must run exactly once after dismissal");
+            if (self.adaptedRound == 3)
+                Check(self.nativeResponder.lastSource == self.button,@"element quality route must retain the original native responder and source");
+            Check(self.adaptedNative.view.alpha == 1,@"native view alpha must restore on close");
+            self.adaptedRound++;
+            if (self.adaptedRound < 4) [self testAdaptedNative];
+            else [self testUnrelated];
+        });
+    });
+}
+- (void)testUnrelated {
+        Check(NativePresentations == 4 && NativeDismissals == 4,@"original custom presentation/dismissal callbacks must run for every adapted menu");
+        Check([(NativeTestOwner *)self.adaptedNative.actionsController dismissals] == 4,
+            @"original action owner's dismissal API must run on cancellation and selection");
         UIViewController *unrelated = [UIViewController new];
         unrelated.modalPresentationStyle = UIModalPresentationPageSheet;
         [self.root presentViewController:unrelated animated:NO completion:nil];
@@ -176,7 +351,12 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
                 Later(^{ [self testRotation]; });
             }];
         });
-    }];
+}
+- (UIPresentationController *)presentationControllerForPresentedViewController:(UIViewController *)presented
+    presentingViewController:(UIViewController *)presenting sourceViewController:(UIViewController *)source {
+    (void)source;
+    if (presented.modalPresentationStyle != UIModalPresentationCustom) return nil;
+    return [[NativeTestPresentation alloc] initWithPresentedViewController:presented presentingViewController:presenting];
 }
 - (void)testRotation {
     UIWindowSceneGeometryPreferencesIOS *geometry = [[UIWindowSceneGeometryPreferencesIOS alloc]
@@ -190,9 +370,26 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
         Check(menu && YTKACEIsPlayerPopover(menu), @"popover lost during rotation");
         CGRect frame = [menu.view convertRect:menu.view.bounds toView:self.window];
         Check(CGRectContainsRect(CGRectInset(self.window.bounds, -1, -1), frame), @"rotated popover exceeded window");
-        [@"PASS: compact popover, bounds, selection, disabled actions, dismissal ordering, long-list scrolling, native routing, settings scope, feature toggle and landscape rotation\n"
-            writeToFile:ResultPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        [menu dismissViewControllerAnimated:NO completion:^{ [self testLandscapeSettings]; }];
     }); });
+}
+- (void)testLandscapeSettings {
+    UIButton *settings = [[UIButton alloc] initWithFrame:CGRectMake(20,80,100,44)];
+    [self.root.view addSubview:settings];
+    Check(YTKACEPresentSystemMenu(self.root,settings,@"Landscape settings",nil,self.actions),@"landscape settings did not present");
+    Later(^{
+        UIViewController *menu = self.root.presentedViewController;
+        UITableViewController *table = (id)MenuNavigation(menu).topViewController;
+        CGFloat slack = table.tableView.bounds.size.height - table.tableView.contentSize.height -
+            table.tableView.contentInset.top - table.tableView.contentInset.bottom;
+        Check(slack < 48,@"compact-height settings must fit content instead of expanding to fullscreen");
+        [menu dismissViewControllerAnimated:NO completion:^{
+            [settings removeFromSuperview];
+            YTKACEPresentSystemMenu(self.root,self.button,@"Player options",nil,self.actions);
+            [@"PASS: compact popover, bounds, selection, disabled actions, dismissal ordering, long-list scrolling, repeated native opens, native owner/custom lifecycle, element quality route, settings in portrait/landscape, clipped anchors and rotation\n"
+                writeToFile:ResultPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        }];
+    });
 }
 @end
 

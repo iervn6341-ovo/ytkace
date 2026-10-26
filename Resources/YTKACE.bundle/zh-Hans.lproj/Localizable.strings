@@ -1007,3 +1007,13 @@ Licensed under CC BY-NC-SA 4.0." = "YTKACE 使用 SponsorBlock 数据。
 "Quality Button" = "画质按钮";
 "Show a quality shortcut beside the native player controls." = "在原生播放器控制项旁显示画质快捷按钮。";
 "Open video quality from the player settings." = "请从播放器设置打开画质菜单。";
+
+"Player Button Layout" = "播放器按钮排列";
+
+"Expanded keeps every button available; swipe a crowded row horizontally." = "展开所有按钮；一行放不下时可横向滑动。";
+
+"Expanded" = "全部展开";
+
+"More Menu" = "更多菜单";
+
+"Open player action lists beside the button with native styling. Unsupported YouTube controls keep their original sheet." = "以原生风格在按钮旁展开播放器选项列表。不支持的 YouTube 控件会保留原菜单。";

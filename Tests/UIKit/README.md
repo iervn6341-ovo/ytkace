@@ -5,8 +5,8 @@ For the independent player controls/transition/PlayerGlass regression, build
 Launch `dev.captionisland.player-controls-smoke` on a disposable iPhone simulator
 and read `Documents/result.txt`. It uses the production host and glass hooks with
 fake native classes, including glass on/keep-controls off, repeated transforms,
-two-row packing, native fade/auto-hide geometry reservations and integrated quality
-labels, per-video state and native action routing,
+compact/expanded two-row packing, horizontally scrollable crowded rows, download priority, native fade/auto-hide geometry reservations and integrated quality
+labels, per-video state and repeated native action routing,
 cancelled pans, zero size, native glass reuse and layout reentry. It does not load
 YTVideoOverlay or simulate YouTube's private transition controller.
 
@@ -29,7 +29,7 @@ complete. The app exercises the production presentation code and hook utility:
 compact-width popover adaptation, visible button anchoring, window containment,
 selection and disabled actions, long-list scrolling, landscape rotation,
 dismissal-before-callback, native-container
-routing, unrelated/settings controller scope, and the feature preference.
+routing with preserved native lifecycle and glass, unrelated/settings controller scope, and the feature preference.
 It leaves an example player popover visible after passing.
 
 The YouTube view/controller names are stand-ins. This verifies UIKit routing,

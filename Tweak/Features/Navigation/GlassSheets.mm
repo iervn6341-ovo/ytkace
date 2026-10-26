@@ -15,6 +15,8 @@ static IMP OriginalModalShow;
 static IMP OriginalModalReposition;
 static IMP OriginalContextualWillAppear;
 static IMP OriginalContextualLayout;
+static IMP OriginalActionSheetLayout;
+static IMP OriginalActionSheetAppear;
 
 static const void *YTKACESheetGlassAssociation = &YTKACESheetGlassAssociation;
 static const void *YTKACESheetUpdateAssociation = &YTKACESheetUpdateAssociation;
@@ -137,6 +139,8 @@ static void YTKACEApplySheetGlass(UIViewController *controller) {
             }
         }
     }
+    if (sheet == nil) sheet = YTKACEFindViewOfClass(controller.view, @"YTMinimumWidthDialogView");
+    if (sheet == nil) sheet = YTKACEFindViewOfClass(controller.view, @"GOODialogView");
     if (sheet == nil || CGRectIsEmpty(sheet.bounds)) return;
     YTKACEApplyPanelGlass(sheet, 24.0);
 }
@@ -284,6 +288,16 @@ static void YTKACEContextualLayout(UIViewController *receiver, SEL selector) {
     YTKACEApplySheetGlassLater(receiver);
 }
 
+static void YTKACEActionSheetLayout(UIViewController *receiver, SEL selector) {
+    if (OriginalActionSheetLayout != NULL) ((void (*)(id, SEL))OriginalActionSheetLayout)(receiver, selector);
+    YTKACEApplySheetGlassLater(receiver);
+}
+
+static void YTKACEActionSheetAppear(UIViewController *receiver, SEL selector, BOOL animated) {
+    if (OriginalActionSheetAppear != NULL) ((void (*)(id, SEL, BOOL))OriginalActionSheetAppear)(receiver, selector, animated);
+    YTKACEApplySheetGlassLater(receiver);
+}
+
 __attribute__((constructor)) static void YTKACEInstallGlassSheets(void) {
     if (!YTKACELiquidGlassAvailable()) return;
     YTKACEInstallInstanceHook(@"YTBottomSheetController", @"viewWillLayoutSubviews",
@@ -316,4 +330,8 @@ __attribute__((constructor)) static void YTKACEInstallGlassSheets(void) {
                               (IMP)YTKACEContextualWillAppear, &OriginalContextualWillAppear);
     YTKACEInstallInstanceHook(@"YTContextualSheetViewController", @"viewWillLayoutSubviews",
                               (IMP)YTKACEContextualLayout, &OriginalContextualLayout);
+    YTKACEInstallInstanceHook(@"YTActionSheetDialogViewController", @"viewWillLayoutSubviews",
+                              (IMP)YTKACEActionSheetLayout, &OriginalActionSheetLayout);
+    YTKACEInstallInstanceHook(@"YTActionSheetDialogViewController", @"viewDidAppear:",
+                              (IMP)YTKACEActionSheetAppear, &OriginalActionSheetAppear);
 }

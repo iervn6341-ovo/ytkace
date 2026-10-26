@@ -145,6 +145,7 @@ void YTKACERegisterDefaults(void) {
         @"YTKACE.Preference.Playback.WiFiQuality": @0,
         @"YTKACE.Preference.Playback.CellularQuality": @0,
         @"YTKACE.Preference.Playback.QualityButton": @YES,
+        @"YTKACE.Preference.Overlay.ButtonLayout": @0,
         @"YTKACE.Preference.SponsorBlock.Mode": @0,
         @"YTKACE.Preference.SponsorBlock.SkipAlertSeconds": @4.0,
         @"YTKACE.Preference.SponsorBlock.UnskipAlertSeconds": @4.0,

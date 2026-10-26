@@ -1,8 +1,11 @@
 #import "PlayerMenuPresentation.h"
 #import "OverlayButtonHost.h"
+#import "NativePlayerMenu.h"
+#import "SystemMenu.h"
 #import "../Runtime/Hooking.h"
 #import "../Runtime/Preferences.h"
 #import <objc/runtime.h>
+#import <os/log.h>
 
 static const void *PopoverKey = &PopoverKey;
 static const void *TapKey = &TapKey;
@@ -18,10 +21,12 @@ static IMP OriginalSendAction, OriginalPresent;
 
 static BOOL VisibleSource(UIView *source, UIWindow *window) {
     if (!source || !window || source.window != window || CGRectIsEmpty(source.bounds)) return NO;
-    for (UIView *view = source; view; view = view.superview)
-        if (view.hidden || view.alpha < 0.05) return NO;
     CGRect visible = CGRectIntersection([source convertRect:source.bounds toView:window],
         UIEdgeInsetsInsetRect(window.bounds, window.safeAreaInsets));
+    for (UIView *view = source; view; view = view.superview) {
+        if (view.hidden || view.alpha < 0.05) return NO;
+        if (view.clipsToBounds) visible = CGRectIntersection(visible,[view convertRect:view.bounds toView:window]);
+    }
     return !CGRectIsNull(visible) && !CGRectIsEmpty(visible);
 }
 
@@ -78,6 +83,12 @@ static CGSize BoundedSize(UIWindow *window, CGSize size) {
     *rect = source.bounds;
     popover.presentedViewController.preferredContentSize = BoundedSize(window,
         popover.presentedViewController.preferredContentSize);
+}
+- (void)popoverPresentationControllerDidDismissPopover:(UIPopoverPresentationController *)popover {
+    YTKACENotifySystemMenuDismissed(popover.presentedViewController);
+}
+- (void)presentationControllerDidDismiss:(UIPresentationController *)controller {
+    YTKACENotifySystemMenuDismissed(controller.presentedViewController);
 }
 @end
 
@@ -160,10 +171,28 @@ static void Present(UIViewController *receiver, SEL selector, UIViewController *
     if (NSThread.isMainThread && Enabled() && !YTKACEIsPlayerPopover(controller) && IsYouTubeMenu(controller)) {
         UIView *source = SourceForPresenter(receiver);
         if (source) {
-            CGSize size = controller.preferredContentSize;
-            if (size.width <= 0) size.width = 340;
-            if (size.height <= 0) size.height = 400;
-            YTKACEConfigurePlayerPopover(controller, receiver, source, size);
+            YTKACEPlayerMenuTap *tap = objc_getAssociatedObject(source.window, TapKey);
+            tap.menu = controller;
+            NSArray *actions = YTKACENativePlayerActions(controller);
+            if (actions && !receiver.presentedViewController && OriginalPresent) {
+                // Let the real sheet complete its own presentation lifecycle,
+                // without displaying its full-screen-sized content for a frame.
+                // Render its complete action model in an owned UIKit popover.
+                CGFloat alpha = controller.view.alpha;
+                controller.view.alpha = 0;
+                ((void (*)(id,SEL,id,BOOL,id))OriginalPresent)(receiver,selector,controller,NO,^{
+                    controller.view.alpha = alpha;
+                    if (completion) completion();
+                    if (controller.presentingViewController && !controller.isBeingDismissed)
+                        YTKACEPresentAdaptedPlayerMenu(controller,source,actions);
+                });
+                return;
+            }
+            // Unsupported custom controls keep their original sheet. Never
+            // change a native controller's modal style or transitioning delegate.
+            os_log(OS_LOG_DEFAULT, "[YTKACE PlayerMenus] native class=%{public}@ style=%ld transition=%{public}@",
+                NSStringFromClass(controller.class), (long)controller.modalPresentationStyle,
+                controller.transitioningDelegate ? NSStringFromClass([controller.transitioningDelegate class]) : @"none");
         }
     }
     if (OriginalPresent) ((void (*)(id, SEL, id, BOOL, id))OriginalPresent)(receiver, selector, controller, animated, completion);
@@ -172,6 +201,7 @@ static void Present(UIViewController *receiver, SEL selector, UIViewController *
 void YTKACEInstallPlayerMenuPresentation(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
+        YTKACEInstallNativePlayerMenuAdapter();
         YTKACEInstallInstanceHook(@"UIControl", @"sendAction:to:forEvent:", (IMP)SendAction, &OriginalSendAction);
         YTKACEInstallInstanceHook(@"UIViewController", @"presentViewController:animated:completion:", (IMP)Present, &OriginalPresent);
     });

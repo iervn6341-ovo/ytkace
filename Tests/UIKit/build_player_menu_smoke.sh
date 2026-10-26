@@ -7,11 +7,13 @@ mkdir -p "$app_dir"
 xcrun clang++ -fobjc-arc -fblocks -std=c++17 -Wall -Wextra -Werror \
   -Wno-deprecated-declarations -target "$(uname -m)-apple-ios17.5-simulator" \
   -isysroot "$(xcrun --sdk iphonesimulator --show-sdk-path)" \
-  -framework UIKit -framework Foundation -framework CoreGraphics \
+  -framework UIKit -framework Foundation -framework CoreGraphics -framework QuartzCore \
   "$script_dir/PlayerMenuSmoke.mm" \
   "$project_dir/Tweak/UI/SystemMenu.mm" \
   "$project_dir/Tweak/UI/PlayerMenuPresentation.mm" \
+  "$project_dir/Tweak/UI/NativePlayerMenu.mm" \
   "$project_dir/Tweak/UI/OverlayButtonHost.mm" \
+  "$project_dir/Tweak/Features/Navigation/GlassSheets.mm" \
   "$project_dir/Tweak/Runtime/Hooking.mm" -o "$app_dir/PlayerMenuSmoke"
 cp "$script_dir/PlayerMenuSmoke-Info.plist" "$app_dir/Info.plist"
 codesign --force --sign - "$app_dir"

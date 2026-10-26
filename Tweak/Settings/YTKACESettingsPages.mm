@@ -1518,6 +1518,8 @@ static NSDictionary *YTKACEPlayerDefinition(void) {
         @[
             YTKACEToggleDetail(@"Keep Controls Visible", @"Player controls never fade out.",
                                @"YTKACE.Preference.Overlay.AlwaysShowControls"),
+            YTKACEPickerDetail(@"Player Button Layout", @"Expanded keeps every button available; swipe a crowded row horizontally.",
+                @"YTKACE.Preference.Overlay.ButtonLayout", @[@"Expanded", @"More Menu"], @[@0,@1], 0),
             YTKACEToggle(@"Keep Play Button Visible", @"YTKACE.Preference.Overlay.AlwaysShowPlayPause", @"", @""),
             YTKACEToggle(@"Keep Timeline Visible", @"YTKACE.Preference.Overlay.ProgressAlwaysVisible", @"", @""),
             YTKACEToggleDetail(@"Remove Player Dimming",
@@ -1808,7 +1810,7 @@ static NSDictionary *YTKACEGeneralDefinition(void) {
             YTKACEToggleDetail(@"Skip Launch Animation", @"Starts YouTube faster.",
                                @"YTKACE.Preference.Appearance.LaunchAnimationDisabled"),
             YTKACEToggleDetail(@"Use System Menus",
-                @"Use native menus. Player menus open beside the tapped button; settings use sheets.",
+                @"Open player action lists beside the button with native styling. Unsupported YouTube controls keep their original sheet.",
                 @"YTKACE.Preference.Interface.SystemMenus"),
             YTKACEPickerDetail(@"Device Layout",
                 @"Force the iPhone or iPad layout instead of following the device.",
