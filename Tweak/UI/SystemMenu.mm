@@ -3,8 +3,52 @@
 #import "../Runtime/Preferences.h"
 #import "../Runtime/Localization.h"
 #import <objc/message.h>
+#import <objc/runtime.h>
+#import <os/log.h>
 NSNotificationName const YTKACEPlayerMenuWillSelectAction = @"YTKACEPlayerMenuWillSelectAction";
 NSNotificationName const YTKACEPlayerMenuTouchSource = @"YTKACEPlayerMenuTouchSource";
+
+// Match the rendered glyph, not its private asset name or the row's position.
+// Only a right chevron is recolored; switches, checkmarks and leading icons stay native.
+static BOOL DisclosureImage(UIImage *image) {
+    if (!image) return NO;
+    static char key;
+    NSNumber *cached = objc_getAssociatedObject(image,&key);
+    if (cached) return cached.boolValue;
+    UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
+    format.scale = 1; format.opaque = NO;
+    CGFloat scale = 32 / MAX(1,MAX(image.size.width,image.size.height));
+    CGRect draw = CGRectMake((32 - image.size.width * scale) / 2,(32 - image.size.height * scale) / 2,
+        image.size.width * scale,image.size.height * scale);
+    UIImage *raster = [[[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(32,32) format:format]
+        imageWithActions:^(__unused UIGraphicsImageRendererContext *context) { [image drawInRect:draw]; }];
+    uint8_t pixels[32 * 32 * 4] = {};
+    CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
+    CGContextRef bitmap = CGBitmapContextCreate(pixels,32,32,8,128,space,
+        kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+    CGColorSpaceRelease(space);
+    if (!bitmap || !raster.CGImage) { if (bitmap) CGContextRelease(bitmap); return NO; }
+    CGContextDrawImage(bitmap,CGRectMake(0,0,32,32),raster.CGImage); CGContextRelease(bitmap);
+    NSInteger left = 32, right = -1, top = 32, bottom = -1;
+    for (NSInteger y = 0; y < 32; y++) for (NSInteger x = 0; x < 32; x++)
+        if (pixels[(y * 32 + x) * 4 + 3] > 40) {
+            left = MIN(left,x); right = MAX(right,x); top = MIN(top,y); bottom = MAX(bottom,y);
+        }
+    double sum[3] = {}, count[3] = {};
+    for (NSInteger y = top; y <= bottom; y++) for (NSInteger x = left; x <= right; x++) {
+        if (pixels[(y * 32 + x) * 4 + 3] <= 40) continue;
+        double fraction = (double)(y - top) / MAX(1,bottom - top);
+        NSInteger band = fraction < .25 ? 0 : (fraction > .75 ? 2 : (fraction > .4 && fraction < .6 ? 1 : -1));
+        if (band >= 0) { sum[band] += x; count[band]++; }
+    }
+    double width = right - left + 1, height = bottom - top + 1;
+    BOOL chevron = height >= 8 && width >= 3 && width < height * .85 && count[0] && count[1] && count[2] &&
+        sum[1] / count[1] - sum[0] / count[0] > width * .25 &&
+        sum[1] / count[1] - sum[2] / count[2] > width * .25 &&
+        fabs(sum[0] / count[0] - sum[2] / count[2]) < width * .25;
+    objc_setAssociatedObject(image,&key,@(chevron),OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    return chevron;
+}
 
 @interface YTKACEMenuNativeRow ()
 @property(nonatomic, strong) UIView *view;
@@ -17,6 +61,7 @@ NSNotificationName const YTKACEPlayerMenuTouchSource = @"YTKACEPlayerMenuTouchSo
 @property(nonatomic) BOOL interaction;
 @property(nonatomic) BOOL mounted;
 @property(nonatomic, copy) NSArray<NSLayoutConstraint *> *constraints;
+@property(nonatomic, strong) NSMutableArray<NSDictionary *> *disclosures;
 @end
 @implementation YTKACEMenuNativeRow
 - (instancetype)initWithView:(UIView *)view {
@@ -41,6 +86,42 @@ NSNotificationName const YTKACEPlayerMenuTouchSource = @"YTKACEPlayerMenuTouchSo
                 if (constraint.active && (constraint.firstItem == view || constraint.secondItem == view))
                     [constraints addObject:constraint];
         _constraints = constraints;
+        _disclosureColor = UIColor.secondaryLabelColor;
+        _disclosures = [NSMutableArray array];
+        NSMutableArray<UIView *> *views = [NSMutableArray arrayWithObject:view];
+        for (NSUInteger i = 0; i < views.count && i < 64; i++) {
+            UIView *candidate = views[i];
+            if ([candidate isKindOfClass:UIImageView.class]) {
+                UIImageView *icon = (id)candidate;
+                CGRect frame = [icon convertRect:icon.bounds toView:view];
+                if (CGRectGetMidX(frame) > view.bounds.size.width * .7 &&
+                    frame.size.width <= 32 && frame.size.height <= 40 && DisclosureImage(icon.image))
+                    [_disclosures addObject:@{@"view":icon,@"image":icon.image,@"tint":icon.tintColor ?: UIColor.labelColor,
+                        @"alpha":@(icon.alpha),@"adjustment":@(icon.tintAdjustmentMode)}];
+            }
+            // Do not traverse the implementation views of native switches/buttons.
+            if (candidate != view && [candidate isKindOfClass:UIControl.class]) continue;
+            for (UIView *child in candidate.subviews) if (views.count < 64) [views addObject:child];
+        }
+        // AsyncDisplayKit can render the accessory in an image layer without
+        // creating a UIImageView. Apply the same bounded glyph check there.
+        NSMutableSet<CALayer *> *imageLayers = [NSMutableSet set];
+        for (UIView *candidate in views) if ([candidate isKindOfClass:UIImageView.class]) [imageLayers addObject:candidate.layer];
+        NSMutableArray<CALayer *> *layers = [NSMutableArray arrayWithObject:view.layer];
+        for (NSUInteger i = 0; i < layers.count && i < 64; i++) {
+            CALayer *layer = layers[i];
+            CGRect frame = [layer convertRect:layer.bounds toLayer:view.layer];
+            id contents = layer.contents;
+            if (![imageLayers containsObject:layer] && contents && CGRectGetMidX(frame) > view.bounds.size.width * .7 &&
+                frame.size.width <= 32 && frame.size.height <= 40 &&
+                CFGetTypeID((__bridge CFTypeRef)contents) == CGImageGetTypeID()) {
+                UIImage *image = [UIImage imageWithCGImage:(__bridge CGImageRef)contents scale:MAX(1,layer.contentsScale) orientation:UIImageOrientationUp];
+                if (DisclosureImage(image)) [_disclosures addObject:@{@"layer":layer,@"contents":contents,@"image":image,@"opacity":@(layer.opacity)}];
+            }
+            // Native control internals are excluded in both traversals.
+            if ([layer.delegate isKindOfClass:UIControl.class] && layer != view.layer) continue;
+            for (CALayer *child in layer.sublayers) if (layers.count < 64) [layers addObject:child];
+        }
     }
     return self;
 }
@@ -54,10 +135,43 @@ NSNotificationName const YTKACEPlayerMenuTouchSource = @"YTKACEPlayerMenuTouchSo
     self.view.userInteractionEnabled = NO;
     [host addSubview:self.view]; self.view.frame = host.bounds;
     [self.view setNeedsLayout]; [self.view layoutIfNeeded];
+    for (NSDictionary *entry in self.disclosures) {
+        UIImageView *icon = entry[@"view"];
+        if (icon) {
+            icon.image = [entry[@"image"] imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+            icon.tintColor = self.disclosureColor;
+            icon.alpha = 1; icon.tintAdjustmentMode = UIViewTintAdjustmentModeNormal;
+        } else {
+            UIImage *original = entry[@"image"];
+            UIImage *tinted = [original imageWithTintColor:self.disclosureColor renderingMode:UIImageRenderingModeAlwaysOriginal];
+            UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
+            format.scale = original.scale; format.opaque = NO;
+            // UIImage may keep tint in its rendering configuration rather than
+            // its CGImage. Flatten it before assigning raw CALayer contents.
+            UIImage *raster = [[[UIGraphicsImageRenderer alloc] initWithSize:original.size format:format]
+                imageWithActions:^(__unused UIGraphicsImageRendererContext *context) {
+                    [tinted drawInRect:(CGRect){CGPointZero,original.size}];
+                }];
+            if (raster.CGImage) [(CALayer *)entry[@"layer"] setContents:(__bridge id)raster.CGImage];
+            [(CALayer *)entry[@"layer"] setOpacity:1];
+        }
+    }
+    if (self.disclosures.count) os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] disclosure normalized count=%lu",(unsigned long)self.disclosures.count);
 }
 - (void)restore {
     if (!self.mounted) return;
     self.mounted = NO;
+    for (NSDictionary *entry in self.disclosures) {
+        UIImageView *icon = entry[@"view"];
+        if (icon) {
+            icon.image = entry[@"image"]; icon.tintColor = entry[@"tint"];
+            icon.alpha = [entry[@"alpha"] doubleValue];
+            icon.tintAdjustmentMode = (UIViewTintAdjustmentMode)[entry[@"adjustment"] integerValue];
+        } else {
+            [(CALayer *)entry[@"layer"] setContents:entry[@"contents"]];
+            [(CALayer *)entry[@"layer"] setOpacity:[entry[@"opacity"] floatValue]];
+        }
+    }
     [self.view removeFromSuperview];
     UIView *parent = self.parent;
     if (parent) [parent insertSubview:self.view atIndex:MIN(self.index,parent.subviews.count)];
@@ -87,6 +201,89 @@ NSNotificationName const YTKACEPlayerMenuTouchSource = @"YTKACEPlayerMenuTouchSo
 }
 @end
 
+static char MenuTransitionKey;
+@interface YTKACEMenuTransition : NSObject
+@property(nonatomic, weak) UIWindow *window;
+@property(nonatomic, weak) UIView *source;
+@property(nonatomic, strong) UIView *cover, *snapshot;
+@property(nonatomic) BOOL receivedChild;
+@property(nonatomic) CGRect windowBounds;
+@end
+@implementation YTKACEMenuTransition @end
+
+static void RemoveMenuTransition(YTKACEMenuTransition *transition) {
+    if (!transition) return;
+    [transition.cover removeFromSuperview];
+    if (objc_getAssociatedObject(transition.window,&MenuTransitionKey) == transition)
+        objc_setAssociatedObject(transition.window,&MenuTransitionKey,nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+void YTKACECancelSystemMenuTransition(UIView *source) {
+    YTKACEMenuTransition *transition = objc_getAssociatedObject(source.window,&MenuTransitionKey);
+    if (transition.source == source) RemoveMenuTransition(transition);
+}
+void YTKACEContinueSystemMenuTransition(UIView *source) {
+    YTKACEMenuTransition *transition = objc_getAssociatedObject(source.window,&MenuTransitionKey);
+    if (transition.source == source) transition.receivedChild = YES;
+}
+static void BeginMenuTransition(UIViewController *menu) {
+    UIWindow *window = menu.view.window;
+    UIView *source = YTKACEPlayerMenuSource(menu);
+    if (!window || !source || !YTKACEIsNativeGearMenuSource(source)) return;
+    YTKACEMenuTransition *previous = objc_getAssociatedObject(window,&MenuTransitionKey);
+    RemoveMenuTransition(previous);
+    UIView *container = menu.presentationController.containerView;
+    CGRect rect = [menu.view convertRect:menu.view.bounds toView:container];
+    UIView *snapshot = [container resizableSnapshotViewFromRect:rect afterScreenUpdates:NO withCapInsets:UIEdgeInsetsZero];
+    if (!snapshot || CGRectIsEmpty(rect)) return;
+    YTKACEMenuTransition *transition = [YTKACEMenuTransition new];
+    transition.window = window; transition.windowBounds = window.bounds;
+    transition.source = source; transition.snapshot = snapshot;
+    UIView *cover = [[UIView alloc] initWithFrame:[menu.view convertRect:menu.view.bounds toView:window]];
+    cover.accessibilityIdentifier = @"YTKACE.SubmenuTransition";
+    cover.accessibilityElementsHidden = YES;
+    cover.userInteractionEnabled = NO; cover.clipsToBounds = YES;
+    cover.layer.cornerRadius = 28; cover.layer.cornerCurve = kCACornerCurveContinuous;
+    snapshot.frame = cover.bounds; snapshot.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    [cover addSubview:snapshot]; [window addSubview:cover]; transition.cover = cover;
+    objc_setAssociatedObject(window,&MenuTransitionKey,transition,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] submenu transition=waiting");
+    // Leaf commands need no new menu. Never leave a frozen menu above the player.
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,350 * NSEC_PER_MSEC),dispatch_get_main_queue(),^{
+        if (objc_getAssociatedObject(window,&MenuTransitionKey) != transition || transition.receivedChild) return;
+        RemoveMenuTransition(transition);
+    });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,2 * NSEC_PER_SEC),dispatch_get_main_queue(),^{
+        if (objc_getAssociatedObject(window,&MenuTransitionKey) == transition) {
+            os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] submenu transition=expired");
+            RemoveMenuTransition(transition);
+        }
+    });
+}
+
+static void CompleteMenuTransition(UIViewController *menu, UIView *content) {
+    UIWindow *window = menu.view.window;
+    YTKACEMenuTransition *transition = objc_getAssociatedObject(window,&MenuTransitionKey);
+    if (!transition || transition.source != YTKACEPlayerMenuSource(menu)) return;
+    if (!CGRectEqualToRect(transition.windowBounds,window.bounds)) { RemoveMenuTransition(transition); return; }
+    objc_setAssociatedObject(window,&MenuTransitionKey,nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    CGRect target = [menu.view convertRect:menu.view.bounds toView:window];
+    [window bringSubviewToFront:transition.cover];
+    BOOL reduceMotion = UIAccessibilityIsReduceMotionEnabled();
+    content.alpha = 0;
+    content.transform = reduceMotion ? CGAffineTransformIdentity : CGAffineTransformMakeTranslation(32,0);
+    menu.view.userInteractionEnabled = NO;
+    os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] submenu transition=content-slide reduceMotion=%d",reduceMotion);
+    [UIView animateWithDuration:reduceMotion ? .15 : .25 delay:0
+        options:UIViewAnimationOptionCurveEaseInOut | UIViewAnimationOptionBeginFromCurrentState animations:^{
+            transition.cover.frame = target;
+            transition.snapshot.alpha = 0;
+            transition.snapshot.transform = reduceMotion ? CGAffineTransformIdentity : CGAffineTransformMakeTranslation(-32,0);
+            content.alpha = 1; content.transform = CGAffineTransformIdentity;
+        } completion:^(__unused BOOL finished) {
+            menu.view.userInteractionEnabled = YES; RemoveMenuTransition(transition);
+        }];
+}
+
 @interface YTKACEMenuPresentation : UIViewController
 @property(nonatomic, strong) UINavigationController *contentNavigation;
 @property(nonatomic, copy) void (^dismissalHandler)(BOOL);
@@ -112,6 +309,10 @@ NSNotificationName const YTKACEPlayerMenuTouchSource = @"YTKACEPlayerMenuTouchSo
     dispatch_async(dispatch_get_main_queue(), ^{
         if (!self.presentingViewController) [self notifyDismissal];
     });
+}
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    CompleteMenuTransition(self,self.contentNavigation.view);
 }
 - (void)dismissViewControllerAnimated:(BOOL)animated completion:(void (^)(void))completion {
     [super dismissViewControllerAnimated:animated completion:^{
@@ -266,6 +467,7 @@ void YTKACENotifySystemMenuDismissed(UIViewController *menu) {
         native.backgroundColor = UIColor.clearColor;
         native.contentView.clipsToBounds = YES;
         native.userInteractionEnabled = !action[@"enabled"] || [action[@"enabled"] boolValue];
+        nativeRow.disclosureColor = native.userInteractionEnabled ? UIColor.secondaryLabelColor : UIColor.tertiaryLabelColor;
         [nativeRow mountInView:native.contentView];
         return native;
     }
@@ -291,6 +493,11 @@ void YTKACENotifySystemMenuDismissed(UIViewController *menu) {
         UIImageView *secondary = [[UIImageView alloc] initWithImage:action[@"secondary"]];
         secondary.contentMode = UIViewContentModeScaleAspectFit;
         secondary.frame = CGRectMake(0, 0, 22, 22);
+        if (DisclosureImage(secondary.image)) {
+            secondary.image = [secondary.image imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+            secondary.tintColor = action[@"enabled"] && ![action[@"enabled"] boolValue] ?
+                UIColor.tertiaryLabelColor : UIColor.secondaryLabelColor;
+        }
         cell.accessoryView = secondary;
     }
     BOOL enabled = !action[@"enabled"] || [action[@"enabled"] boolValue];
@@ -310,6 +517,8 @@ void YTKACENotifySystemMenuDismissed(UIViewController *menu) {
     dispatch_block_t handler = action[@"handler"];
     dispatch_block_t diagnostic = action[@"diagnosticSelection"];
     if (diagnostic) diagnostic();
+    BOOL (^submenuTransition)(void) = action[@"submenuTransition"];
+    if (submenuTransition && submenuTransition()) BeginMenuTransition(self.menuPresentation);
     ((YTKACEMenuPresentation *)self.menuPresentation).selectedAction = YES;
     UIView *source = YTKACEPlayerMenuSource(self.menuPresentation);
     YTKACERememberPlayerMenuSource(source);
@@ -380,6 +589,8 @@ BOOL YTKACEPresentSystemMenuWithDismissal(UIViewController *presenter, UIView *s
             sheet.selectedDetentIdentifier = @"YTKACE.Menu";
         } else sheet.detents = @[UISheetPresentationControllerDetent.mediumDetent, UISheetPresentationControllerDetent.largeDetent];
     }
-    [presenter presentViewController:presentation animated:YES completion:nil];
+    YTKACEMenuTransition *transition = objc_getAssociatedObject(presenter.view.window,&MenuTransitionKey);
+    BOOL continuing = transition && transition.source == source;
+    [presenter presentViewController:presentation animated:!continuing completion:nil];
     return YES;
 }

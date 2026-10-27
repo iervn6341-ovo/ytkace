@@ -300,6 +300,7 @@ static void Present(UIViewController *receiver, SEL selector, UIViewController *
     if (NSThread.isMainThread && Enabled() && !YTKACEIsPlayerPopover(controller) && IsYouTubeMenu(controller)) {
         UIView *source = SourceForPresenter(receiver);
         if (source) {
+            YTKACEContinueSystemMenuTransition(source);
             YTKACEPlayerPopoverDelegate *nativeSource = [YTKACEPlayerPopoverDelegate new];
             nativeSource.source = source;
             objc_setAssociatedObject(controller,NativeSourceKey,nativeSource,OBJC_ASSOCIATION_RETAIN_NONATOMIC);

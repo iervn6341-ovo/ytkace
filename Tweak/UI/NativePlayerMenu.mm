@@ -592,15 +592,36 @@ static NSArray<NSDictionary *> *NativePlayerActions(UIViewController *controller
             // or reject all of its visible siblings.
             if ([button isKindOfClass:UIControl.class] && [button isDescendantOfView:controller.view] &&
                 isfinite([button bounds].size.width) && [button bounds].size.width >= 44 &&
-                isfinite([button bounds].size.height) && [button bounds].size.height == 0) {
+                isfinite([button bounds].size.height) && [button bounds].size.height >= 0 &&
+                [button bounds].size.height < 24) {
                 if (!settled) {
                     objc_setAssociatedObject(controller,NativeRowsPendingKey,@YES,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
                     return nil;
                 }
-                collapsed++;
-                os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] gear collapsed-row index=%lu class=%{public}@ bounds=%{public}@",
-                    (unsigned long)nativeIndex,NSStringFromClass([button class]),NSStringFromCGRect([button bounds]));
-                continue;
+                // ELM also emits short (e.g. 9pt) structural rows with a dummy
+                // model handler. Never discard a short row with a real command.
+                BOOL spacing = !command && !unsupportedELM &&
+                    [button isKindOfClass:NSClassFromString(@"YTMenuItemElementsMDCButton")];
+                if (spacing && [button bounds].size.height > 0) {
+                    NSString *shortTitleSource = nil;
+                    spacing = !Nonempty(ActionTitle(model,button,&shortTitleSource));
+                    NSMutableArray<UIView *> *views = [NSMutableArray arrayWithArray:[button subviews]];
+                    for (NSUInteger i = 0; spacing && i < views.count && i < 64; i++) {
+                        UIView *view = views[i];
+                        if ([view isKindOfClass:UISwitch.class] ||
+                            ([view isKindOfClass:UIControl.class] && [(UIControl *)view allControlEvents])) spacing = NO;
+                        for (UIView *child in view.subviews) {
+                            if (views.count >= 64) { spacing = NO; break; }
+                            [views addObject:child];
+                        }
+                    }
+                }
+                if ([button bounds].size.height == 0 || spacing) {
+                    collapsed++;
+                    os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] gear collapsed-row index=%lu class=%{public}@ bounds=%{public}@",
+                        (unsigned long)nativeIndex,NSStringFromClass([button class]),NSStringFromCGRect([button bounds]));
+                    continue;
+                }
             }
             if (unsupportedELM) {
                 os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] gear fallback reason=unsupported-or-ambiguous-elm-command index=%lu",(unsigned long)nativeIndex);
@@ -616,10 +637,10 @@ static NSArray<NSDictionary *> *NativePlayerActions(UIViewController *controller
                 // live ELM rows, rather than rejecting the complete gear menu.
                 NSString *metadataSource = nil;
                 if ((enabled && !handler) || !Nonempty(ActionTitle(model,button,&metadataSource))) {
-                    os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] gear row-unavailable index=%lu class=%{public}@ handler=%d bounds=%{public}@ parent=%{public}@ modelClass=%{public}@",
+                    os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] gear row-unavailable index=%lu class=%{public}@ handler=%d bounds=%{public}@ parent=%{public}@ modelClass=%{public}@ elmCommand=%d",
                         (unsigned long)nativeIndex,button ? NSStringFromClass([button class]) : @"none",handler != nil,
                         [button isKindOfClass:UIView.class] ? NSStringFromCGRect([button bounds]) : @"none",
-                        [button isKindOfClass:UIView.class] ? NSStringFromClass([[button superview] class]) : @"none",NSStringFromClass([model class]));
+                        [button isKindOfClass:UIView.class] ? NSStringFromClass([[button superview] class]) : @"none",NSStringFromClass([model class]),command != nil);
                     return nil;
                 }
                 os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] gear metadata-row index=%lu modelClass=%{public}@ buttonClass=%{public}@",
@@ -723,13 +744,14 @@ static void PresentGearAfterLayout(UIViewController *controller, UIView *source,
     }
     if ([objc_getAssociatedObject(controller,NativeRowsPendingKey) boolValue] && attempt < 3) {
         controller.view.alpha = 0;
-        if (!attempt) os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] gear layout-pending reason=zero-height-row");
+        if (!attempt) os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] gear layout-pending reason=short-native-row");
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW,50 * NSEC_PER_MSEC),dispatch_get_main_queue(),^{
             PresentGearAfterLayout(controller,source,alpha,attempt + 1);
         });
         return;
     }
     YTKACEEnableNativeMenuOutsideDismissal(controller);
+    YTKACECancelSystemMenuTransition(source);
     os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] gear fallback reason=unavailable-native-rows class=%{public}@ bounds=%{public}@",
         NSStringFromClass(controller.class),NSStringFromCGRect(controller.view.bounds));
 }
@@ -795,6 +817,7 @@ BOOL YTKACEDeferNativeELMPresentation(UIViewController *presenter, UIViewControl
     request.presenter = presenter; request.controller = presented;
     request.animated = animated; request.completion = completion;
     [navigation.requests addObject:request];
+    YTKACEContinueSystemMenuTransition(navigation.source);
     os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] elm present-deferred presenter=%{public}@ controller=%{public}@ closeSource=%d",
         TraceClass(presenter),TraceClass(presented),navigation.shouldDismiss);
     return YES;
@@ -1048,6 +1071,7 @@ void YTKACEPresentAdaptedPlayerMenu(UIViewController *controller, UIView *source
                 trace = BeginTrace(session.native,metadata);
             };
             copy[@"diagnosticSelection"] = [prepare copy];
+            copy[@"submenuTransition"] = [^BOOL { return selectedCommand != nil && !unsupportedELM; } copy];
             copy[@"handler"] = [^{
                 if (!trace) prepare();
                 if (unsupportedELM) { [session returnToNative]; return; }

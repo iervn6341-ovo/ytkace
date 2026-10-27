@@ -9,6 +9,7 @@ FOUNDATION_EXPORT NSNotificationName const YTKACEPlayerMenuTouchSource;
 @interface YTKACEMenuNativeRow : NSObject
 @property(nonatomic, readonly) UIView *view;
 @property(nonatomic, readonly) CGFloat height;
+@property(nonatomic, strong) UIColor *disclosureColor;
 - (nullable instancetype)initWithView:(UIView *)view;
 - (void)mountInView:(UIView *)host;
 - (void)restore;
@@ -25,4 +26,7 @@ FOUNDATION_EXPORT BOOL YTKACEPresentSystemMenuWithDismissal(UIViewController *pr
     UIView * _Nullable source, NSString * _Nullable title, NSString * _Nullable subtitle,
     NSArray<NSDictionary *> *actions, void (^ _Nullable handler)(BOOL selectedAction));
 FOUNDATION_EXPORT void YTKACENotifySystemMenuDismissed(UIViewController *menu);
+// Preserve the outgoing popover while native owners change underneath it.
+FOUNDATION_EXPORT void YTKACEContinueSystemMenuTransition(UIView *source);
+FOUNDATION_EXPORT void YTKACECancelSystemMenuTransition(UIView *source);
 NS_ASSUME_NONNULL_END

@@ -27,6 +27,11 @@ static void Check(BOOL passed, NSString *message) {
 static void Later(dispatch_block_t block) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), dispatch_get_main_queue(), block);
 }
+static UIView *TransitionCover(UIWindow *window) {
+    for (UIView *view in window.subviews)
+        if ([view.accessibilityIdentifier isEqual:@"YTKACE.SubmenuTransition"]) return view;
+    return nil;
+}
 
 // Stand-ins verify UIKit presentation and hook routing, not YouTube's private layout.
 @interface YTMainAppControlsOverlayView : UIView @end
@@ -376,6 +381,19 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
     YTMenuItemElementsMDCButton *button = [[YTMenuItemElementsMDCButton alloc] initWithFrame:CGRectMake(0,0,320,56)];
     [panel addSubview:button];
     UIView *element = [[UIView alloc] initWithFrame:button.bounds]; [button addSubview:element];
+    UIImage *arrow = [[UIImage systemImageNamed:@"chevron.right"] imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal];
+    UIImageView *trailing = [[UIImageView alloc] initWithImage:arrow];
+    trailing.frame = CGRectMake(292,18,12,20); trailing.tintColor = UIColor.whiteColor;
+    trailing.alpha = .6; [element addSubview:trailing];
+    UIImageView *leading = [[UIImageView alloc] initWithImage:arrow];
+    leading.frame = CGRectMake(16,18,12,20); leading.tintColor = UIColor.whiteColor; [element addSubview:leading];
+    UIImageView *checkmark = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"checkmark"]];
+    checkmark.frame = CGRectMake(270,18,18,20); checkmark.tintColor = UIColor.greenColor; [element addSubview:checkmark];
+    UIImage *layerArrow = [[[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(12,20)]
+        imageWithActions:^(__unused UIGraphicsImageRendererContext *context) { [arrow drawInRect:CGRectMake(0,0,12,20)]; }];
+    CALayer *accessory = [CALayer layer]; accessory.frame = CGRectMake(294,18,12,20);
+    id originalContents = (__bridge id)layerArrow.CGImage;
+    accessory.contents = originalContents; accessory.opacity = .6; [element.layer addSublayer:accessory];
     ELMTouchCommandPropertiesHandler *command = [ELMTouchCommandPropertiesHandler new];
     if (mode != 6) InstallELMTap(element,command,mode != 5);
     if (mode == 4) {
@@ -400,9 +418,37 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
         Check(parent.presentingViewController != nil && weakOwner.dismissals == 0 &&
             button.superview == panel && button.userInteractionEnabled && parent.view.alpha == 1,
             @"handleTap must execute once with its node graph restored and owner still presented");
+        Check(TransitionCover(weak.window) != nil,@"the outgoing menu must remain visible while native owners change");
+        Check(trailing.image == arrow && [trailing.tintColor isEqual:UIColor.whiteColor] && fabs(trailing.alpha - .6) < .01,
+            @"native arrow image/tint must be restored before the ELM command runs");
+        Check(accessory.contents == originalContents && fabs(accessory.opacity - .6) < .01,
+            @"AsyncDisplayKit accessory contents and opacity must be restored before native command dispatch");
+        if (mode == 8) return; // A leaf command closes without requesting a child.
         child = [YTBottomSheetController new];
         NativeTestAction *leaf = [NativeTestAction new]; leaf.title = @"ELM child leaf";
-        leaf.handler = ^{ leafCalls++; }; child.actions = @[leaf];
+        leaf.handler = ^{ leafCalls++; };
+        YTDraggableView *childPanel = [[YTDraggableView alloc] initWithFrame:CGRectMake(8,80,320,180)];
+        [child.view addSubview:childPanel];
+        leaf.button = [[YTMenuItemElementsMDCButton alloc] initWithFrame:CGRectMake(0,0,320,56)];
+        [childPanel addSubview:leaf.button];
+        NativeTestAction *divider = [NativeTestAction new];
+        divider.button = [[YTMenuItemElementsMDCButton alloc] initWithFrame:CGRectMake(0,56,320,9)];
+        divider.handler = ^{ Check(NO,@"a structural 9pt ELM row must never become a menu action"); };
+        [childPanel addSubview:divider.button];
+        NativeTestAction *delayed = [NativeTestAction new];
+        delayed.button = [[YTMenuItemElementsMDCButton alloc] initWithFrame:CGRectMake(0,65,320,9)];
+        delayed.handler = ^{}; [childPanel addSubview:delayed.button];
+        child.lateGeometryButton = delayed.button;
+        child.actions = @[leaf,divider,delayed];
+        if (mode == 9 || mode == 10) {
+            // A short row with a real command is not a decorative divider.
+            NativeTestAction *compact = [NativeTestAction new]; compact.handler = ^{};
+            compact.button = [[YTMenuItemElementsMDCButton alloc] initWithFrame:CGRectMake(0,74,320,9)];
+            [childPanel addSubview:compact.button];
+            if (mode == 9) InstallELMTap(compact.button,[ELMTouchCommandPropertiesHandler new],YES);
+            else [compact.button addSubview:[UISwitch new]];
+            child.actions = @[leaf,divider,delayed,compact];
+        }
         dispatch_block_t present = ^{
             UIViewController *presenter = (mode == 3 || mode == 7) ? weakNative : weak.root;
             [presenter presentViewController:child animated:YES completion:^{
@@ -431,26 +477,51 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
             return;
         }
         Check(YTKACEIsPlayerPopover(menu),@"ELM regression must start with the anchored gear replacement");
+        Check(trailing.image.renderingMode == UIImageRenderingModeAlwaysTemplate &&
+            [trailing.tintColor isEqual:UIColor.secondaryLabelColor] && trailing.alpha == 1,
+            @"native right chevrons must share the metadata row's secondary label color");
+        Check(accessory.contents && accessory.contents != originalContents && accessory.opacity == 1,
+            @"layer-backed native chevrons must also receive the shared disclosure color and opacity");
+        Check(leading.image == arrow && [leading.tintColor isEqual:UIColor.whiteColor] &&
+            [checkmark.tintColor isEqual:UIColor.greenColor],@"leading glyphs and trailing checkmarks must keep their native styling");
         if (mode == 6) InstallELMTap(element,command,YES);
         UITableViewController *table = (id)MenuNavigation(menu).topViewController;
         [table.tableView.delegate tableView:table.tableView didSelectRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]];
         Later(^{
+            if (mode == 8 || mode == 9 || mode == 10) {
+                Check(command.calls == 1 && dialog.closeCalls == 0 && owner.dismissals == 1 &&
+                    !TransitionCover(self.window),@"leaf/fallback paths must remove the transition cover without duplicate commands");
+                if (mode == 8) {
+                    Check(!self.root.presentedViewController && completions == 0,@"a leaf must close normally without waiting for a submenu");
+                    [gear removeFromSuperview]; [self testELMCommandOrder:9];
+                } else {
+                    Check(child.presentingViewController && !child.presentedViewController && child.view.alpha == 1,
+                        @"a short actionable row must remain available in its native fallback instead of being omitted");
+                    [self.root dismissViewControllerAnimated:NO completion:^{
+                        [gear removeFromSuperview]; [self testELMCommandOrder:mode == 9 ? 10 : 4];
+                    }];
+                }
+                return;
+            }
             Check(command.calls == 1 && dialog.closeCalls == 0 && completions == 1 &&
                 owner.dismissals == (mode == 3 ? 0u : 1u),
                 @"ELM selection must dispatch the content command once and close through its owner at most once");
             Check(child && YTKACEIsPlayerPopover(child.presentedViewController) &&
                 child.presentedViewController.popoverPresentationController.sourceView == self.window,
                 @"ELM child must open visibly at the original gear anchor");
+            Check(!TransitionCover(self.window),@"submenu slide must remove its transition cover after the new page appears");
             Check(self.root.presentedViewController == (mode == 3 ? native : child),
                 @"a dismissed source must not remain as an invisible parent of the child menu");
             UITableViewController *leaf = (id)MenuNavigation(child.presentedViewController).topViewController;
+            Check([leaf.tableView.dataSource tableView:leaf.tableView numberOfRowsInSection:0] == 2,
+                @"9pt structural row must be skipped only after layout, while the delayed 56pt row remains selectable");
             [leaf.tableView.delegate tableView:leaf.tableView didSelectRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]];
             Later(^{
                 Check(leafCalls == 1 && !child.presentingViewController,
                     @"the child leaf must remain selectable and close exactly once");
                 dispatch_block_t next = ^{
                     [gear removeFromSuperview];
-                    [self testELMCommandOrder:mode == 3 ? 6 : (mode == 6 ? 7 : (mode == 7 ? 4 : mode + 1))];
+                    [self testELMCommandOrder:mode == 3 ? 6 : (mode == 6 ? 7 : (mode == 7 ? 8 : mode + 1))];
                 };
                 if (self.root.presentedViewController) [self.root dismissViewControllerAnimated:NO completion:next];
                 else next();

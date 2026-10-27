@@ -211,6 +211,26 @@ retained owners, late gesture binding, exact-once leaf selection, and
 unsupported-command fallback. This does not replace testing
 against the target YouTube binary.
 
+ELM submenu navigation preserves an outgoing popover snapshot while native
+owners change, then slides/fades the incoming content inside that menu frame.
+The incoming popover skips its separate presentation animation; Reduce Motion
+uses a short fade. A leaf action removes the cover without waiting for a child,
+and native fallback, rotation or a bounded timeout also removes it. The native
+command/owner lifecycle remains unchanged. Trace entries record
+`submenu transition=waiting/content-slide/expired`.
+
+Short ELM rows wait for asynchronous layout just like zero-height rows. A row
+still below 24pt without text, an ELM command or an embedded control is treated
+as native structural spacing; a short actionable row remains available through
+metadata or native fallback.
+This covers the reported 9pt row in Other Settings without inventing a blank
+menu choice. Right-chevron images, including small AsyncDisplayKit image layers,
+use the shared secondary label color while borrowed; their original contents
+and tint are restored before native activation. Leading icons, checkmarks and
+native control internals retain their styling. The ELM UIKit regression also
+checks short structural/actionable rows, delayed row growth, transition cleanup,
+image/layer chevron normalization and restoration.
+
 Empty, handler-less `YTSpacerButton` entries are structural spacing and do not
 become choices or invalidate the list. Named spacers and unknown rows are retained
 or fall back normally. ELM text recovery follows bounded node children and virtual
