@@ -123,11 +123,13 @@ static void InstallELMTap(UIView *view, ELMTouchCommandPropertiesHandler *handle
 // like the device's opaque ELM row. Its original control must remain intact.
 @interface NativeTestOpaqueButton : YTMenuItemElementsMDCButton
 @property(nonatomic) NSUInteger nativeTargetCalls;
+@property(nonatomic) BOOL suppressRendering;
 - (void)nativeTap;
 @end
 @implementation NativeTestOpaqueButton
 - (void)drawRect:(CGRect)rect {
     (void)rect;
+    if (self.suppressRendering) return;
     [@"Native element row" drawAtPoint:CGPointMake(16,16)
         withAttributes:@{NSFontAttributeName:[UIFont systemFontOfSize:17],NSForegroundColorAttributeName:UIColor.labelColor}];
 }
@@ -367,7 +369,130 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
             [self testELMCommandOrder:0];
         } else if ([NSProcessInfo.processInfo.arguments containsObject:@"--native-activation-regression"]) {
             [self testNativeActivation:0];
+        } else if ([NSProcessInfo.processInfo.arguments containsObject:@"--menu-lifecycle-regression"] ||
+            [NSProcessInfo.processInfo.arguments containsObject:@"--real-menu-lifecycle"]) {
+            [self testMenuLifecycle:0];
         } else [self testOwnedMenu];
+    });
+}
+- (void)testMenuLifecycle:(NSUInteger)mode {
+    UIButton *gear = [UIButton buttonWithType:UIButtonTypeSystem];
+    gear.frame = CGRectMake(240,140,44,44); [self.button.superview addSubview:gear];
+    YTKACERegisterNativeGearMenuSource(gear);
+    YTBottomSheetController *native = [YTBottomSheetController new];
+    native.modalPresentationStyle = UIModalPresentationCustom; native.transitioningDelegate = self;
+    YTDraggableView *panel = [[YTDraggableView alloc] initWithFrame:CGRectMake(8,80,320,160)];
+    [native.view addSubview:panel];
+    NativeTestOpaqueButton *button = [[NativeTestOpaqueButton alloc] initWithFrame:CGRectMake(0,0,320,56)];
+    button.backgroundColor = UIColor.clearColor; button.opaque = NO; [panel addSubview:button];
+    ELMTouchCommandPropertiesHandler *command = [ELMTouchCommandPropertiesHandler new];
+    InstallELMTap(button,command,YES);
+    NativeTestAction *action = [NativeTestAction new]; action.button = button;
+    action.handler = ^{ Check(NO,@"resumed ELM row must not use the placeholder handler"); };
+    NativeTestAction *extension = [NativeTestAction new]; extension.title = @"字幕動態島";
+    extension.handler = ^{ Check(NO,@"lifecycle changes must not activate the metadata row"); };
+    NativeTestOwner *owner = [NativeTestOwner new]; owner.native = native; owner.actions = @[action,extension];
+    native.actionsController = owner;
+    command.callback = ^{ Check(button.superview == panel && button.userInteractionEnabled,
+        @"resumed command must use its original restored native hierarchy"); };
+    YTKACERememberPlayerMenuSource(gear);
+    [self.root presentViewController:native animated:NO completion:nil];
+    Later(^{
+        UIViewController *menu = native.presentedViewController;
+        Check(YTKACEIsPlayerPopover(menu),@"lifecycle regression must start with an adapted native gear");
+        UITableViewController *table = (id)MenuNavigation(menu).topViewController;
+        UITableViewCell *cell = [table.tableView cellForRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]];
+        Check(button.superview == cell.contentView,@"native row must be borrowed before suspension");
+        if ([NSProcessInfo.processInfo.arguments containsObject:@"--real-menu-lifecycle"]) {
+            __block id inactiveToken, activeToken;
+            __block BOOL inactive = NO;
+            inactiveToken = [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationWillResignActiveNotification
+                object:nil queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification *notification) {
+                    inactive = YES;
+                    Check(button.superview == panel,@"actual app deactivation must return the native node before cache purge");
+                    button.suppressRendering = YES; [button setNeedsDisplay]; [button.layer displayIfNeeded];
+                    button.layer.contents = nil;
+                    [@"INACTIVE: original ELM rendering purged after native hierarchy restoration\n"
+                        writeToFile:ResultPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
+                }];
+            activeToken = [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidBecomeActiveNotification
+                object:nil queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification *notification) {
+                    if (!inactive) return;
+                    [NSNotificationCenter.defaultCenter removeObserver:inactiveToken];
+                    [NSNotificationCenter.defaultCenter removeObserver:activeToken];
+                    inactiveToken = nil; activeToken = nil;
+                    Later(^{
+                        UITableViewCell *resumed = [table.tableView cellForRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]];
+                        UIImageView *display = nil;
+                        for (UIView *view in resumed.contentView.subviews) if ([view isKindOfClass:UIImageView.class]) display = (id)view;
+                        Check(native.presentedViewController == menu && display.image.CGImage && button.superview == panel &&
+                            command.calls == 0 && owner.dismissals == 0,@"actual app reactivation must show preserved native content without callbacks");
+                        [table.tableView.delegate tableView:table.tableView didSelectRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]];
+                        Later(^{
+                            Check(!self.root.presentedViewController && command.calls == 1 && owner.dismissals == 1,
+                                @"actual reactivation must retain exact-once ELM selection and owner cleanup");
+                            [gear removeFromSuperview];
+                            [@"PASS: actual app background/foreground with ELM render purge preserves menu pixels and exact-once selection\n"
+                                writeToFile:ResultPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
+                        });
+                    });
+                }];
+            [@"READY: menu visible for real background/foreground regression\n"
+                writeToFile:ResultPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            return;
+        }
+        [NSNotificationCenter.defaultCenter postNotificationName:UISceneWillDeactivateNotification object:[NSObject new]];
+        Check(button.superview == cell.contentView,@"another scene must not suspend this menu");
+        if (mode == 3) {
+            NSDictionary *item = [[table valueForKey:@"actions"] firstObject];
+            [item[@"nativeRow"] setValue:nil forKey:@"rendering"]; // Inject an unavailable render cache.
+        }
+        [NSNotificationCenter.defaultCenter postNotificationName:UIApplicationWillResignActiveNotification object:UIApplication.sharedApplication];
+        [NSNotificationCenter.defaultCenter postNotificationName:UISceneWillDeactivateNotification object:self.window.windowScene];
+        Check(button.superview == panel && button.userInteractionEnabled && native.view.alpha == 0,
+            @"suspension must restore the live node without revealing the hidden native sheet");
+        UIImageView *cached = nil;
+        for (UIView *view in cell.contentView.subviews) if ([view isKindOfClass:UIImageView.class]) cached = (id)view;
+        UIImage *image = cached.image;
+        if (mode != 3) {
+            Check(image.CGImage != nil,@"native glyph pixels must survive in an owned bitmap");
+            CFDataRef data = CGDataProviderCopyData(CGImageGetDataProvider(image.CGImage));
+            BOOL ink = NO; const UInt8 *bytes = CFDataGetBytePtr(data);
+            for (CFIndex i = 0; i < CFDataGetLength(data); i++) if (bytes[i]) { ink = YES; break; }
+            CFRelease(data); Check(ink,@"preserved rendering must contain actual native glyph pixels");
+        }
+        // Reproduce an ELM cache purge while the original live node is at its owner.
+        button.suppressRendering = YES; [button setNeedsDisplay]; [button.layer displayIfNeeded];
+        button.layer.contents = nil;
+        if (mode == 1) [menu dismissViewControllerAnimated:NO completion:nil];
+        if (mode == 2) owner.actions = @[extension];
+        [NSNotificationCenter.defaultCenter postNotificationName:UIApplicationDidBecomeActiveNotification object:UIApplication.sharedApplication];
+        [NSNotificationCenter.defaultCenter postNotificationName:UISceneDidActivateNotification object:self.window.windowScene];
+        Later(^{
+            if (mode == 0) {
+                Check(native.presentedViewController == menu && command.calls == 0 && owner.dismissals == 0,
+                    @"resuming must keep the same menu and must not execute any action");
+                UITableViewCell *resumed = [table.tableView cellForRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]];
+                UIImageView *display = nil;
+                for (UIView *view in resumed.contentView.subviews) if ([view isKindOfClass:UIImageView.class]) display = (id)view;
+                Check(display.image == image && button.superview == panel,
+                    @"foreground rendering must retain its pixels without remounting the purged ELM view");
+                UITableViewCell *metadata = [table.tableView cellForRowAtIndexPath:[NSIndexPath indexPathForRow:1 inSection:0]];
+                Check([metadata.textLabel.text isEqual:@"字幕動態島"],@"metadata rows must keep their normal text");
+                [NSNotificationCenter.defaultCenter postNotificationName:UIApplicationWillResignActiveNotification object:UIApplication.sharedApplication];
+                [NSNotificationCenter.defaultCenter postNotificationName:UIApplicationDidBecomeActiveNotification object:UIApplication.sharedApplication];
+                [table.tableView.delegate tableView:table.tableView didSelectRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]];
+            }
+            Later(^{
+                Check(!self.root.presentedViewController && owner.dismissals == 1 && command.calls == (mode == 0 ? 1u : 0u),
+                    @"resume/select/cancel/stale-model/cache-miss paths must close once without extra callbacks");
+                Check(!TransitionCover(self.window),@"lifecycle recovery must not leave a transition cover behind");
+                [gear removeFromSuperview];
+                if (mode < 3) [self testMenuLifecycle:mode + 1];
+                else [@"PASS: repeated inactive/active cycles preserve opaque native glyphs, original ELM selection, metadata rows, scene isolation, cancellation and stale/cache-miss cleanup\n"
+                    writeToFile:ResultPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            });
+        });
     });
 }
 - (void)testELMCommandOrder:(NSUInteger)mode {

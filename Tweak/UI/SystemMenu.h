@@ -13,6 +13,9 @@ FOUNDATION_EXPORT NSNotificationName const YTKACEPlayerMenuTouchSource;
 - (nullable instancetype)initWithView:(UIView *)view;
 - (void)mountInView:(UIView *)host;
 - (void)restore;
+// Freeze only the rendered row, while returning the live node to its owner.
+- (void)captureRendering;
+- (BOOL)preserveRendering;
 @end
 // UIKit list: anchored player popover, settings sheet; original action callbacks.
 FOUNDATION_EXPORT BOOL YTKACEPresentSystemMenu(UIViewController *presenter,

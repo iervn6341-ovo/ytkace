@@ -231,6 +231,20 @@ native control internals retain their styling. The ELM UIKit regression also
 checks short structural/actionable rows, delayed row growth, transition cleanup,
 image/layer chevron normalization and restoration.
 
+Native-row menus retain an in-memory bitmap of their visible rendering before
+application/scene deactivation. Deactivation returns live ELM nodes to their
+native hierarchy; reactivation keeps the preserved pixels in the same popover
+instead of remounting a node whose display cache may have been purged. Selection
+still dispatches the original command after normal restoration. App/scene
+notifications are scoped and duplicate activation callbacks are coalesced.
+If the native model/button changed or a row has no retained rendering, the old
+menu closes rather than displaying empty rows or invoking stale actions.
+`lifecycle stage=inactive/active` entries record the recovery route without text.
+The `--menu-lifecycle-regression` fixture covers repeated cycles, cleared ELM
+rendering, native selection, metadata rows, unrelated scenes, background
+cancellation, stale models and missing images. `--real-menu-lifecycle` waits for
+an actual app switch and checks foreground recovery and exact-once selection.
+
 Empty, handler-less `YTSpacerButton` entries are structural spacing and do not
 become choices or invalidate the list. Named spacers and unknown rows are retained
 or fall back normally. ELM text recovery follows bounded node children and virtual

@@ -1053,6 +1053,16 @@ void YTKACEPresentAdaptedPlayerMenu(UIViewController *controller, UIView *source
     NSMutableArray *adapted = [NSMutableArray array];
     for (NSDictionary *item in actions) {
         NSMutableDictionary *copy = [item mutableCopy];
+        if (item[@"nativeRow"]) copy[@"nativeRenderingValid"] = [^BOOL {
+            NSDictionary *metadata = item[@"nativeDiagnostics"];
+            id model = [(YTKACENativeMenuOwner *)metadata[@"model"] value];
+            UIView *button = [(YTKACENativeMenuOwner *)metadata[@"button"] value];
+            id owner = [(YTKACENativeMenuOwner *)objc_getAssociatedObject(session.native,NativeOwnerKey) value];
+            id current = Value(owner,@"actions");
+            return model && button && [current isKindOfClass:NSArray.class] &&
+                [current indexOfObjectIdenticalTo:model] != NSNotFound && Value(model,@"button") == button &&
+                [button isDescendantOfView:session.native.view];
+        } copy];
         dispatch_block_t original = item[@"handler"];
         if (original) {
             __block YTKACENativeMenuTrace *trace = nil;

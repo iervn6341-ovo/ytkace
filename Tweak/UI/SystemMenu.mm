@@ -62,6 +62,10 @@ static BOOL DisclosureImage(UIImage *image) {
 @property(nonatomic) BOOL mounted;
 @property(nonatomic, copy) NSArray<NSLayoutConstraint *> *constraints;
 @property(nonatomic, strong) NSMutableArray<NSDictionary *> *disclosures;
+@property(nonatomic, weak) UIView *host;
+@property(nonatomic, strong) UIImage *rendering;
+@property(nonatomic, strong) UIImageView *retainedRendering;
+@property(nonatomic) BOOL renderingPreserved;
 @end
 @implementation YTKACEMenuNativeRow
 - (instancetype)initWithView:(UIView *)view {
@@ -126,6 +130,17 @@ static BOOL DisclosureImage(UIImage *image) {
     return self;
 }
 - (void)mountInView:(UIView *)host {
+    self.host = host;
+    if (self.renderingPreserved) {
+        if (!self.rendering) return;
+        if (!self.retainedRendering) self.retainedRendering = [[UIImageView alloc] initWithImage:self.rendering];
+        self.retainedRendering.userInteractionEnabled = NO;
+        self.retainedRendering.isAccessibilityElement = NO;
+        self.retainedRendering.contentMode = UIViewContentModeScaleToFill;
+        self.retainedRendering.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        [host addSubview:self.retainedRendering]; self.retainedRendering.frame = host.bounds;
+        return;
+    }
     [NSLayoutConstraint deactivateConstraints:self.constraints];
     self.mounted = YES;
     self.view.translatesAutoresizingMaskIntoConstraints = YES;
@@ -159,6 +174,7 @@ static BOOL DisclosureImage(UIImage *image) {
     if (self.disclosures.count) os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] disclosure normalized count=%lu",(unsigned long)self.disclosures.count);
 }
 - (void)restore {
+    [self.retainedRendering removeFromSuperview]; self.host = nil;
     if (!self.mounted) return;
     self.mounted = NO;
     for (NSDictionary *entry in self.disclosures) {
@@ -189,6 +205,26 @@ static BOOL DisclosureImage(UIImage *image) {
             if (b == common || [b isDescendantOfView:common]) { constraint.active = YES; break; }
     }
 }
+- (void)captureRendering {
+    if (!self.mounted || self.renderingPreserved || !self.host.window ||
+        UIApplication.sharedApplication.applicationState != UIApplicationStateActive ||
+        self.view.bounds.size.width < 44 || self.view.bounds.size.height < 24) return;
+    // A bitmap owns its pixels across suspension. A UIView snapshot can itself
+    // lose its backing surface when the app is backgrounded.
+    UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
+    format.scale = MIN(3,self.host.window.screen.scale); format.opaque = NO;
+    UIImage *image = [[[UIGraphicsImageRenderer alloc] initWithSize:self.view.bounds.size format:format]
+        imageWithActions:^(UIGraphicsImageRendererContext *context) { [self.view.layer renderInContext:context.CGContext]; }];
+    if (image.CGImage) self.rendering = image;
+}
+- (BOOL)preserveRendering {
+    if (self.renderingPreserved) return self.rendering != nil;
+    UIView *host = self.host;
+    [self restore];
+    self.renderingPreserved = YES;
+    if (host) [self mountInView:host];
+    return self.rendering != nil;
+}
 @end
 
 @interface YTKACENativeRowCell : UITableViewCell
@@ -198,6 +234,7 @@ static BOOL DisclosureImage(UIImage *image) {
 - (void)layoutSubviews {
     [super layoutSubviews];
     if (self.nativeRow.view.superview == self.contentView) self.nativeRow.view.frame = self.contentView.bounds;
+    if (!self.nativeRow.rendering) [self.nativeRow captureRendering];
 }
 @end
 
@@ -347,6 +384,7 @@ void YTKACENotifySystemMenuDismissed(UIViewController *menu) {
 @property(nonatomic) BOOL playerPopover;
 @property(nonatomic) BOOL heightUpdatePending;
 @property(nonatomic) BOOL updatingSize;
+@property(nonatomic) BOOL nativeRowsSuspended, missingRendering, awaitingActivation;
 - (void)updateMenuHeight;
 @end
 
@@ -391,6 +429,60 @@ void YTKACENotifySystemMenuDismissed(UIViewController *menu) {
     }
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
         initWithBarButtonSystemItem:UIBarButtonSystemItemClose target:self action:@selector(closeMenu)];
+    for (NSNotificationName name in @[UIApplicationWillResignActiveNotification,UISceneWillDeactivateNotification])
+        [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(preserveNativeRows:) name:name object:nil];
+    for (NSNotificationName name in @[UIApplicationDidBecomeActiveNotification,UISceneDidActivateNotification])
+        [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(resumeNativeRows:) name:name object:nil];
+}
+- (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; }
+- (BOOL)acceptLifecycleNotification:(NSNotification *)notification {
+    if ([notification.name isEqual:UISceneWillDeactivateNotification] || [notification.name isEqual:UISceneDidActivateNotification])
+        return notification.object == self.viewIfLoaded.window.windowScene;
+    return YES;
+}
+- (void)captureNativeRows {
+    if (self.nativeRowsSuspended || !self.viewIfLoaded.window) return;
+    for (NSDictionary *action in self.actions) [action[@"nativeRow"] captureRendering];
+}
+- (void)preserveNativeRows:(NSNotification *)notification {
+    if (![self acceptLifecycleNotification:notification] ||
+        !self.menuPresentation.presentingViewController || !self.viewIfLoaded.window) return;
+    if (self.nativeRowsSuspended) { self.awaitingActivation = YES; return; }
+    NSUInteger rows = 0;
+    for (NSDictionary *action in self.actions) {
+        YTKACEMenuNativeRow *row = action[@"nativeRow"];
+        if (!row) continue;
+        rows++; if (![row preserveRendering]) self.missingRendering = YES;
+    }
+    if (!rows) return;
+    self.nativeRowsSuspended = YES;
+    self.awaitingActivation = YES;
+    YTKACECancelSystemMenuTransition(YTKACEPlayerMenuSource(self.menuPresentation));
+    os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] lifecycle stage=inactive nativeRows=%lu cached=%d",
+        (unsigned long)rows,!self.missingRendering);
+}
+- (void)resumeNativeRows:(NSNotification *)notification {
+    if (![self acceptLifecycleNotification:notification]) return;
+    if (!self.nativeRowsSuspended) { [self captureNativeRows]; return; }
+    if (!self.awaitingActivation) return;
+    self.awaitingActivation = NO;
+    // App and scene notifications can both arrive for the same activation.
+    // Retain the frozen rendering until this menu closes; do not remount nodes
+    // whose asynchronous display caches may already have been purged.
+    if (!self.menuPresentation.presentingViewController || self.menuPresentation.isBeingDismissed) return;
+    for (NSDictionary *action in self.actions) {
+        BOOL (^valid)(void) = action[@"nativeRenderingValid"];
+        if (valid && !valid()) {
+            os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] lifecycle stage=active route=close-stale-native-model");
+            [self.menuPresentation dismissViewControllerAnimated:NO completion:nil]; return;
+        }
+    }
+    if (self.missingRendering) {
+        os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] lifecycle stage=active route=close-unavailable-rendering");
+        [self.menuPresentation dismissViewControllerAnimated:NO completion:nil]; return;
+    }
+    os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] lifecycle stage=active route=retained-rendering");
+    [self.tableView reloadData]; [self.tableView layoutIfNeeded]; [self updateMenuHeight];
 }
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
@@ -402,6 +494,9 @@ void YTKACENotifySystemMenuDismissed(UIViewController *menu) {
     // This runs outside the layout callback, before measuring the final rows.
     [self.tableView layoutIfNeeded];
     [self updateMenuHeight];
+    [self captureNativeRows];
+    __weak YTKACESystemMenuController *weak = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,100 * NSEC_PER_MSEC),dispatch_get_main_queue(),^{ [weak captureNativeRows]; });
 }
 - (void)updateMenuHeight {
     if (self.updatingSize || !self.view.window) return;
