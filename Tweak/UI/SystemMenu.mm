@@ -49,8 +49,8 @@ NSNotificationName const YTKACEPlayerMenuTouchSource = @"YTKACEPlayerMenuTouchSo
     self.mounted = YES;
     self.view.translatesAutoresizingMaskIntoConstraints = YES;
     self.view.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    // A table tap invokes the native block after both menus close. Do not also
-    // dispatch the embedded button's target/action through a second path.
+    // The table restores and activates this control through one selected route.
+    // Do not also deliver touches to the embedded button and dispatch it twice.
     self.view.userInteractionEnabled = NO;
     [host addSubview:self.view]; self.view.frame = host.bounds;
     [self.view setNeedsLayout]; [self.view layoutIfNeeded];

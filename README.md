@@ -173,7 +173,12 @@ A laid-out `YTMenuItemElementsMDCButton` with a verified action can keep its liv
 native content inside the UIKit list even when its ELM text is opaque. No title is
 guessed and no functional row is omitted. The table owns selection so the native
 target is not dispatched a second time. Original parents, frames, constraints and
-interaction are restored before the native owner closes. Unlaid-out/hidden controls
+interaction are restored before activation. Gear rows with registered control
+activation events use one original event, rather than a possibly empty model
+handler. Non-dismissing native actions run while their sheet owner is still
+presented, and child sheets inherit the same gear anchor. Other model actions
+close the native owner before invoking their handler. Diagnostics include
+`adapted activation=native` for retained-owner dispatch. Unlaid-out/hidden controls
 and unreadable rows while VoiceOver is active retain the native sheet. Diagnostics
 record `preserved native row` and `native-view` title-source counts without text.
 

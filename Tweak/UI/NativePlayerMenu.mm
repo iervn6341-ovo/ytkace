@@ -257,6 +257,24 @@ static dispatch_block_t ActionHandler(id action) {
     return nil;
 }
 
+// ELM controls may own the real navigation dispatch while action.handler is a
+// placeholder. Use one registered native activation event, never both paths.
+static dispatch_block_t ControlActivation(id button) {
+    if (![button isKindOfClass:UIControl.class]) return nil;
+    UIControl *control = button;
+    UIControlEvents event = 0;
+    for (NSNumber *candidate in @[@(UIControlEventTouchUpInside), @(UIControlEventPrimaryActionTriggered)]) {
+        UIControlEvents value = candidate.unsignedIntegerValue;
+        if (control.allControlEvents & value) { event = value; break; }
+    }
+    if (!event) return nil;
+    return [^{
+        os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] native control-event class=%{public}@ event=%lu targets=%lu",
+            NSStringFromClass(control.class),(unsigned long)event,(unsigned long)control.allTargets.count);
+        [control sendActionsForControlEvents:event];
+    } copy];
+}
+
 static NSString *ItemIdentifier(id renderer) {
     id options = Value(Value(renderer,@"elementRenderer"),@"compatibilityOptions");
     SEL message = NSSelectorFromString(@"messageForFieldNumber:");
@@ -370,6 +388,12 @@ static NSArray<NSDictionary *> *NativePlayerActions(UIViewController *controller
         id button = Value(model,@"button");
         NSDictionary *captured = objc_getAssociatedObject(model,NativePresentationKey);
         dispatch_block_t handler = ActionHandler(model);
+        dispatch_block_t activation = nativeViewsOnly ? ControlActivation(button) : (dispatch_block_t)nil;
+        // A non-dismissing action navigates within the native sheet. Its owner
+        // must still be presented when its original handler executes.
+        BOOL retainsNative = nativeViewsOnly &&
+            (activation != nil || !Flag(model,@"shouldDismissOnAction",YES));
+        if (activation) handler = activation;
         Class spacerClass = NSClassFromString(@"YTSpacerButton");
         if (nativeViewsOnly) {
             if (spacerClass && [button isKindOfClass:spacerClass] && !handler &&
@@ -418,6 +442,7 @@ static NSArray<NSDictionary *> *NativePlayerActions(UIViewController *controller
                     ?: Nonempty(Text(Value(button,@"titleLabel"),@"text"));
                 if (selectionTitle) item[@"selectionTitle"] = selectionTitle;
                 if (handler) item[@"handler"] = handler;
+                if (retainsNative) item[@"nativeActivation"] = @YES;
                 [actions addObject:item];
                 continue;
             }
@@ -471,6 +496,7 @@ static NSArray<NSDictionary *> *NativePlayerActions(UIViewController *controller
         if (nativeRow) action[@"nativeRow"] = nativeRow;
         titleSources[titleSource] = @(titleSources[titleSource].unsignedIntegerValue + 1);
         if (handler) action[@"handler"] = handler;
+        if (retainsNative) action[@"nativeActivation"] = @YES;
         for (NSString *key in @[@"subtitle",@"currentValue"]) {
             NSString *text = Text(model,key) ?: captured[[key isEqual:@"currentValue"] ? @"value" : key];
             if (text.length) action[[key isEqual:@"currentValue"] ? @"value" : key] = text;
@@ -612,6 +638,7 @@ void YTKACEEnableNativeMenuOutsideDismissal(UIViewController *controller) {
 @property(nonatomic) BOOL finished;
 @property(nonatomic, copy) NSArray<YTKACEMenuNativeRow *> *nativeRows;
 - (void)finish:(dispatch_block_t)action;
+- (void)activateNative:(dispatch_block_t)action;
 @end
 @implementation YTKACENativeMenuSession
 - (void)restore {
@@ -621,6 +648,20 @@ void YTKACEEnableNativeMenuOutsideDismissal(UIViewController *controller) {
         (void)stop; view.alpha = self.backdropAlphas[index].doubleValue;
     }];
     self.backdrops = nil; self.backdropAlphas = nil;
+}
+- (void)activateNative:(dispatch_block_t)action {
+    if (self.finished) return;
+    self.finished = YES;
+    [self restore];
+    UIViewController *native = self.native;
+    YTKACENativeMenuOwner *box = objc_getAssociatedObject(native,NativeOwnerKey);
+    // Keep the owner and its responders alive for synchronous native dispatch.
+    __attribute__((objc_precise_lifetime)) id owner = box.value;
+    (void)owner;
+    YTKACERememberPlayerMenuSource(self.source);
+    os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] adapted activation=native owner=%{public}@",
+        owner ? NSStringFromClass([owner class]) : @"none");
+    if (action) action();
 }
 - (void)finish:(dispatch_block_t)action {
     if (self.finished) return;
@@ -632,7 +673,11 @@ void YTKACEEnableNativeMenuOutsideDismissal(UIViewController *controller) {
     // Keep the real sheet's appearance, dismissal and transitioning delegate.
     // Its original presentation was never changed to a popover. Close it before
     // running an action which can synchronously present the next native page.
+    YTKACENativeMenuOwner *box = objc_getAssociatedObject(native,NativeOwnerKey);
+    id owner = box.value;
     void (^completion)(void) = ^{
+        __attribute__((objc_precise_lifetime)) id retainedOwner = owner;
+        (void)retainedOwner;
         [self restore];
         if (action) { YTKACERememberPlayerMenuSource(self.source); action(); }
     };
@@ -663,7 +708,9 @@ void YTKACEPresentAdaptedPlayerMenu(UIViewController *controller, UIView *source
     for (NSDictionary *item in actions) {
         NSMutableDictionary *copy = [item mutableCopy];
         dispatch_block_t original = item[@"handler"];
-        if (original) copy[@"handler"] = [^{ [session finish:original]; } copy];
+        if (original) copy[@"handler"] = [item[@"nativeActivation"] boolValue]
+            ? [^{ [session activateNative:original]; } copy]
+            : [^{ [session finish:original]; } copy];
         [adapted addObject:copy];
     }
     if (!YTKACEPresentSystemMenuWithDismissal(controller,source,controller.title,nil,adapted,^(BOOL selected) {

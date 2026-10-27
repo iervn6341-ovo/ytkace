@@ -37,8 +37,11 @@ static void Later(dispatch_block_t block) {
 @property(nonatomic, copy) id handler;
 @property(nonatomic, strong) id button;
 @property(nonatomic, strong) id titleText;
+@property(nonatomic) BOOL shouldDismissOnAction;
 @end
-@implementation NativeTestAction @end
+@implementation NativeTestAction
+- (instancetype)init { if ((self = [super init])) _shouldDismissOnAction = YES; return self; }
+@end
 static NSUInteger NativeOriginReads;
 static NSUInteger GearExtensionCalls;
 @interface NativeOriginAction : NativeTestAction @end
@@ -317,7 +320,65 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
         if ([NSProcessInfo.processInfo.arguments containsObject:@"--preview-native-gear"]) {
             self.button.hidden = YES; self.qualityButton.hidden = YES;
             [self testGearPopover];
+        } else if ([NSProcessInfo.processInfo.arguments containsObject:@"--native-activation-regression"]) {
+            [self testNativeActivation:0];
         } else [self testOwnedMenu];
+    });
+}
+- (void)testNativeActivation:(NSUInteger)mode {
+    UIButton *gear = self.button;
+    // Use an actual native gear source rather than the tweak-only extraction path.
+    gear = [UIButton buttonWithType:UIButtonTypeSystem];
+    gear.frame = CGRectMake(240,140,44,44); [self.button.superview addSubview:gear];
+    YTKACERegisterNativeGearMenuSource(gear);
+    YTBottomSheetController *native = [YTBottomSheetController new];
+    native.modalPresentationStyle = UIModalPresentationCustom; native.transitioningDelegate = self;
+    YTDraggableView *panel = [[YTDraggableView alloc] initWithFrame:CGRectMake(8,80,320,120)];
+    [native.view addSubview:panel];
+    YTMenuItemElementsMDCButton *button = [[YTMenuItemElementsMDCButton alloc] initWithFrame:CGRectMake(0,0,320,56)];
+    [panel addSubview:button];
+    NativeTestAction *model = [NativeTestAction new]; model.button = button;
+    NativeTestOwner *owner = [NativeTestOwner new]; owner.native = native; owner.actions = @[model];
+    native.actionsController = owner;
+    __block NSUInteger calls = 0;
+    __weak UIViewController *weakNative = native;
+    dispatch_block_t navigate = ^{
+        UIViewController *parent = weakNative;
+        Check(parent.presentingViewController != nil && owner.dismissals == 0,
+            @"native navigation must run before the native owner is dismissed");
+        Check(button.superview == panel && button.userInteractionEnabled && parent.view.alpha == 1,
+            @"native controls must be restored before their original activation");
+        calls++;
+        YTBottomSheetController *child = [YTBottomSheetController new];
+        NativeTestAction *leaf = [NativeTestAction new]; leaf.title = @"Native child"; leaf.handler = ^{};
+        child.actions = @[leaf];
+        [parent presentViewController:child animated:YES completion:nil];
+    };
+    if (mode == 0) {
+        model.handler = ^{ Check(NO,@"placeholder model handler must not replace a registered ELM control event"); };
+        [button addAction:[UIAction actionWithHandler:^(__unused UIAction *action) { navigate(); }]
+            forControlEvents:UIControlEventTouchUpInside];
+    } else {
+        model.shouldDismissOnAction = NO; model.handler = navigate;
+    }
+    YTKACERememberPlayerMenuSource(gear);
+    [self.root presentViewController:native animated:NO completion:nil];
+    Later(^{
+        UIViewController *menu = native.presentedViewController;
+        Check(YTKACEIsPlayerPopover(menu),@"native activation fixture must open an adapted gear menu");
+        UITableViewController *table = (id)MenuNavigation(menu).topViewController;
+        [table.tableView.delegate tableView:table.tableView didSelectRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]];
+        Later(^{
+            UIViewController *child = native.presentedViewController;
+            Check(calls == 1 && child && YTKACEIsPlayerPopover(child.presentedViewController),
+                @"native activation must run once and anchor a child presented by the retained native owner");
+            [self.root dismissViewControllerAnimated:NO completion:^{
+                [gear removeFromSuperview];
+                if (mode == 0) [self testNativeActivation:1];
+                else [@"PASS: registered native control and non-dismissing model navigate before owner teardown; child popover inherits gear anchor\n"
+                    writeToFile:ResultPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            }];
+        });
     });
 }
 - (NSArray *)actions {

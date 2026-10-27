@@ -13,6 +13,7 @@ static const void *TweakSourceKey = &TweakSourceKey;
 static const void *NativeGearKey = &NativeGearKey;
 static const void *LastTouchKey = &LastTouchKey;
 static const void *GearAnchorKey = &GearAnchorKey;
+static const void *NativeSourceKey = &NativeSourceKey;
 static IMP OriginalSendAction, OriginalPresent, OriginalWindowEvent;
 
 @interface YTKACEPlayerMenuTap : NSObject
@@ -212,7 +213,8 @@ static BOOL IsYouTubeMenu(UIViewController *controller) {
 static UIView *SourceForPresenter(UIViewController *presenter) {
     UIViewController *ancestor = presenter;
     for (NSUInteger depth = 0; ancestor && depth < 12; ++depth) {
-        YTKACEPlayerPopoverDelegate *delegate = objc_getAssociatedObject(ancestor, PopoverKey);
+        YTKACEPlayerPopoverDelegate *delegate = objc_getAssociatedObject(ancestor, PopoverKey)
+            ?: objc_getAssociatedObject(ancestor,NativeSourceKey);
         if (EligibleSource(delegate.source, presenter.view.window)) return delegate.source;
         ancestor = ancestor.parentViewController ?: ancestor.presentingViewController;
     }
@@ -279,6 +281,9 @@ static void Present(UIViewController *receiver, SEL selector, UIViewController *
     if (NSThread.isMainThread && Enabled() && !YTKACEIsPlayerPopover(controller) && IsYouTubeMenu(controller)) {
         UIView *source = SourceForPresenter(receiver);
         if (source) {
+            YTKACEPlayerPopoverDelegate *nativeSource = [YTKACEPlayerPopoverDelegate new];
+            nativeSource.source = source;
+            objc_setAssociatedObject(controller,NativeSourceKey,nativeSource,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             if (YTKACEIsNativeGearMenuSource(source) && !receiver.presentedViewController && OriginalPresent) {
                 YTKACEPlayerMenuTap *tap = objc_getAssociatedObject(SourceWindow(source),TapKey);
                 tap.pending = NO; tap.menu = controller;
