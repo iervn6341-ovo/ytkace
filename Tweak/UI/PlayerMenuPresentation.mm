@@ -296,6 +296,7 @@ static void WindowEvent(UIWindow *receiver, SEL selector, UIEvent *event) {
 static void Present(UIViewController *receiver, SEL selector, UIViewController *controller,
                      BOOL animated, void (^completion)(void)) {
     YTKACETraceNativePresentation(receiver,controller);
+    if (YTKACEDeferNativeELMPresentation(receiver,controller,animated,completion)) return;
     if (NSThread.isMainThread && Enabled() && !YTKACEIsPlayerPopover(controller) && IsYouTubeMenu(controller)) {
         UIView *source = SourceForPresenter(receiver);
         if (source) {

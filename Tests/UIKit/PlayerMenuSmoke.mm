@@ -1,5 +1,6 @@
 #import <UIKit/UIKit.h>
 #import <UIKit/UIGestureRecognizerSubclass.h>
+#import <objc/runtime.h>
 #import "../../Tweak/UI/SystemMenu.h"
 #import "../../Tweak/UI/PlayerMenuPresentation.h"
 #import "../../Tweak/UI/NativePlayerMenu.h"
@@ -89,6 +90,30 @@ static NSUInteger GearExtensionCalls;
 @property(nonatomic, strong) UIView *elementView;
 @end
 @implementation YTMenuItemElementsMDCButton @end
+@interface ELMTouchCommandPropertiesHandler : NSObject <UIGestureRecognizerDelegate>
+@property(nonatomic) NSUInteger calls;
+@property(nonatomic, copy) dispatch_block_t callback;
+- (void)handleTap;
+@end
+@implementation ELMTouchCommandPropertiesHandler
+- (void)handleTap { self.calls++; if (self.callback) self.callback(); }
+@end
+@interface GOODialogView : UIView
+@property(nonatomic, weak) UIViewController *native;
+@property(nonatomic) NSUInteger closeCalls;
+- (void)actionButtonDidTap:(id)sender;
+@end
+@implementation GOODialogView
+- (void)actionButtonDidTap:(id)sender {
+    (void)sender; self.closeCalls++;
+    [self.native dismissViewControllerAnimated:NO completion:nil];
+}
+@end
+static void InstallELMTap(UIView *view, ELMTouchCommandPropertiesHandler *handler, BOOL enabled) {
+    UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:handler action:@selector(handleTap)];
+    tap.delegate = handler; tap.enabled = enabled; [view addGestureRecognizer:tap];
+    objc_setAssociatedObject(view,@selector(handleTap),handler,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
 // Render pixels without exposing text/attributedText/accessibility data, just
 // like the device's opaque ELM row. Its original control must remain intact.
 @interface NativeTestOpaqueButton : YTMenuItemElementsMDCButton
@@ -220,12 +245,17 @@ static NativeTestAction *VirtualAction(NSString *title, NSUInteger mode, dispatc
 @property(nonatomic, copy) NSArray *actions;
 @property(nonatomic, weak) UIViewController *native;
 @property(nonatomic) NSUInteger dismissals;
+@property(nonatomic) NSTimeInterval dismissalDelay;
 - (void)dismissViewControllerAnimated:(BOOL)animated completion:(void (^)(void))completion;
 @end
 @implementation NativeTestOwner
 - (void)dismissViewControllerAnimated:(BOOL)animated completion:(void (^)(void))completion {
     self.dismissals++;
-    [self.native dismissViewControllerAnimated:animated completion:completion];
+    if (self.dismissalDelay > 0) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(self.dismissalDelay * NSEC_PER_SEC)),dispatch_get_main_queue(),^{
+            [self.native dismissViewControllerAnimated:animated completion:completion];
+        });
+    } else [self.native dismissViewControllerAnimated:animated completion:completion];
 }
 @end
 
@@ -328,9 +358,104 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
         if ([NSProcessInfo.processInfo.arguments containsObject:@"--preview-native-gear"]) {
             self.button.hidden = YES; self.qualityButton.hidden = YES;
             [self testGearPopover];
+        } else if ([NSProcessInfo.processInfo.arguments containsObject:@"--elm-command-regression"]) {
+            [self testELMCommandOrder:0];
         } else if ([NSProcessInfo.processInfo.arguments containsObject:@"--native-activation-regression"]) {
             [self testNativeActivation:0];
         } else [self testOwnedMenu];
+    });
+}
+- (void)testELMCommandOrder:(NSUInteger)mode {
+    UIButton *gear = [UIButton buttonWithType:UIButtonTypeSystem];
+    gear.frame = CGRectMake(240,140,44,44); [self.button.superview addSubview:gear];
+    YTKACERegisterNativeGearMenuSource(gear);
+    YTBottomSheetController *native = [YTBottomSheetController new];
+    native.modalPresentationStyle = UIModalPresentationCustom; native.transitioningDelegate = self;
+    YTDraggableView *panel = [[YTDraggableView alloc] initWithFrame:CGRectMake(8,80,320,180)];
+    [native.view addSubview:panel];
+    YTMenuItemElementsMDCButton *button = [[YTMenuItemElementsMDCButton alloc] initWithFrame:CGRectMake(0,0,320,56)];
+    [panel addSubview:button];
+    UIView *element = [[UIView alloc] initWithFrame:button.bounds]; [button addSubview:element];
+    ELMTouchCommandPropertiesHandler *command = [ELMTouchCommandPropertiesHandler new];
+    if (mode != 6) InstallELMTap(element,command,mode != 5);
+    if (mode == 4) {
+        UIView *accessory = [[UIView alloc] initWithFrame:CGRectMake(0,0,20,20)]; [element addSubview:accessory];
+        InstallELMTap(accessory,[ELMTouchCommandPropertiesHandler new],YES);
+    }
+    GOODialogView *dialog = [GOODialogView new]; dialog.native = native;
+    [button addTarget:dialog action:@selector(actionButtonDidTap:) forControlEvents:UIControlEventTouchUpInside];
+    NativeTestAction *model = [NativeTestAction new]; model.button = button;
+    model.shouldDismissOnAction = mode != 3;
+    model.handler = ^{ Check(NO,@"an ELM content command must not invoke its placeholder model handler"); };
+    NativeTestOwner *owner = [NativeTestOwner new]; owner.native = native; owner.actions = @[model];
+    if (mode == 1) owner.dismissalDelay = 0.1;
+    native.actionsController = owner;
+    __block NSUInteger completions = 0, leafCalls = 0;
+    __block YTBottomSheetController *child;
+    __weak UIViewController *weakNative = native;
+    __weak NativeTestOwner *weakOwner = owner;
+    __weak PlayerMenuSmoke *weak = self;
+    command.callback = ^{
+        UIViewController *parent = weakNative;
+        Check(parent.presentingViewController != nil && weakOwner.dismissals == 0 &&
+            button.superview == panel && button.userInteractionEnabled && parent.view.alpha == 1,
+            @"handleTap must execute once with its node graph restored and owner still presented");
+        child = [YTBottomSheetController new];
+        NativeTestAction *leaf = [NativeTestAction new]; leaf.title = @"ELM child leaf";
+        leaf.handler = ^{ leafCalls++; }; child.actions = @[leaf];
+        dispatch_block_t present = ^{
+            UIViewController *presenter = (mode == 3 || mode == 7) ? weakNative : weak.root;
+            [presenter presentViewController:child animated:YES completion:^{
+                completions++;
+                Check(mode == 3 ? weakNative.presentingViewController != nil : weakNative.presentingViewController == nil,
+                    @"child presentation completion must follow the required source dismissal");
+            }];
+        };
+        if (mode == 1) dispatch_after(dispatch_time(DISPATCH_TIME_NOW,30 * NSEC_PER_MSEC),dispatch_get_main_queue(),present);
+        else if (mode == 2) [weakOwner dismissViewControllerAnimated:NO completion:present];
+        else present();
+    };
+    YTKACERememberPlayerMenuSource(gear);
+    [self.root presentViewController:native animated:NO completion:nil];
+    Later(^{
+        UIViewController *menu = native.presentedViewController;
+        if (mode == 4 || mode == 5) {
+            Check(!menu && native.view.alpha == 1 && command.calls == 0 && dialog.closeCalls == 0,
+                @"ambiguous or disabled ELM commands must preserve the native sheet without guessing a callback");
+            [self.root dismissViewControllerAnimated:NO completion:^{
+                [gear removeFromSuperview];
+                if (mode == 4) [self testELMCommandOrder:5];
+                else [@"PASS: ELM command-before-close, sync/async child requests, self-dismiss, retained-owner submenu, late gesture binding, exact-once leaf callbacks and unsupported-command fallback\n"
+                    writeToFile:ResultPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            }];
+            return;
+        }
+        Check(YTKACEIsPlayerPopover(menu),@"ELM regression must start with the anchored gear replacement");
+        if (mode == 6) InstallELMTap(element,command,YES);
+        UITableViewController *table = (id)MenuNavigation(menu).topViewController;
+        [table.tableView.delegate tableView:table.tableView didSelectRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]];
+        Later(^{
+            Check(command.calls == 1 && dialog.closeCalls == 0 && completions == 1 &&
+                owner.dismissals == (mode == 3 ? 0u : 1u),
+                @"ELM selection must dispatch the content command once and close through its owner at most once");
+            Check(child && YTKACEIsPlayerPopover(child.presentedViewController) &&
+                child.presentedViewController.popoverPresentationController.sourceView == self.window,
+                @"ELM child must open visibly at the original gear anchor");
+            Check(self.root.presentedViewController == (mode == 3 ? native : child),
+                @"a dismissed source must not remain as an invisible parent of the child menu");
+            UITableViewController *leaf = (id)MenuNavigation(child.presentedViewController).topViewController;
+            [leaf.tableView.delegate tableView:leaf.tableView didSelectRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]];
+            Later(^{
+                Check(leafCalls == 1 && !child.presentingViewController,
+                    @"the child leaf must remain selectable and close exactly once");
+                dispatch_block_t next = ^{
+                    [gear removeFromSuperview];
+                    [self testELMCommandOrder:mode == 3 ? 6 : (mode == 6 ? 7 : (mode == 7 ? 4 : mode + 1))];
+                };
+                if (self.root.presentedViewController) [self.root dismissViewControllerAnimated:NO completion:next];
+                else next();
+            });
+        });
     });
 }
 - (void)testNativeActivation:(NSUInteger)mode {

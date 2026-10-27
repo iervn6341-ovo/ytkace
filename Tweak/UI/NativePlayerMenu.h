@@ -11,6 +11,8 @@ FOUNDATION_EXPORT void YTKACEPresentAdaptedPlayerMenu(UIViewController *controll
     UIView *source, NSArray<NSDictionary *> *actions);
 FOUNDATION_EXPORT void YTKACEInstallNativePlayerMenuAdapter(void);
 FOUNDATION_EXPORT NSString * _Nullable YTKACENativeControlTitle(UIView *source);
+FOUNDATION_EXPORT BOOL YTKACEDeferNativeELMPresentation(UIViewController *presenter,
+    UIViewController *presented, BOOL animated, void (^ _Nullable completion)(void));
 // Diagnostic observers are scoped to one selected native action; no dispatch changes.
 FOUNDATION_EXPORT void YTKACETraceNativeControlDispatch(UIControl *control, NSString *phase,
     NSString *kind, SEL _Nullable selector, id _Nullable target, BOOL hasEvent);

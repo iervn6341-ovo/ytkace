@@ -275,9 +275,43 @@ static dispatch_block_t ControlActivation(id button) {
     } copy];
 }
 
+static void InvokeELMTap(id command);
+// The observed ELM row has two independent paths: its content tap executes a
+// command, while GOODialogView.actionButtonDidTap: only dismisses the dialog.
+// Resolve one actual, enabled content command; never synthesize gesture state.
+static id ELMTapCommand(id button, BOOL *unsupported) {
+    Class rowClass = NSClassFromString(@"YTMenuItemElementsMDCButton");
+    Class handlerClass = NSClassFromString(@"ELMTouchCommandPropertiesHandler");
+    if (!rowClass || !handlerClass || ![button isKindOfClass:rowClass]) return nil;
+    NSMutableArray<UIView *> *views = [NSMutableArray arrayWithObject:button];
+    id command = nil;
+    for (NSUInteger index = 0; index < views.count && index < 64; index++) {
+        UIView *view = views[index];
+        for (UIGestureRecognizer *gesture in view.gestureRecognizers) {
+            if (![gesture isKindOfClass:UITapGestureRecognizer.class] ||
+                ![gesture.delegate isKindOfClass:handlerClass]) continue;
+            UITapGestureRecognizer *tap = (id)gesture;
+            id candidate = gesture.delegate;
+            NSMethodSignature *signature = [candidate methodSignatureForSelector:NSSelectorFromString(@"handleTap")];
+            if (!gesture.enabled || view.hidden || view.alpha < 0.05 ||
+                tap.numberOfTapsRequired != 1 || tap.numberOfTouchesRequired != 1 ||
+                signature.numberOfArguments != 2 || signature.methodReturnType[0] != 'v' ||
+                (command && command != candidate)) {
+                *unsupported = YES; return nil;
+            }
+            command = candidate;
+        }
+        for (UIView *child in view.subviews) {
+            if (views.count >= 64) { *unsupported = YES; return nil; }
+            [views addObject:child];
+        }
+    }
+    return command;
+}
+
 // A trace owns only diagnostics. Weak references leave the native lifetime intact.
 @interface YTKACENativeMenuTrace : NSObject
-@property(nonatomic) NSUInteger identifier, presentationRequests, selectorCalls, uiActionCalls;
+@property(nonatomic) NSUInteger identifier, presentationRequests, selectorCalls, uiActionCalls, elmCalls;
 @property(nonatomic) BOOL handlerReturned;
 @property(nonatomic) NSTimeInterval start;
 @property(nonatomic, weak) UIViewController *native;
@@ -310,13 +344,13 @@ static void TraceState(YTKACENativeMenuTrace *trace, NSString *stage) {
             : TraceClass(child)];
     }
     id actions = Value(trace.owner,@"actions");
-    os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] trace=%lu stage=%{public}@ elapsed=%.3f native=%{public}@ presenting=%{public}@ presented=%{public}@ dismissing=%d inWindow=%d alpha=%.2f children=%{public}@ ownerActions=%ld handlerReturned=%d selectorCalls=%lu uiActionCalls=%lu presentationRequests=%lu controlParent=%{public}@ controlEnabled=%d controlInteraction=%d rootChain=%{public}@",
+    os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] trace=%lu stage=%{public}@ elapsed=%.3f native=%{public}@ presenting=%{public}@ presented=%{public}@ dismissing=%d inWindow=%d alpha=%.2f children=%{public}@ ownerActions=%ld handlerReturned=%d selectorCalls=%lu uiActionCalls=%lu presentationRequests=%lu elmCalls=%lu controlParent=%{public}@ controlEnabled=%d controlInteraction=%d rootChain=%{public}@",
         (unsigned long)trace.identifier,stage,NSProcessInfo.processInfo.systemUptime - trace.start,
         TraceClass(native),TraceClass(native.presentingViewController),TraceClass(native.presentedViewController),native.isBeingDismissed,
         native.isViewLoaded && native.view.window != nil,native.isViewLoaded ? native.view.alpha : -1,
         [children componentsJoinedByString:@","],(long)([actions isKindOfClass:NSArray.class] ? [actions count] : -1),
         trace.handlerReturned,(unsigned long)trace.selectorCalls,(unsigned long)trace.uiActionCalls,
-        (unsigned long)trace.presentationRequests,TraceClass(trace.control.superview),trace.control.enabled,
+        (unsigned long)trace.presentationRequests,(unsigned long)trace.elmCalls,TraceClass(trace.control.superview),trace.control.enabled,
         trace.control.userInteractionEnabled,TraceControllerChain(trace.window));
 }
 static YTKACENativeMenuTrace *CurrentTrace(void) {
@@ -406,6 +440,19 @@ static void RunTracedAction(YTKACENativeMenuTrace *trace, dispatch_block_t actio
     BOOL returned = NO;
     @try { action(); returned = YES; trace.handlerReturned = YES; }
     @finally { TraceState(trace,returned ? @"handler-return" : @"handler-exception"); ActiveTrace = previous; }
+}
+
+static void InvokeELMTap(id command) {
+    YTKACENativeMenuTrace *trace = CurrentTrace();
+    trace.elmCalls++;
+    os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] trace=%lu stage=elm-tap phase=enter target=%{public}@ selector=handleTap",
+        (unsigned long)trace.identifier,TraceClass(command));
+    BOOL returned = NO;
+    @try { ((void (*)(id,SEL))objc_msgSend)(command,NSSelectorFromString(@"handleTap")); returned = YES; }
+    @finally {
+        os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] trace=%lu stage=elm-tap phase=%{public}@ target=%{public}@",
+            (unsigned long)trace.identifier,returned ? @"return" : @"exception",TraceClass(command));
+    }
 }
 
 static NSString *ItemIdentifier(id renderer) {
@@ -521,14 +568,18 @@ static NSArray<NSDictionary *> *NativePlayerActions(UIViewController *controller
         id button = Value(model,@"button");
         NSDictionary *captured = objc_getAssociatedObject(model,NativePresentationKey);
         dispatch_block_t handler = ActionHandler(model);
-        dispatch_block_t activation = nativeViewsOnly ? ControlActivation(button) : (dispatch_block_t)nil;
+        BOOL unsupportedELM = NO;
+        id command = nativeViewsOnly ? ELMTapCommand(button,&unsupportedELM) : nil;
+        dispatch_block_t activation = nil;
+        if (command) activation = [^{ InvokeELMTap(command); } copy];
+        else if (nativeViewsOnly) activation = ControlActivation(button);
         // A non-dismissing action navigates within the native sheet. Its owner
         // must still be presented when its original handler executes.
         BOOL retainsNative = nativeViewsOnly &&
             (activation != nil || !Flag(model,@"shouldDismissOnAction",YES));
         if (activation) handler = activation;
         NSDictionary *diagnostics = TraceMetadata(model,button,nativeIndex,
-            activation ? @"control-event" : (objc_getAssociatedObject(model,NativeRouteKey) ? @"verified-route" : @"model-handler"));
+            command ? @"elm-command" : (activation ? @"control-event" : (objc_getAssociatedObject(model,NativeRouteKey) ? @"verified-route" : @"model-handler")));
         Class spacerClass = NSClassFromString(@"YTSpacerButton");
         if (nativeViewsOnly) {
             if (spacerClass && [button isKindOfClass:spacerClass] && !handler &&
@@ -550,6 +601,10 @@ static NSArray<NSDictionary *> *NativePlayerActions(UIViewController *controller
                 os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] gear collapsed-row index=%lu class=%{public}@ bounds=%{public}@",
                     (unsigned long)nativeIndex,NSStringFromClass([button class]),NSStringFromCGRect([button bounds]));
                 continue;
+            }
+            if (unsupportedELM) {
+                os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] gear fallback reason=unsupported-or-ambiguous-elm-command index=%lu",(unsigned long)nativeIndex);
+                return nil;
             }
             BOOL enabled = Flag(model,@"isEnabled",Flag(button,@"isEnabled",YES));
             YTKACEMenuNativeRow *row = [button isKindOfClass:UIControl.class] &&
@@ -579,6 +634,8 @@ static NSArray<NSDictionary *> *NativePlayerActions(UIViewController *controller
                 if (handler) item[@"handler"] = handler;
                 if (retainsNative) item[@"nativeActivation"] = @YES;
                 item[@"nativeDiagnostics"] = diagnostics;
+                item[@"refreshELMAtSelection"] = @YES;
+                if (command) item[@"elmDismissAfterCommand"] = @(Flag(model,@"shouldDismissOnAction",YES));
                 [actions addObject:item];
                 continue;
             }
@@ -634,6 +691,8 @@ static NSArray<NSDictionary *> *NativePlayerActions(UIViewController *controller
         if (handler) action[@"handler"] = handler;
         if (retainsNative) action[@"nativeActivation"] = @YES;
         action[@"nativeDiagnostics"] = diagnostics;
+        if (nativeViewsOnly) action[@"refreshELMAtSelection"] = @YES;
+        if (command) action[@"elmDismissAfterCommand"] = @(Flag(model,@"shouldDismissOnAction",YES));
         for (NSString *key in @[@"subtitle",@"currentValue"]) {
             NSString *text = Text(model,key) ?: captured[[key isEqual:@"currentValue"] ? @"value" : key];
             if (text.length) action[[key isEqual:@"currentValue"] ? @"value" : key] = text;
@@ -696,6 +755,107 @@ static void DismissNativeMenu(UIViewController *native, dispatch_block_t complet
     else if (native.presentingViewController && !native.isBeingDismissed)
         [native dismissViewControllerAnimated:NO completion:completion];
     else if (completion) completion();
+}
+
+@interface YTKACEELMPresentationRequest : NSObject
+@property(nonatomic, strong) UIViewController *presenter, *controller;
+@property(nonatomic) BOOL animated;
+@property(nonatomic, copy) dispatch_block_t completion;
+@end
+@implementation YTKACEELMPresentationRequest @end
+@interface YTKACEELMNavigation : NSObject
+@property(nonatomic, strong) UIViewController *native, *presenter;
+@property(nonatomic, strong) id owner;
+@property(nonatomic, weak) UIView *source;
+@property(nonatomic, copy) dispatch_block_t command;
+@property(nonatomic, strong) NSMutableArray<YTKACEELMPresentationRequest *> *requests;
+@property(nonatomic) BOOL shouldDismiss, finished;
+@end
+@implementation YTKACEELMNavigation @end
+static YTKACEELMNavigation *ActiveELMNavigation, *ClosingELMNavigation;
+static BOOL ControllerWithin(UIViewController *controller, UIViewController *ancestor) {
+    if (!ancestor) return NO;
+    for (NSUInteger depth = 0; controller && depth < 16; depth++, controller = controller.parentViewController)
+        if (controller == ancestor) return YES;
+    return NO;
+}
+BOOL YTKACEDeferNativeELMPresentation(UIViewController *presenter, UIViewController *presented,
+    BOOL animated, dispatch_block_t completion) {
+    if (!NSThread.isMainThread) return NO;
+    YTKACEELMNavigation *navigation = ActiveELMNavigation ?: ClosingELMNavigation;
+    if (!navigation || navigation.finished || presented.presentingViewController ||
+        !(ControllerWithin(presenter,navigation.native) || ControllerWithin(presenter,navigation.presenter) ||
+          ControllerWithin(navigation.presenter,presenter))) return NO;
+    // A self-dismissing command may reach its own completion before our close
+    // observer runs. Keep its anchor fresh and let a stable presenter proceed.
+    if (!navigation.native.presentingViewController && !ControllerWithin(presenter,navigation.native)) {
+        YTKACERememberPlayerMenuSource(navigation.source); return NO;
+    }
+    YTKACEELMPresentationRequest *request = [YTKACEELMPresentationRequest new];
+    request.presenter = presenter; request.controller = presented;
+    request.animated = animated; request.completion = completion;
+    [navigation.requests addObject:request];
+    os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] elm present-deferred presenter=%{public}@ controller=%{public}@ closeSource=%d",
+        TraceClass(presenter),TraceClass(presented),navigation.shouldDismiss);
+    return YES;
+}
+static void ReplayELMPresentations(YTKACEELMNavigation *navigation) {
+    if (navigation.finished) return;
+    navigation.finished = YES;
+    if (ClosingELMNavigation == navigation) ClosingELMNavigation = nil;
+    NSArray<YTKACEELMPresentationRequest *> *requests = navigation.requests.copy;
+    [navigation.requests removeAllObjects];
+    for (YTKACEELMPresentationRequest *request in requests) {
+        UIViewController *presenter = request.presenter;
+        if (!navigation.shouldDismiss) presenter = navigation.native;
+        else if (ControllerWithin(presenter,navigation.native)) presenter = navigation.presenter;
+        if (!presenter.viewIfLoaded.window || presenter.isBeingDismissed || presenter.presentedViewController) {
+            os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] elm replay-blocked presenter=%{public}@ occupiedBy=%{public}@",
+                TraceClass(presenter),TraceClass(presenter.presentedViewController));
+            continue;
+        }
+        YTKACERememberPlayerMenuSource(navigation.source);
+        os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] elm present-replay controller=%{public}@ closeSource=%d sourceStillPresented=%d",
+            TraceClass(request.controller),navigation.shouldDismiss,navigation.native.presentingViewController != nil);
+        [presenter presentViewController:request.controller animated:request.animated completion:^{
+            // Keep the ELM command, its owner and node graph alive through presentation.
+            os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] elm presentation-completed owner=%{public}@",TraceClass(navigation.owner));
+            if (request.completion) request.completion();
+        }];
+    }
+}
+static void AwaitELMDismissal(YTKACEELMNavigation *navigation, NSUInteger attempt) {
+    if (navigation.finished) return;
+    if (!navigation.native.presentingViewController && !navigation.native.isBeingDismissed) {
+        ReplayELMPresentations(navigation); return;
+    }
+    if (attempt >= 60) {
+        os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] elm replay-stopped reason=native-dismissal-incomplete");
+        navigation.finished = YES; [navigation.requests removeAllObjects];
+        if (ClosingELMNavigation == navigation) ClosingELMNavigation = nil;
+        return;
+    }
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,50 * NSEC_PER_MSEC),dispatch_get_main_queue(),^{
+        AwaitELMDismissal(navigation,attempt + 1);
+    });
+}
+static void CompleteELMNavigation(YTKACEELMNavigation *navigation) {
+    UIViewController *native = navigation.native;
+    if (!navigation.shouldDismiss) { ReplayELMPresentations(navigation); return; }
+    // A command that has already presented its own child retains native control
+    // of that hierarchy. Never dismiss an entire newly opened child stack.
+    if (native.presentedViewController) {
+        os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] elm close-skipped reason=native-child-presented");
+        ReplayELMPresentations(navigation); return;
+    }
+    ClosingELMNavigation = navigation;
+    if (native.isBeingDismissed || !native.presentingViewController) {
+        os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] elm close-skipped reason=command-already-dismissed");
+        AwaitELMDismissal(navigation,0);
+    } else {
+        os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] elm close-after-command owner=%{public}@",TraceClass(navigation.owner));
+        DismissNativeMenu(native,^{ AwaitELMDismissal(navigation,0); });
+    }
 }
 
 // Only native fallbacks opened from a verified player button receive this
@@ -776,6 +936,8 @@ void YTKACEEnableNativeMenuOutsideDismissal(UIViewController *controller) {
 @property(nonatomic, copy) NSArray<YTKACEMenuNativeRow *> *nativeRows;
 - (void)finish:(dispatch_block_t)action;
 - (void)activateNative:(dispatch_block_t)action;
+- (void)activateELM:(dispatch_block_t)action shouldDismiss:(BOOL)shouldDismiss;
+- (void)returnToNative;
 @end
 @implementation YTKACENativeMenuSession
 - (void)restore {
@@ -785,6 +947,30 @@ void YTKACEEnableNativeMenuOutsideDismissal(UIViewController *controller) {
         (void)stop; view.alpha = self.backdropAlphas[index].doubleValue;
     }];
     self.backdrops = nil; self.backdropAlphas = nil;
+}
+- (void)returnToNative {
+    if (self.finished) return;
+    self.finished = YES; [self restore];
+    YTKACEEnableNativeMenuOutsideDismissal(self.native);
+    os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] elm fallback reason=command-changed-before-selection");
+}
+- (void)activateELM:(dispatch_block_t)action shouldDismiss:(BOOL)shouldDismiss {
+    if (self.finished) return;
+    self.finished = YES;
+    [self restore];
+    YTKACEELMNavigation *navigation = [YTKACEELMNavigation new];
+    navigation.native = self.native;
+    navigation.presenter = self.native.presentingViewController;
+    navigation.owner = [(YTKACENativeMenuOwner *)objc_getAssociatedObject(self.native,NativeOwnerKey) value];
+    navigation.source = self.source; navigation.command = action;
+    navigation.shouldDismiss = shouldDismiss; navigation.requests = [NSMutableArray array];
+    YTKACERememberPlayerMenuSource(self.source);
+    YTKACEELMNavigation *previous = ActiveELMNavigation;
+    ActiveELMNavigation = navigation;
+    os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] elm command-before-close shouldDismiss=%d",shouldDismiss);
+    @try { action(); }
+    @finally { ActiveELMNavigation = previous; }
+    CompleteELMNavigation(navigation);
 }
 - (void)activateNative:(dispatch_block_t)action {
     if (self.finished) return;
@@ -847,11 +1033,33 @@ void YTKACEPresentAdaptedPlayerMenu(UIViewController *controller, UIView *source
         dispatch_block_t original = item[@"handler"];
         if (original) {
             __block YTKACENativeMenuTrace *trace = nil;
-            copy[@"diagnosticSelection"] = [^{ trace = BeginTrace(session.native,item[@"nativeDiagnostics"]); } copy];
+            __block id selectedCommand = nil;
+            __block BOOL unsupportedELM = NO;
+            dispatch_block_t prepare = ^{
+                unsupportedELM = NO; selectedCommand = nil;
+                NSMutableDictionary *metadata = [item[@"nativeDiagnostics"] mutableCopy];
+                if ([item[@"refreshELMAtSelection"] boolValue]) {
+                    id button = [(YTKACENativeMenuOwner *)metadata[@"button"] value];
+                    selectedCommand = ELMTapCommand(button,&unsupportedELM);
+                    if (item[@"elmDismissAfterCommand"] && !selectedCommand) unsupportedELM = YES;
+                    if (selectedCommand) metadata[@"route"] = @"elm-command";
+                    if (unsupportedELM) metadata[@"route"] = @"unsupported-elm-command";
+                }
+                trace = BeginTrace(session.native,metadata);
+            };
+            copy[@"diagnosticSelection"] = [prepare copy];
             copy[@"handler"] = [^{
-                if (!trace) trace = BeginTrace(session.native,item[@"nativeDiagnostics"]);
-                dispatch_block_t invocation = ^{ RunTracedAction(trace,original); };
-                if ([item[@"nativeActivation"] boolValue]) [session activateNative:invocation];
+                if (!trace) prepare();
+                if (unsupportedELM) { [session returnToNative]; return; }
+                id command = selectedCommand;
+                dispatch_block_t effective = original;
+                if (command) effective = ^{ InvokeELMTap(command); };
+                dispatch_block_t invocation = ^{ RunTracedAction(trace,effective); };
+                if (command) {
+                    NSDictionary *metadata = item[@"nativeDiagnostics"];
+                    id model = [(YTKACENativeMenuOwner *)metadata[@"model"] value];
+                    [session activateELM:invocation shouldDismiss:Flag(model,@"shouldDismissOnAction",YES)];
+                } else if ([item[@"nativeActivation"] boolValue]) [session activateNative:invocation];
                 else [session finish:invocation];
             } copy];
         }

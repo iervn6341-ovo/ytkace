@@ -192,6 +192,25 @@ close the native owner before invoking their handler. Diagnostics include
 and unreadable rows while VoiceOver is active retain the native sheet. Diagnostics
 record `preserved native row` and `native-view` title-source counts without text.
 
+For ELM-backed gear rows, the adapter resolves the actual enabled, single-tap
+`ELMTouchCommandPropertiesHandler.handleTap` on the row's content at selection
+time, including gestures attached after the popover appears. The row is restored
+to its native node/controller hierarchy before that command runs. The command
+runs once before optional owner dismissal; it does not also send the outer
+`GOODialogView.actionButtonDidTap:` event or the placeholder model handler.
+Synchronous submenu requests and requests received while the source is closing
+wait for dismissal completion, then retain the gear anchor when presented.
+Commands that close their own source do not receive a second dismissal, and
+non-dismissing commands keep their source. Ambiguous/disabled commands retain
+the original sheet instead of guessing. The ELM command and original owner stay
+alive through dismissal and presentation; trace entries include `elm-tap`,
+`elm close-after-command`, `elm present-deferred` and `elm present-replay`.
+The `--elm-command-regression` UIKit fixture checks synchronous/asynchronous
+navigation, reparenting requests from a dismissed source, self-dismissal,
+retained owners, late gesture binding, exact-once leaf selection, and
+unsupported-command fallback. This does not replace testing
+against the target YouTube binary.
+
 Empty, handler-less `YTSpacerButton` entries are structural spacing and do not
 become choices or invalidate the list. Named spacers and unknown rows are retained
 or fall back normally. ELM text recovery follows bounded node children and virtual
