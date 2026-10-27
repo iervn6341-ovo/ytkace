@@ -159,6 +159,16 @@ fallback and action routing without video/account details. Actual YouTube versio
 still require device validation. Bounds adapt to the safe area and the native
 popover repositions on rotation; long option lists remain scrollable.
 
+Native selections emit bounded `[YTKACE PlayerMenus] trace=…` diagnostics before
+the popover closes. The same trace records the model index and safe item ID,
+handler signature/route, registered event masks and target/selector names
+(including UIAction handlers), actual dispatch entry/return, gesture classes,
+and native/presented/navigation-controller state immediately and after 0.25,
+1 and 2 seconds. Presentation requests include whether they occurred inside the
+handler or only within the short observation window; timing alone does not prove
+causation. Traces do not change activation routes, invoke additional callbacks,
+or log menu text, lyrics or account data. Native objects remain weakly referenced.
+
 Native actions without a readable title field recover their text from the native
 factory arguments, button/element labels or accessibility data. Formatted YouTube
 strings are flattened through their text API. Factory capture also retains icons,

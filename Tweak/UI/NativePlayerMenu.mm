@@ -275,6 +275,139 @@ static dispatch_block_t ControlActivation(id button) {
     } copy];
 }
 
+// A trace owns only diagnostics. Weak references leave the native lifetime intact.
+@interface YTKACENativeMenuTrace : NSObject
+@property(nonatomic) NSUInteger identifier, presentationRequests, selectorCalls, uiActionCalls;
+@property(nonatomic) BOOL handlerReturned;
+@property(nonatomic) NSTimeInterval start;
+@property(nonatomic, weak) UIViewController *native;
+@property(nonatomic, weak) UIWindow *window;
+@property(nonatomic, weak) UIControl *control;
+@property(nonatomic, weak) id owner;
+@end
+@implementation YTKACENativeMenuTrace @end
+static YTKACENativeMenuTrace *ActiveTrace, *RecentTrace;
+static NSUInteger TraceSequence;
+static NSString *TraceClass(id value) { return value ? NSStringFromClass([value class]) : @"none"; }
+static NSString *TraceControllerChain(UIWindow *window) {
+    NSMutableArray *names = [NSMutableArray array];
+    UIViewController *current = window.rootViewController;
+    for (NSUInteger depth = 0; current && depth < 10; depth++, current = current.presentedViewController) {
+        NSString *name = TraceClass(current);
+        if ([current isKindOfClass:UINavigationController.class])
+            name = [name stringByAppendingFormat:@"(%@)",TraceClass([(UINavigationController *)current topViewController])];
+        [names addObject:name];
+    }
+    return names.count ? [names componentsJoinedByString:@" > "] : @"none";
+}
+static void TraceState(YTKACENativeMenuTrace *trace, NSString *stage) {
+    UIViewController *native = trace.native;
+    NSMutableArray *children = [NSMutableArray array];
+    for (UIViewController *child in native.childViewControllers) {
+        if (children.count == 8) break;
+        [children addObject:[child isKindOfClass:UINavigationController.class]
+            ? [NSString stringWithFormat:@"%@(%@)",TraceClass(child),TraceClass([(UINavigationController *)child topViewController])]
+            : TraceClass(child)];
+    }
+    id actions = Value(trace.owner,@"actions");
+    os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] trace=%lu stage=%{public}@ elapsed=%.3f native=%{public}@ presenting=%{public}@ presented=%{public}@ dismissing=%d inWindow=%d alpha=%.2f children=%{public}@ ownerActions=%ld handlerReturned=%d selectorCalls=%lu uiActionCalls=%lu presentationRequests=%lu controlParent=%{public}@ controlEnabled=%d controlInteraction=%d rootChain=%{public}@",
+        (unsigned long)trace.identifier,stage,NSProcessInfo.processInfo.systemUptime - trace.start,
+        TraceClass(native),TraceClass(native.presentingViewController),TraceClass(native.presentedViewController),native.isBeingDismissed,
+        native.isViewLoaded && native.view.window != nil,native.isViewLoaded ? native.view.alpha : -1,
+        [children componentsJoinedByString:@","],(long)([actions isKindOfClass:NSArray.class] ? [actions count] : -1),
+        trace.handlerReturned,(unsigned long)trace.selectorCalls,(unsigned long)trace.uiActionCalls,
+        (unsigned long)trace.presentationRequests,TraceClass(trace.control.superview),trace.control.enabled,
+        trace.control.userInteractionEnabled,TraceControllerChain(trace.window));
+}
+static YTKACENativeMenuTrace *CurrentTrace(void) {
+    if (ActiveTrace) return ActiveTrace;
+    YTKACENativeMenuTrace *trace = RecentTrace;
+    return trace && NSProcessInfo.processInfo.systemUptime - trace.start <= 3 ? trace : nil;
+}
+void YTKACETraceNativeControlDispatch(UIControl *control, NSString *phase,
+    NSString *kind, SEL selector, id target, BOOL hasEvent) {
+    if (!NSThread.isMainThread) return;
+    YTKACENativeMenuTrace *trace = CurrentTrace();
+    if (!trace || control != trace.control) return;
+    if ([phase isEqual:@"enter"]) {
+        if ([kind isEqual:@"selector"]) trace.selectorCalls++;
+        else trace.uiActionCalls++;
+    }
+    os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] trace=%lu stage=dispatch phase=%{public}@ kind=%{public}@ control=%{public}@ target=%{public}@ selector=%{public}@ hasUIEvent=%d",
+        (unsigned long)trace.identifier,phase,kind,TraceClass(control),TraceClass(target),
+        selector ? NSStringFromSelector(selector) : @"none",hasEvent);
+}
+void YTKACETraceNativePresentation(UIViewController *presenter, UIViewController *presented) {
+    if (!NSThread.isMainThread) return;
+    YTKACENativeMenuTrace *trace = CurrentTrace();
+    if (!trace || presenter.viewIfLoaded.window != trace.window || !trace.window) return;
+    trace.presentationRequests++;
+    os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] trace=%lu stage=present-request elapsed=%.3f duringHandler=%d presenter=%{public}@ controller=%{public}@ occupiedBy=%{public}@ dismissing=%d",
+        (unsigned long)trace.identifier,NSProcessInfo.processInfo.systemUptime - trace.start,ActiveTrace == trace,
+        TraceClass(presenter),TraceClass(presented),TraceClass(presenter.presentedViewController),presenter.isBeingDismissed);
+}
+static NSDictionary *TraceMetadata(id model, id button, NSUInteger index, NSString *route) {
+    YTKACENativeMenuOwner *modelBox = [YTKACENativeMenuOwner new]; modelBox.value = model;
+    YTKACENativeMenuOwner *buttonBox = [YTKACENativeMenuOwner new]; buttonBox.value = button;
+    return @{@"model":modelBox,@"button":buttonBox,@"index":@(index),@"route":route};
+}
+static YTKACENativeMenuTrace *BeginTrace(UIViewController *native, NSDictionary *metadata) {
+    YTKACENativeMenuTrace *trace = [YTKACENativeMenuTrace new];
+    trace.identifier = ++TraceSequence; trace.start = NSProcessInfo.processInfo.systemUptime;
+    trace.native = native; trace.window = native.viewIfLoaded.window;
+    trace.owner = [(YTKACENativeMenuOwner *)objc_getAssociatedObject(native,NativeOwnerKey) value];
+    id model = [(YTKACENativeMenuOwner *)metadata[@"model"] value];
+    id button = [(YTKACENativeMenuOwner *)metadata[@"button"] value];
+    if ([button isKindOfClass:UIControl.class]) trace.control = button;
+    NSString *identifier = objc_getAssociatedObject(model,NativeItemIdentifierKey);
+    if (![identifier hasPrefix:@"menu_item_"] || identifier.length > 128) identifier = @"unknown";
+    id handler = Value(model,@"handler");
+    NSMethodSignature *signature = HandlerSignature(handler);
+    os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] trace=%lu stage=selection nativeIndex=%lu item=%{public}@ route=%{public}@ model=%{public}@ button=%{public}@ owner=%{public}@ handlerClass=%{public}@ handlerArgs=%ld handlerReturn=%{public}@ verifiedRoute=%d shouldDismissKnown=%d shouldDismiss=%d events=%lu enabled=%d interaction=%d tracking=%d touchInside=%d",
+        (unsigned long)trace.identifier,(unsigned long)[metadata[@"index"] unsignedIntegerValue],identifier,metadata[@"route"] ?: @"unknown",
+        TraceClass(model),TraceClass(button),TraceClass(trace.owner),TraceClass(handler),
+        (long)(signature ? signature.numberOfArguments : -1),signature ? [NSString stringWithUTF8String:signature.methodReturnType] : @"unknown",
+        objc_getAssociatedObject(model,NativeRouteKey) != nil,[model respondsToSelector:NSSelectorFromString(@"shouldDismissOnAction")],
+        Flag(model,@"shouldDismissOnAction",YES),(unsigned long)trace.control.allControlEvents,
+        trace.control.enabled,trace.control.userInteractionEnabled,trace.control.tracking,trace.control.touchInside);
+    __block NSUInteger bindings = 0;
+    [trace.control enumerateEventHandlers:^(UIAction *action, id target, SEL selector, UIControlEvents events, BOOL *stop) {
+        if (bindings++ >= 24) { *stop = YES; return; }
+        os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] trace=%lu stage=binding kind=%{public}@ events=%lu target=%{public}@ selector=%{public}@",
+            (unsigned long)trace.identifier,action ? @"UIAction" : @"selector",(unsigned long)events,
+            action ? TraceClass(action) : (target ? TraceClass(target) : @"responder-chain"),selector ? NSStringFromSelector(selector) : @"none");
+    }];
+    os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] trace=%lu stage=binding-summary count=%lu capped=%d",
+        (unsigned long)trace.identifier,(unsigned long)MIN(bindings,24u),bindings > 24);
+    NSMutableArray<UIView *> *views = [NSMutableArray array];
+    if ([button isKindOfClass:UIView.class]) [views addObject:button];
+    NSUInteger gestures = 0;
+    for (NSUInteger index = 0; index < views.count && index < 32; index++) {
+        UIView *view = views[index];
+        for (UIGestureRecognizer *gesture in view.gestureRecognizers) {
+            if (gestures++ >= 16) break;
+            os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] trace=%lu stage=gesture view=%{public}@ class=%{public}@ delegate=%{public}@ enabled=%d state=%ld",
+                (unsigned long)trace.identifier,TraceClass(view),TraceClass(gesture),TraceClass(gesture.delegate),gesture.enabled,(long)gesture.state);
+        }
+        for (UIView *child in view.subviews) if (views.count < 32) [views addObject:child];
+    }
+    RecentTrace = trace;
+    TraceState(trace,@"selected-before-native-action");
+    for (NSNumber *delay in @[@0.25,@1.0,@2.0]) dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+        (int64_t)(delay.doubleValue * NSEC_PER_SEC)),dispatch_get_main_queue(),^{ TraceState(trace,@"settled"); });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,3 * NSEC_PER_SEC),dispatch_get_main_queue(),^{
+        if (RecentTrace == trace) RecentTrace = nil;
+    });
+    return trace;
+}
+static void RunTracedAction(YTKACENativeMenuTrace *trace, dispatch_block_t action) {
+    YTKACENativeMenuTrace *previous = ActiveTrace; ActiveTrace = trace;
+    TraceState(trace,@"handler-enter");
+    BOOL returned = NO;
+    @try { action(); returned = YES; trace.handlerReturned = YES; }
+    @finally { TraceState(trace,returned ? @"handler-return" : @"handler-exception"); ActiveTrace = previous; }
+}
+
 static NSString *ItemIdentifier(id renderer) {
     id options = Value(Value(renderer,@"elementRenderer"),@"compatibilityOptions");
     SEL message = NSSelectorFromString(@"messageForFieldNumber:");
@@ -394,6 +527,8 @@ static NSArray<NSDictionary *> *NativePlayerActions(UIViewController *controller
         BOOL retainsNative = nativeViewsOnly &&
             (activation != nil || !Flag(model,@"shouldDismissOnAction",YES));
         if (activation) handler = activation;
+        NSDictionary *diagnostics = TraceMetadata(model,button,nativeIndex,
+            activation ? @"control-event" : (objc_getAssociatedObject(model,NativeRouteKey) ? @"verified-route" : @"model-handler"));
         Class spacerClass = NSClassFromString(@"YTSpacerButton");
         if (nativeViewsOnly) {
             if (spacerClass && [button isKindOfClass:spacerClass] && !handler &&
@@ -443,6 +578,7 @@ static NSArray<NSDictionary *> *NativePlayerActions(UIViewController *controller
                 if (selectionTitle) item[@"selectionTitle"] = selectionTitle;
                 if (handler) item[@"handler"] = handler;
                 if (retainsNative) item[@"nativeActivation"] = @YES;
+                item[@"nativeDiagnostics"] = diagnostics;
                 [actions addObject:item];
                 continue;
             }
@@ -497,6 +633,7 @@ static NSArray<NSDictionary *> *NativePlayerActions(UIViewController *controller
         titleSources[titleSource] = @(titleSources[titleSource].unsignedIntegerValue + 1);
         if (handler) action[@"handler"] = handler;
         if (retainsNative) action[@"nativeActivation"] = @YES;
+        action[@"nativeDiagnostics"] = diagnostics;
         for (NSString *key in @[@"subtitle",@"currentValue"]) {
             NSString *text = Text(model,key) ?: captured[[key isEqual:@"currentValue"] ? @"value" : key];
             if (text.length) action[[key isEqual:@"currentValue"] ? @"value" : key] = text;
@@ -708,9 +845,16 @@ void YTKACEPresentAdaptedPlayerMenu(UIViewController *controller, UIView *source
     for (NSDictionary *item in actions) {
         NSMutableDictionary *copy = [item mutableCopy];
         dispatch_block_t original = item[@"handler"];
-        if (original) copy[@"handler"] = [item[@"nativeActivation"] boolValue]
-            ? [^{ [session activateNative:original]; } copy]
-            : [^{ [session finish:original]; } copy];
+        if (original) {
+            __block YTKACENativeMenuTrace *trace = nil;
+            copy[@"diagnosticSelection"] = [^{ trace = BeginTrace(session.native,item[@"nativeDiagnostics"]); } copy];
+            copy[@"handler"] = [^{
+                if (!trace) trace = BeginTrace(session.native,item[@"nativeDiagnostics"]);
+                dispatch_block_t invocation = ^{ RunTracedAction(trace,original); };
+                if ([item[@"nativeActivation"] boolValue]) [session activateNative:invocation];
+                else [session finish:invocation];
+            } copy];
+        }
         [adapted addObject:copy];
     }
     if (!YTKACEPresentSystemMenuWithDismissal(controller,source,controller.title,nil,adapted,^(BOOL selected) {

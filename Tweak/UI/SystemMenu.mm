@@ -308,6 +308,8 @@ void YTKACENotifySystemMenuDismissed(UIViewController *menu) {
     NSDictionary *action = self.actions[indexPath.row];
     if (action[@"enabled"] && ![action[@"enabled"] boolValue]) return;
     dispatch_block_t handler = action[@"handler"];
+    dispatch_block_t diagnostic = action[@"diagnosticSelection"];
+    if (diagnostic) diagnostic();
     ((YTKACEMenuPresentation *)self.menuPresentation).selectedAction = YES;
     UIView *source = YTKACEPlayerMenuSource(self.menuPresentation);
     YTKACERememberPlayerMenuSource(source);

@@ -14,7 +14,7 @@ static const void *NativeGearKey = &NativeGearKey;
 static const void *LastTouchKey = &LastTouchKey;
 static const void *GearAnchorKey = &GearAnchorKey;
 static const void *NativeSourceKey = &NativeSourceKey;
-static IMP OriginalSendAction, OriginalPresent, OriginalWindowEvent;
+static IMP OriginalSendAction, OriginalSendUIAction, OriginalPresent, OriginalWindowEvent;
 
 @interface YTKACEPlayerMenuTap : NSObject
 @property(nonatomic, weak) UIView *source;
@@ -248,7 +248,24 @@ static void SendAction(UIControl *receiver, SEL selector, SEL action, id target,
             else objc_setAssociatedObject(receiver.window, TapKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         }
     }
-    if (OriginalSendAction) ((void (*)(id, SEL, SEL, id, id))OriginalSendAction)(receiver, selector, action, target, event);
+    YTKACETraceNativeControlDispatch(receiver,@"enter",@"selector",action,target,event != nil);
+    BOOL returned = NO;
+    @try {
+        if (OriginalSendAction) ((void (*)(id, SEL, SEL, id, id))OriginalSendAction)(receiver, selector, action, target, event);
+        returned = YES;
+    } @finally {
+        YTKACETraceNativeControlDispatch(receiver,returned ? @"return" : @"exception",@"selector",action,target,event != nil);
+    }
+}
+static void SendUIAction(UIControl *receiver, SEL selector, UIAction *action) {
+    YTKACETraceNativeControlDispatch(receiver,@"enter",@"UIAction",NULL,action,NO);
+    BOOL returned = NO;
+    @try {
+        if (OriginalSendUIAction) ((void (*)(id,SEL,id))OriginalSendUIAction)(receiver,selector,action);
+        returned = YES;
+    } @finally {
+        YTKACETraceNativeControlDispatch(receiver,returned ? @"return" : @"exception",@"UIAction",NULL,action,NO);
+    }
 }
 
 void YTKACEUpdatePlayerMenuTouchSource(UIView *target, UIWindow *window) {
@@ -278,6 +295,7 @@ static void WindowEvent(UIWindow *receiver, SEL selector, UIEvent *event) {
 
 static void Present(UIViewController *receiver, SEL selector, UIViewController *controller,
                      BOOL animated, void (^completion)(void)) {
+    YTKACETraceNativePresentation(receiver,controller);
     if (NSThread.isMainThread && Enabled() && !YTKACEIsPlayerPopover(controller) && IsYouTubeMenu(controller)) {
         UIView *source = SourceForPresenter(receiver);
         if (source) {
@@ -350,6 +368,7 @@ void YTKACEInstallPlayerMenuPresentation(void) {
         YTKACEInstallNativePlayerMenuAdapter();
         YTKACEInstallInstanceHook(@"UIWindow", @"sendEvent:", (IMP)WindowEvent, &OriginalWindowEvent);
         YTKACEInstallInstanceHook(@"UIControl", @"sendAction:to:forEvent:", (IMP)SendAction, &OriginalSendAction);
+        YTKACEInstallInstanceHook(@"UIControl", @"sendAction:", (IMP)SendUIAction, &OriginalSendUIAction);
         YTKACEInstallInstanceHook(@"UIViewController", @"presentViewController:animated:completion:", (IMP)Present, &OriginalPresent);
     });
 }

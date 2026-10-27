@@ -161,6 +161,14 @@ static NativeTestAction *VirtualAction(NSString *title, NSUInteger mode, dispatc
     }
     return action;
 }
+// Two passive targets reproduce the device's targets=2 without a navigation action.
+@interface NativePassiveTarget : NSObject
+@property(nonatomic) NSUInteger calls;
+- (void)inkTap:(id)sender;
+@end
+@implementation NativePassiveTarget
+- (void)inkTap:(id)sender { (void)sender; self.calls++; }
+@end
 @interface NativeTestRenderer : NSObject
 @property(nonatomic, copy) NSString *menuItemIdentifier;
 @property(nonatomic, strong) id text;
@@ -354,12 +362,20 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
         child.actions = @[leaf];
         [parent presentViewController:child animated:YES completion:nil];
     };
+    NativePassiveTarget *passiveA = [NativePassiveTarget new], *passiveB = [NativePassiveTarget new];
     if (mode == 0) {
         model.handler = ^{ Check(NO,@"placeholder model handler must not replace a registered ELM control event"); };
         [button addAction:[UIAction actionWithHandler:^(__unused UIAction *action) { navigate(); }]
             forControlEvents:UIControlEventTouchUpInside];
-    } else {
+    } else if (mode == 1) {
         model.shouldDismissOnAction = NO; model.handler = navigate;
+    } else {
+        model.handler = ^{ Check(NO,@"diagnostics must not switch to the model handler after a passive native control event"); };
+        [button addTarget:passiveA action:@selector(inkTap:) forControlEvents:UIControlEventTouchUpInside];
+        [button addTarget:passiveB action:@selector(inkTap:) forControlEvents:UIControlEventTouchUpInside];
+        [button addAction:[UIAction actionWithHandler:^(__unused UIAction *action) {
+            Check(NO,@"diagnostics must not dispatch an extra primary-action event");
+        }] forControlEvents:UIControlEventPrimaryActionTriggered];
     }
     YTKACERememberPlayerMenuSource(gear);
     [self.root presentViewController:native animated:NO completion:nil];
@@ -370,12 +386,15 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
         [table.tableView.delegate tableView:table.tableView didSelectRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]];
         Later(^{
             UIViewController *child = native.presentedViewController;
-            Check(calls == 1 && child && YTKACEIsPlayerPopover(child.presentedViewController),
+            if (mode < 2) Check(calls == 1 && child && YTKACEIsPlayerPopover(child.presentedViewController),
                 @"native activation must run once and anchor a child presented by the retained native owner");
+            else Check(calls == 0 && !child && passiveA.calls == 1 && passiveB.calls == 1 &&
+                self.root.presentedViewController == native && owner.dismissals == 0,
+                @"diagnostics must observe two passive callbacks without inventing navigation or changing owner lifetime");
             [self.root dismissViewControllerAnimated:NO completion:^{
                 [gear removeFromSuperview];
-                if (mode == 0) [self testNativeActivation:1];
-                else [@"PASS: registered native control and non-dismissing model navigate before owner teardown; child popover inherits gear anchor\n"
+                if (mode < 2) [self testNativeActivation:mode + 1];
+                else [@"PASS: traced UIAction/model navigation and passive two-target dispatch; no extra callback, event or owner teardown\n"
                     writeToFile:ResultPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
             }];
         });
