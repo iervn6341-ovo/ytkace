@@ -7,6 +7,9 @@
 #import <objc/runtime.h>
 #import <os/log.h>
 #include <string.h>
+#ifndef YTKACE_REVISION_STRING
+#define YTKACE_REVISION_STRING "unavailable"
+#endif
 
 static const void *NativeRouteKey = &NativeRouteKey;
 static const void *NativeOwnerKey = &NativeOwnerKey;
@@ -582,8 +585,10 @@ static NSArray<NSDictionary *> *NativePlayerActions(UIViewController *controller
             command ? @"elm-command" : (activation ? @"control-event" : (objc_getAssociatedObject(model,NativeRouteKey) ? @"verified-route" : @"model-handler")));
         Class spacerClass = NSClassFromString(@"YTSpacerButton");
         if (nativeViewsOnly) {
-            if (spacerClass && [button isKindOfClass:spacerClass] && !handler &&
+            if (spacerClass && [button isKindOfClass:spacerClass] && (!handler ||
+                (isfinite([button bounds].size.height) && [button bounds].size.height >= 0 && [button bounds].size.height < 24)) &&
                 !Nonempty(PlainString(captured[@"title"])) && !Nonempty(Text(button,@"currentTitle")) &&
+                !Nonempty(Text(model,@"title")) && !Nonempty(Text(model,@"titleText")) &&
                 !Nonempty(Text(button,@"currentAttributedTitle")) && !Nonempty(Text(button,@"accessibilityLabel"))) { spacers++; continue; }
             // Native action arrays include collapsed ELM rows (the device log
             // reports index 3 at 398 x -0). Give asynchronous ELM layout time
@@ -661,7 +666,8 @@ static NSArray<NSDictionary *> *NativePlayerActions(UIViewController *controller
                 continue;
             }
         }
-        if (spacerClass && [button isKindOfClass:spacerClass] && !handler &&
+        if (spacerClass && [button isKindOfClass:spacerClass] && (!handler ||
+            (isfinite([button bounds].size.height) && [button bounds].size.height >= 0 && [button bounds].size.height < 24)) &&
             !Nonempty(Text(model,@"title")) && !Nonempty(Text(model,@"attributedTitle")) &&
             !Nonempty(Text(model,@"titleText")) && !Nonempty(Text(model,@"titleString")) && !captured[@"title"] &&
             !Nonempty(Text(button,@"currentTitle")) && !Nonempty(Text(button,@"currentAttributedTitle")) &&
@@ -756,6 +762,8 @@ static void PresentGearAfterLayout(UIViewController *controller, UIView *source,
         NSStringFromClass(controller.class),NSStringFromCGRect(controller.view.bounds));
 }
 void YTKACEPresentNativeGearMenu(UIViewController *controller, UIView *source) {
+    os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] gear revision=%{public}s youtube=%{public}@ rowRenderer=pre-reparent-v2",YTKACE_REVISION_STRING,
+        NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"] ?: @"unknown");
     PresentGearAfterLayout(controller,source,controller.view.alpha,0);
 }
 
@@ -961,6 +969,7 @@ void YTKACEEnableNativeMenuOutsideDismissal(UIViewController *controller) {
 - (void)activateNative:(dispatch_block_t)action;
 - (void)activateELM:(dispatch_block_t)action shouldDismiss:(BOOL)shouldDismiss;
 - (void)returnToNative;
+- (void)returnToNativeWithReason:(NSString *)reason;
 @end
 @implementation YTKACENativeMenuSession
 - (void)restore {
@@ -972,10 +981,13 @@ void YTKACEEnableNativeMenuOutsideDismissal(UIViewController *controller) {
     self.backdrops = nil; self.backdropAlphas = nil;
 }
 - (void)returnToNative {
+    [self returnToNativeWithReason:@"command-changed-before-selection"];
+}
+- (void)returnToNativeWithReason:(NSString *)reason {
     if (self.finished) return;
     self.finished = YES; [self restore];
     YTKACEEnableNativeMenuOutsideDismissal(self.native);
-    os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] elm fallback reason=command-changed-before-selection");
+    os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] native fallback reason=%{public}@",reason);
 }
 - (void)activateELM:(dispatch_block_t)action shouldDismiss:(BOOL)shouldDismiss {
     if (self.finished) return;
@@ -1053,6 +1065,7 @@ void YTKACEPresentAdaptedPlayerMenu(UIViewController *controller, UIView *source
     NSMutableArray *adapted = [NSMutableArray array];
     for (NSDictionary *item in actions) {
         NSMutableDictionary *copy = [item mutableCopy];
+        if (item[@"nativeRow"]) copy[@"renderingFallback"] = [^{ [session returnToNativeWithReason:@"unavailable-row-rendering"]; } copy];
         if (item[@"nativeRow"]) copy[@"nativeRenderingValid"] = [^BOOL {
             NSDictionary *metadata = item[@"nativeDiagnostics"];
             id model = [(YTKACENativeMenuOwner *)metadata[@"model"] value];

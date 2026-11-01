@@ -94,7 +94,16 @@ static NSUInteger GearExtensionCalls;
 @interface YTMenuItemElementsMDCButton : UIControl
 @property(nonatomic, strong) UIView *elementView;
 @end
-@implementation YTMenuItemElementsMDCButton @end
+@implementation YTMenuItemElementsMDCButton
+- (instancetype)initWithFrame:(CGRect)frame {
+    if ((self = [super initWithFrame:frame])) { self.opaque = NO; self.backgroundColor = UIColor.clearColor; } return self;
+}
+- (void)drawRect:(CGRect)rect {
+    (void)rect;
+    [@"Rendered native option" drawAtPoint:CGPointMake(16,16)
+        withAttributes:@{NSFontAttributeName:[UIFont systemFontOfSize:17],NSForegroundColorAttributeName:UIColor.labelColor}];
+}
+@end
 @interface ELMTouchCommandPropertiesHandler : NSObject <UIGestureRecognizerDelegate>
 @property(nonatomic) NSUInteger calls;
 @property(nonatomic, copy) dispatch_block_t callback;
@@ -134,6 +143,17 @@ static void InstallELMTap(UIView *view, ELMTouchCommandPropertiesHandler *handle
         withAttributes:@{NSFontAttributeName:[UIFont systemFontOfSize:17],NSForegroundColorAttributeName:UIColor.labelColor}];
 }
 - (void)nativeTap { self.nativeTargetCalls++; }
+@end
+@interface NativeTestReparentedButton : NativeTestOpaqueButton
+@property(nonatomic, weak) UIView *originalParent;
+@end
+@implementation NativeTestReparentedButton
+- (void)didMoveToSuperview {
+    [super didMoveToSuperview];
+    if (self.originalParent && self.superview != self.originalParent) {
+        self.suppressRendering = YES; self.layer.contents = nil; [self setNeedsDisplay];
+    }
+}
 @end
 @interface NativeTestNode : NSObject
 @property(nonatomic, copy) NSArray *subnodes;
@@ -244,6 +264,7 @@ static NativeTestAction *VirtualAction(NSString *title, NSUInteger mode, dispatc
     if (self.lateGeometryButton) dispatch_after(dispatch_time(DISPATCH_TIME_NOW,80 * NSEC_PER_MSEC),dispatch_get_main_queue(),^{
         CGRect frame = self.lateGeometryButton.frame; frame.size.height = 56;
         self.lateGeometryButton.frame = frame;
+        [self.lateGeometryButton setNeedsDisplay];
         [self.view setNeedsLayout];
     });
 }
@@ -372,7 +393,60 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
         } else if ([NSProcessInfo.processInfo.arguments containsObject:@"--menu-lifecycle-regression"] ||
             [NSProcessInfo.processInfo.arguments containsObject:@"--real-menu-lifecycle"]) {
             [self testMenuLifecycle:0];
+        } else if ([NSProcessInfo.processInfo.arguments containsObject:@"--row-rendering-regression"]) {
+            [self testRowRendering:0];
         } else [self testOwnedMenu];
+    });
+}
+- (void)testRowRendering:(NSUInteger)mode {
+    UIButton *gear = [UIButton buttonWithType:UIButtonTypeSystem]; gear.frame = CGRectMake(240,140,44,44);
+    [self.button.superview addSubview:gear]; YTKACERegisterNativeGearMenuSource(gear);
+    YTBottomSheetController *native = [YTBottomSheetController new];
+    native.modalPresentationStyle = UIModalPresentationCustom; native.transitioningDelegate = self;
+    YTDraggableView *panel = [[YTDraggableView alloc] initWithFrame:CGRectMake(8,80,320,120)];
+    [native.view addSubview:panel];
+    NativeTestReparentedButton *button = [[NativeTestReparentedButton alloc] initWithFrame:CGRectMake(0,0,320,56)];
+    button.opaque = NO; button.backgroundColor = UIColor.clearColor; [panel addSubview:button];
+    button.originalParent = panel; button.suppressRendering = mode == 1;
+    ELMTouchCommandPropertiesHandler *command = [ELMTouchCommandPropertiesHandler new]; InstallELMTap(button,command,YES);
+    NativeTestAction *action = [NativeTestAction new]; action.button = button;
+    action.handler = ^{ Check(NO,@"rendering fallback must not execute a placeholder callback"); };
+    NativeTestOwner *owner = [NativeTestOwner new]; owner.native = native; owner.actions = @[action]; native.actionsController = owner;
+    YTKACERememberPlayerMenuSource(gear); [self.root presentViewController:native animated:NO completion:nil];
+    Later(^{
+        UIViewController *menu = native.presentedViewController;
+        if (mode == 1) {
+            Check(!menu && native.view.alpha == 1 && command.calls == 0 && owner.dismissals == 0 && button.superview == panel,
+                @"never-rendered native rows must restore the original sheet, not leave a clickable blank popover");
+            [native dismissViewControllerAnimated:NO completion:^{
+                [gear removeFromSuperview];
+                [self testRowRendering:2];
+            }]; return;
+        }
+        Check(YTKACEIsPlayerPopover(menu) && button.superview == panel,@"a node cleared on reparent must use its original pixels without remaining borrowed");
+        UITableViewController *table = (id)MenuNavigation(menu).topViewController;
+        if (mode == 2) {
+            NSDictionary *item = [[table valueForKey:@"actions"] firstObject];
+            [item[@"nativeRow"] setValue:nil forKey:@"rendering"];
+            [table viewDidAppear:NO]; // Queue the delayed blank check, then cancel first.
+            [menu dismissViewControllerAnimated:YES completion:nil];
+            Later(^{
+                Check(!self.root.presentedViewController && owner.dismissals == 1 && command.calls == 0,
+                    @"a pending blank check must not restore the native sheet after cancellation starts");
+                [gear removeFromSuperview];
+                [@"PASS: pre-reparent pixels survive invalidation; missing pixels restore native UI; pending blank checks respect cancellation\n"
+                    writeToFile:ResultPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            }); return;
+        }
+        UITableViewCell *cell = [table.tableView cellForRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]];
+        BOOL image = NO;
+        for (UIView *view in cell.contentView.subviews) if ([view isKindOfClass:UIImageView.class] && [(UIImageView *)view image].CGImage) image = YES;
+        Check(image,@"reparent recovery must visibly contain an owned native-row image");
+        [table.tableView.delegate tableView:table.tableView didSelectRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]];
+        Later(^{
+            Check(command.calls == 1 && owner.dismissals == 1 && !self.root.presentedViewController,@"reparent recovery must retain one original command and one dismissal");
+            [gear removeFromSuperview]; [self testRowRendering:1];
+        });
     });
 }
 - (void)testMenuLifecycle:(NSUInteger)mode {
@@ -809,7 +883,8 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
     Check(!YTKACENativePlayerActions(native) && YTKACENativeMenuNeedsTextRetry(native),@"appearance-time labels must request one post-presentation retry");
     [pending.button setTitle:@"Ready after appearance" forState:UIControlStateNormal];
     Check(YTKACENativePlayerActions(native).count == 1 && !YTKACENativeMenuNeedsTextRetry(native),@"ready native text must clear the retry state");
-    NativeTestAction *spacer = [NativeTestAction new]; spacer.button = [YTSpacerButton new];
+    NativeTestAction *spacer = [NativeTestAction new]; spacer.button = [[YTSpacerButton alloc] initWithFrame:CGRectMake(0,0,386,1)];
+    spacer.handler = ^(__unused id sender) { Check(NO,@"a one-point spacer placeholder must never execute"); };
     NSArray *elements = @[VirtualAction(@"Lock screen",0,handler),VirtualAction(@"Other settings",1,handler),
         VirtualAction(@"Indexed virtual label",2,handler),VirtualAction(@"Yoga-only text",3,handler),
         VirtualAction(@"Materialized controller text",4,handler)];
@@ -999,7 +1074,8 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
             NativeTestRenderer *renderer = [NativeTestRenderer new]; renderer.menuItemIdentifier = name;
             [renderers addObject:renderer];
         }
-        NativeTestAction *spacer = [NativeTestAction new]; spacer.button = [YTSpacerButton new];
+        NativeTestAction *spacer = [NativeTestAction new]; spacer.button = [[YTSpacerButton alloc] initWithFrame:CGRectMake(0,0,386,1)];
+    spacer.handler = ^(__unused id sender) { Check(NO,@"a one-point spacer placeholder must never execute"); };
         NativeTestAction *ax = [NativeTestAction new]; ax.handler = ^{ weak.adaptedCallbacks++; };
         self.opaqueParent = [[UIView alloc] initWithFrame:CGRectMake(20,80,320,56)];
         [self.adaptedNative.view addSubview:self.opaqueParent];
@@ -1135,7 +1211,8 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
     }
     // Match the real device: index 3 remains collapsed in the action array,
     // while index 4 gains native geometry asynchronously after presentation.
-    NativeTestAction *spacer = [NativeTestAction new]; spacer.button = [[YTSpacerButton alloc] initWithFrame:CGRectMake(0,224,398,32)];
+    NativeTestAction *spacer = [NativeTestAction new]; spacer.button = [[YTSpacerButton alloc] initWithFrame:CGRectMake(0,224,398,1)];
+    spacer.handler = ^(__unused id sender) { Check(NO,@"native gear spacer placeholders are structural"); };
     [panel addSubview:spacer.button];
     [models addObject:spacer];
     YTActionSheetAction *extension = [YTActionSheetAction actionWithTitle:@"字幕動態島"

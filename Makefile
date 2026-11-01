@@ -108,6 +108,7 @@ YTKACE_FILES = \
 YTKACE_CFLAGS = -fobjc-arc -Wall -Wextra -Werror=return-type
 YTKACE_CFLAGS += -DYTKACE_COMBINED_SABR=1
 YTKACE_CFLAGS += -DYTKACE_VERSION_STRING=\"$(shell awk '/^Version:/ {print $$2}' "$(YTKACE_PROJECT_DIR)/control")\"
+YTKACE_CFLAGS += -DYTKACE_REVISION_STRING=\"$(shell git -C "$(YTKACE_PROJECT_DIR)" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)\"
 YTKACE_CFLAGS += -Wno-module-import-in-extern-c
 YTKACE_CFLAGS += -I"$(YTKACE_PROJECT_DIR)/Vendor/FFmpeg/include"
 YTKACE_CCFLAGS = -std=c++17

@@ -5,6 +5,7 @@
 #import <objc/message.h>
 #import <objc/runtime.h>
 #import <os/log.h>
+#include <string.h>
 NSNotificationName const YTKACEPlayerMenuWillSelectAction = @"YTKACEPlayerMenuWillSelectAction";
 NSNotificationName const YTKACEPlayerMenuTouchSource = @"YTKACEPlayerMenuTouchSource";
 
@@ -48,6 +49,30 @@ static BOOL DisclosureImage(UIImage *image) {
         fabs(sum[0] / count[0] - sum[2] / count[2]) < width * .25;
     objc_setAssociatedObject(image,&key,@(chevron),OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     return chevron;
+}
+
+// Retain pixels before reparenting an ELM node. Geometry alone is not proof
+// that its asynchronous display contents are ready. Reject uniform/empty images.
+static UIImage *RenderedNativeRow(UIView *view) {
+    if (!view.window || view.bounds.size.width < 44 || view.bounds.size.height < 24) return nil;
+    [view.layer displayIfNeeded];
+    UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
+    format.scale = MIN(3,view.window.screen.scale); format.opaque = NO;
+    UIImage *image = [[[UIGraphicsImageRenderer alloc] initWithSize:view.bounds.size format:format]
+        imageWithActions:^(UIGraphicsImageRendererContext *context) { [view.layer renderInContext:context.CGContext]; }];
+    CGImageRef bitmap = image.CGImage;
+    if (!bitmap) return nil;
+    CFDataRef data = CGDataProviderCopyData(CGImageGetDataProvider(bitmap));
+    if (!data) return nil;
+    size_t width = CGImageGetWidth(bitmap), height = CGImageGetHeight(bitmap);
+    size_t stride = CGImageGetBytesPerRow(bitmap), pixel = CGImageGetBitsPerPixel(bitmap) / 8;
+    const UInt8 *bytes = CFDataGetBytePtr(data); BOOL content = NO;
+    if (pixel && pixel <= 16 && width && height && CFDataGetLength(data) >= (CFIndex)(stride * height))
+        for (size_t y = 0; !content && y < height; y++)
+            for (size_t x = 0; x < width; x++)
+                if (memcmp(bytes,bytes + y * stride + x * pixel,pixel)) { content = YES; break; }
+    CFRelease(data);
+    return content ? image : nil;
 }
 
 @interface YTKACEMenuNativeRow ()
@@ -141,15 +166,6 @@ static BOOL DisclosureImage(UIImage *image) {
         [host addSubview:self.retainedRendering]; self.retainedRendering.frame = host.bounds;
         return;
     }
-    [NSLayoutConstraint deactivateConstraints:self.constraints];
-    self.mounted = YES;
-    self.view.translatesAutoresizingMaskIntoConstraints = YES;
-    self.view.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    // The table restores and activates this control through one selected route.
-    // Do not also deliver touches to the embedded button and dispatch it twice.
-    self.view.userInteractionEnabled = NO;
-    [host addSubview:self.view]; self.view.frame = host.bounds;
-    [self.view setNeedsLayout]; [self.view layoutIfNeeded];
     for (NSDictionary *entry in self.disclosures) {
         UIImageView *icon = entry[@"view"];
         if (icon) {
@@ -172,6 +188,17 @@ static BOOL DisclosureImage(UIImage *image) {
         }
     }
     if (self.disclosures.count) os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] disclosure normalized count=%lu",(unsigned long)self.disclosures.count);
+    if (!self.rendering) self.rendering = RenderedNativeRow(self.view);
+    [NSLayoutConstraint deactivateConstraints:self.constraints];
+    self.mounted = YES;
+    self.view.translatesAutoresizingMaskIntoConstraints = YES;
+    self.view.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    // The table restores and activates this control through one selected route.
+    // Do not also deliver touches to the embedded button and dispatch it twice.
+    self.view.userInteractionEnabled = NO;
+    [host addSubview:self.view]; self.view.frame = host.bounds;
+    [self.view setNeedsLayout]; [self.view layoutIfNeeded];
+
 }
 - (void)restore {
     [self.retainedRendering removeFromSuperview]; self.host = nil;
@@ -209,14 +236,14 @@ static BOOL DisclosureImage(UIImage *image) {
     if (!self.mounted || self.renderingPreserved || !self.host.window ||
         UIApplication.sharedApplication.applicationState != UIApplicationStateActive ||
         self.view.bounds.size.width < 44 || self.view.bounds.size.height < 24) return;
-    // A bitmap owns its pixels across suspension. A UIView snapshot can itself
-    // lose its backing surface when the app is backgrounded.
-    UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
-    format.scale = MIN(3,self.host.window.screen.scale); format.opaque = NO;
-    UIImage *image = [[[UIGraphicsImageRenderer alloc] initWithSize:self.view.bounds.size format:format]
-        imageWithActions:^(UIGraphicsImageRendererContext *context) { [self.view.layer renderInContext:context.CGContext]; }];
-    if (image.CGImage) self.rendering = image;
+    UIImage *image = RenderedNativeRow(self.view);
+    if (image) self.rendering = image;
+    else if (self.rendering) {
+        [self preserveRendering];
+        os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] row rendering=pre-reparent-bitmap");
+    }
 }
+- (BOOL)renderingAvailable { return self.rendering != nil; }
 - (BOOL)preserveRendering {
     if (self.renderingPreserved) return self.rendering != nil;
     UIView *host = self.host;
@@ -326,6 +353,7 @@ static void CompleteMenuTransition(UIViewController *menu, UIView *content) {
 @property(nonatomic, copy) void (^dismissalHandler)(BOOL);
 @property(nonatomic) BOOL selectedAction;
 @property(nonatomic) BOOL notifiedDismissal;
+@property(nonatomic) BOOL closing;
 - (void)notifyDismissal;
 @end
 @implementation YTKACEMenuPresentation
@@ -352,6 +380,7 @@ static void CompleteMenuTransition(UIViewController *menu, UIView *content) {
     CompleteMenuTransition(self,self.contentNavigation.view);
 }
 - (void)dismissViewControllerAnimated:(BOOL)animated completion:(void (^)(void))completion {
+    self.closing = YES;
     [super dismissViewControllerAnimated:animated completion:^{
         [self notifyDismissal];
         if (completion) completion();
@@ -441,7 +470,8 @@ void YTKACENotifySystemMenuDismissed(UIViewController *menu) {
     return YES;
 }
 - (void)captureNativeRows {
-    if (self.nativeRowsSuspended || !self.viewIfLoaded.window) return;
+    if (self.nativeRowsSuspended || !self.viewIfLoaded.window ||
+        ((YTKACEMenuPresentation *)self.menuPresentation).closing) return;
     for (NSDictionary *action in self.actions) [action[@"nativeRow"] captureRendering];
 }
 - (void)preserveNativeRows:(NSNotification *)notification {
@@ -496,7 +526,26 @@ void YTKACENotifySystemMenuDismissed(UIViewController *menu) {
     [self updateMenuHeight];
     [self captureNativeRows];
     __weak YTKACESystemMenuController *weak = self;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,100 * NSEC_PER_MSEC),dispatch_get_main_queue(),^{ [weak captureNativeRows]; });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,100 * NSEC_PER_MSEC),dispatch_get_main_queue(),^{
+        YTKACESystemMenuController *owner = weak;
+        [owner captureNativeRows];
+        if (!owner || owner.nativeRowsSuspended || !owner.viewIfLoaded.window ||
+            owner.menuPresentation.isBeingDismissed || !owner.menuPresentation.presentingViewController ||
+            ((YTKACEMenuPresentation *)owner.menuPresentation).closing ||
+            ((YTKACEMenuPresentation *)owner.menuPresentation).selectedAction) return;
+        for (NSDictionary *item in owner.actions) {
+            YTKACEMenuNativeRow *row = item[@"nativeRow"];
+            if (!row || row.renderingAvailable) continue;
+            dispatch_block_t fallback = item[@"renderingFallback"];
+            os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] row rendering=unavailable route=native-fallback index=%lu class=%{public}@ bounds=%{public}@",
+                (unsigned long)[item[@"nativeDiagnostics"][@"index"] unsignedIntegerValue],
+                NSStringFromClass(row.view.class),NSStringFromCGRect(row.view.bounds));
+            if (fallback) ((YTKACEMenuPresentation *)owner.menuPresentation).selectedAction = YES;
+            YTKACECancelSystemMenuTransition(YTKACEPlayerMenuSource(owner.menuPresentation));
+            [owner.menuPresentation dismissViewControllerAnimated:NO completion:fallback];
+            break;
+        }
+    });
 }
 - (void)updateMenuHeight {
     if (self.updatingSize || !self.view.window) return;

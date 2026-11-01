@@ -143,6 +143,72 @@ static id QualityPresenter(UIView *overlay) {
     return [controller respondsToSelector:action] ? controller : nil;
 }
 
+static BOOL PresentDirectQuality(UIView *overlay, UIButton *source) {
+    id video = OverlayVideoController(overlay);
+    id formats = QualityObject(video,@"selectableVideoFormats");
+    SEL apply = NSSelectorFromString(@"setVideoFormatConstraint:");
+    NSMethodSignature *signature = [video methodSignatureForSelector:apply];
+    Class constraintClass = NSClassFromString(@"MLQuickMenuVideoQualitySettingFormatConstraint");
+    SEL initializer = NSSelectorFromString(@"initWithVideoQualitySetting:formatSelectionReason:qualityLabel:");
+    NSMethodSignature *factory = [constraintClass instanceMethodSignatureForSelector:initializer];
+    BOOL supportedFactory = factory.numberOfArguments == 5 && factory.methodReturnType[0] == '@' &&
+        strcmp([factory getArgumentTypeAtIndex:2],@encode(int)) == 0 &&
+        strcmp([factory getArgumentTypeAtIndex:3],@encode(NSInteger)) == 0 && [factory getArgumentTypeAtIndex:4][0] == '@';
+    if (![formats isKindOfClass:NSArray.class] || ![formats count] || [formats count] > 128 ||
+        signature.numberOfArguments != 3 || signature.methodReturnType[0] != 'v' ||
+        [signature getArgumentTypeAtIndex:2][0] != '@' || !supportedFactory) {
+        os_log(OS_LOG_DEFAULT,"[YTKACE Quality] route=native reason=direct-api-unavailable formats=%d apply=%d constructor=%d legacy=%d youtube=%{public}@",
+            [formats isKindOfClass:NSArray.class] && [formats count] > 0,signature != nil,
+            supportedFactory,
+            YTKACEFeatureEnabled(@"YTKACE.Preference.Playback.LegacyQualityMenu"),
+            NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"] ?: @"unknown");
+        return NO;
+    }
+    __weak UIView *weakOverlay = overlay;
+    __weak id weakVideo = video, weakIdentity = QualityVideo(video);
+    NSString *identifier = [QualityVideoID(weakIdentity) copy];
+    dispatch_block_t (^select)(NSString *) = ^dispatch_block_t(NSString *label) {
+        return [^{
+            UIView *currentOverlay = weakOverlay;
+            id controller = weakVideo, identity = QualityVideo(controller);
+            NSString *currentID = QualityVideoID(identity);
+            BOOL sameID = identifier.length && [identifier isEqual:currentID];
+            if (!controller || OverlayVideoController(currentOverlay) != controller ||
+                (identifier.length && currentID.length && !sameID) || (identity != weakIdentity && !sameID)) {
+                os_log(OS_LOG_DEFAULT,"[YTKACE Quality] direct-selection skipped=video-changed");
+                return;
+            }
+            id constraint = nil;
+            if (label.length) {
+                constraint = ((id (*)(id,SEL,int,NSInteger,id))objc_msgSend)([constraintClass alloc],initializer,3,2,label);
+                if (!constraint) { os_log(OS_LOG_DEFAULT,"[YTKACE Quality] direct-selection skipped=constraint-unavailable"); return; }
+            }
+            ((void (*)(id,SEL,id))objc_msgSend)(controller,apply,constraint);
+            ApplyChoice(currentOverlay,label,@"direct-selector");
+        } copy];
+    };
+    NSMutableArray<NSDictionary *> *actions = [NSMutableArray arrayWithObject:
+        @{@"title":YTKACELocalized(@"Auto"),@"directQuality":@YES,@"handler":select(@"")}];
+    NSMutableSet<NSString *> *labels = [NSMutableSet set];
+    for (id format in formats) {
+        id label = QualityObject(format,@"qualityLabel");
+        if (![label isKindOfClass:NSString.class] || ![label length]) continue;
+        if ([labels containsObject:label]) continue;
+        if (YTKACEFeatureEnabled(@"YTKACE.Preference.Playback.PremiumQualityHidden") &&
+            [label rangeOfString:@"Premium" options:NSCaseInsensitiveSearch].location != NSNotFound) continue;
+        [labels addObject:label];
+        [actions addObject:@{@"title":label,@"directQuality":@YES,@"handler":select(label)}];
+    }
+    if (actions.count < 2) return NO;
+    UIViewController *presenter = source.window.rootViewController;
+    for (NSUInteger depth = 0; presenter.presentedViewController && depth < 12; depth++)
+        presenter = presenter.presentedViewController;
+    BOOL shown = YTKACEPresentSystemMenu(presenter,source,YTKACELocalized(@"Video Quality"),nil,actions);
+    os_log(OS_LOG_DEFAULT,"[YTKACE Quality] route=%{public}@ formats=%lu",shown ? @"direct-format-list" : @"native-presentation-fallback",
+        (unsigned long)actions.count - 1);
+    return shown;
+}
+
 @interface YTKACEQualityControls : NSObject
 @property(nonatomic, weak) UIView *overlay;
 @property(nonatomic, weak) UIButton *button;
@@ -158,6 +224,7 @@ static id QualityPresenter(UIView *overlay) {
 }
 - (void)openQuality:(UIButton *)sender {
     BeginSelection(self.overlay,sender,YES);
+    if (PresentDirectQuality(self.overlay,sender)) return;
     id presenter = QualityPresenter(self.overlay);
     UIViewController *controller = [presenter isKindOfClass:UIViewController.class] ? presenter : nil;
     os_log(OS_LOG_DEFAULT, "[YTKACE Quality] open presenter=%{public}@ presented=%{public}@ dismissing=%d sourceVisible=%d",
@@ -240,6 +307,7 @@ void YTKACEInstallQualityControls(void) {
             }];
         [NSNotificationCenter.defaultCenter addObserverForName:YTKACEPlayerMenuWillSelectAction object:nil
             queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *note) {
+                if ([note.userInfo[@"directQuality"] boolValue]) return;
                 UIView *source = note.object, *overlay = nil;
                 if ([note.userInfo[@"qualityEntry"] boolValue] && CurrentSelection(SelectionOverlay)) {
                     SelectionIsQuality = YES; SelectionSource = source; return;

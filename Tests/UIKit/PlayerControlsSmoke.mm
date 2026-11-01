@@ -50,13 +50,24 @@ void YTKACEShowNotice(NSString *message) { (void)message; }
 @end
 @implementation QualityTestFormat
 @end
+@interface MLQuickMenuVideoQualitySettingFormatConstraint : NSObject
+@property(nonatomic, copy) NSString *qualityLabel;
+- (instancetype)initWithVideoQualitySetting:(int)setting formatSelectionReason:(NSInteger)reason qualityLabel:(NSString *)label;
+@end
+@implementation MLQuickMenuVideoQualitySettingFormatConstraint
+- (instancetype)initWithVideoQualitySetting:(int)setting formatSelectionReason:(NSInteger)reason qualityLabel:(NSString *)label {
+    if ((self = [super init])) { (void)setting; (void)reason; _qualityLabel = [label copy]; } return self;
+}
+@end
 @interface YTSingleVideoController : NSObject
 @property(nonatomic, strong) id singleVideo;
 @property(nonatomic) NSUInteger constraintCalls;
+@property(nonatomic, copy) NSArray *selectableVideoFormats;
+@property(nonatomic, strong) id lastConstraint;
 - (void)setVideoFormatConstraint:(id)constraint;
 @end
 @implementation YTSingleVideoController
-- (void)setVideoFormatConstraint:(id)constraint { (void)constraint; self.constraintCalls++; }
+- (void)setVideoFormatConstraint:(id)constraint { self.lastConstraint = constraint; self.constraintCalls++; }
 @end
 @interface YTVideoQualitySwitchOriginalController : NSObject
 - (void)singleVideo:(id)video didSelectVideoFormat:(id)format;
@@ -357,6 +368,9 @@ static BOOL Finite(CGRect r) { return std::isfinite(r.origin.x) && std::isfinite
     GlassEnabled = NO; [frosted layoutSubviews];
     Check(fabs(frosted._overlayView.alpha - 0.4) < 0.001, @"restore exact native overlay alpha");
     [@"PASS: standalone portrait/fullscreen controls, compact/expanded rows, scroll reachability, repeated quality actions, feature gates, bounded reentry, exit transitions, geometry recovery, actions and PlayerGlass lifecycle" writeToFile:ResultPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    if ([NSProcessInfo.processInfo.arguments containsObject:@"--direct-quality-regression"]) {
+        [self testDirectQuality:qualityButton overlay:overlay player:qualityPlayer video:videoController presenter:qualityPresenter mode:0];
+    }
     if ([NSProcessInfo.processInfo.arguments containsObject:@"--preview-quality-label"]) {
         self.window.rootViewController.view.backgroundColor = UIColor.blackColor;
         qualityPlayer.activeVideo = videoController; format.qualityLabel = @"1080p60 HDR";
@@ -368,5 +382,39 @@ static BOOL Finite(CGRect r) { return std::isfinite(r.origin.x) && std::isfinite
             atomically:YES encoding:NSUTF8StringEncoding error:nil];
     }
 }
+- (void)testDirectQuality:(UIButton *)button overlay:(YTMainAppControlsOverlayView *)overlay player:(QualityTestPlayer *)player
+    video:(YTSingleVideoController *)video presenter:(QualityTestPresenter *)presenter mode:(NSUInteger)mode {
+    HiddenFeatures = NO; player.activeVideo = video; overlay.overlayVisible = YES; [overlay layoutSubviews];
+    QualityTestFormat *low = [QualityTestFormat new]; low.qualityLabel = @"720p60";
+    QualityTestFormat *high = [QualityTestFormat new]; high.qualityLabel = @"1080p60 HDR";
+    video.selectableVideoFormats = mode < 3 ? @[low,high,low] : nil;
+    NSUInteger constraints = video.constraintCalls, nativeCalls = presenter.calls;
+    [button sendActionsForControlEvents:UIControlEventTouchUpInside];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,NSEC_PER_SEC),dispatch_get_main_queue(),^{
+        UIViewController *menu = self.window.rootViewController.presentedViewController;
+        if (mode == 3) {
+            Check(!menu && presenter.calls == nativeCalls + 1,@"unavailable format API must use the native quality entry exactly once");
+            [@"PASS: direct native format list, exact-once format/Auto application, stale-video rejection and native API fallback\n"
+                writeToFile:ResultPath() atomically:YES encoding:NSUTF8StringEncoding error:nil]; return;
+        }
+        Check(menu && YTKACEIsPlayerPopover(menu) && presenter.calls == nativeCalls,@"available format APIs must open the anchored resolution list directly");
+        UINavigationController *navigation = [menu valueForKey:@"contentNavigation"];
+        UITableViewController *table = (id)navigation.topViewController;
+        Check([table.tableView numberOfRowsInSection:0] == 3,@"the direct list must use Auto and the two actual native formats");
+        if (mode == 2) player.activeVideo = [NSObject new];
+        [table.tableView.delegate tableView:table.tableView didSelectRowAtIndexPath:
+            [NSIndexPath indexPathForRow:mode == 1 ? 0 : 2 inSection:0]];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,NSEC_PER_SEC),dispatch_get_main_queue(),^{
+            Check(!self.window.rootViewController.presentedViewController,@"direct format selection must dismiss its menu");
+            if (mode == 2) Check(video.constraintCalls == constraints,@"stale direct format choices must not alter the next video");
+            else Check(video.constraintCalls == constraints + 1 && (mode == 1 ? !video.lastConstraint :
+                ([video.lastConstraint isKindOfClass:MLQuickMenuVideoQualitySettingFormatConstraint.class] &&
+                 [[video.lastConstraint qualityLabel] isEqual:high.qualityLabel])) &&
+                [button.currentTitle isEqual:mode == 1 ? @"Auto" : @"1080p"],@"format and Auto choices must apply once and refresh the visible label");
+            [self testDirectQuality:button overlay:overlay player:player video:video presenter:presenter mode:mode + 1];
+        });
+    });
+}
+
 @end
 int main(int argc, char **argv) { @autoreleasepool { return UIApplicationMain(argc, argv, nil, NSStringFromClass(PlayerControlsSmoke.class)); } }

@@ -378,3 +378,23 @@ If YTKACE is useful to you, you can support it on [Ko-fi](https://ko-fi.com/itzz
 ## License
 
 YTKACE source is available under the [MIT License](LICENSE). See [Third-Party Notices](THIRD_PARTY_NOTICES.md) for components and services with separate terms.
+
+Player-menu rendering now retains nonempty pixels before moving a native ELM
+row. Uniform/empty renderings are rejected. If reparenting clears a node, the
+popover uses its retained image and restores the live node to its native owner;
+if no rendering is available after appearance, it restores the original sheet
+without invoking an action. A titleless 1pt `YTSpacerButton` remains structural
+spacing even when YouTube attaches a placeholder block. Named spacers remain
+options. Gear logs include the compiled Git revision and host YouTube version
+so an IPA can be matched to its actual source revision.
+
+The integrated quality shortcut prefers `selectableVideoFormats` and a verified
+`MLQuickMenuVideoQualitySettingFormatConstraint` initializer plus
+`setVideoFormatConstraint:`. It displays the actual format labels and Auto in
+an anchored list, applies one native constraint, and rejects choices after the
+active video changes. Duplicate labels are coalesced and the existing hidden
+Premium-label preference is respected. Unsupported signatures, missing formats
+or an unavailable presenter retain the native entry; logs identify the route,
+constructor capability, legacy preference and YouTube version. No YouTube
+version spoofing or hardcoded resolution list is used. Standalone YouQuality is
+not bundled by this project's main build.
