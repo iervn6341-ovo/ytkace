@@ -313,7 +313,7 @@ static void BeginMenuTransition(UIViewController *menu) {
     objc_setAssociatedObject(window,&MenuTransitionKey,transition,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] submenu transition=waiting");
     // Leaf commands need no new menu. Never leave a frozen menu above the player.
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,350 * NSEC_PER_MSEC),dispatch_get_main_queue(),^{
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,500 * NSEC_PER_MSEC),dispatch_get_main_queue(),^{
         if (objc_getAssociatedObject(window,&MenuTransitionKey) != transition || transition.receivedChild) return;
         RemoveMenuTransition(transition);
     });
@@ -338,7 +338,7 @@ static void CompleteMenuTransition(UIViewController *menu, UIView *content) {
     content.transform = reduceMotion ? CGAffineTransformIdentity : CGAffineTransformMakeTranslation(32,0);
     menu.view.userInteractionEnabled = NO;
     os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] submenu transition=content-slide reduceMotion=%d",reduceMotion);
-    [UIView animateWithDuration:reduceMotion ? .15 : .25 delay:0
+    [UIView animateWithDuration:reduceMotion ? .12 : .18 delay:0
         options:UIViewAnimationOptionCurveEaseInOut | UIViewAnimationOptionBeginFromCurrentState animations:^{
             transition.cover.frame = target;
             transition.snapshot.alpha = 0;
@@ -675,21 +675,28 @@ void YTKACESetSystemMenuBackAction(UIViewController *presenter, dispatch_block_t
     return cell;
 }
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
-    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    YTKACEMenuPresentation *presentation = (id)self.menuPresentation;
+    if (!presentation || presentation.closing) return;
+    [tableView deselectRowAtIndexPath:indexPath animated:NO];
     NSDictionary *action = self.actions[indexPath.row];
     if (action[@"enabled"] && ![action[@"enabled"] boolValue]) return;
     dispatch_block_t handler = action[@"handler"];
     dispatch_block_t diagnostic = action[@"diagnosticSelection"];
     if (diagnostic) diagnostic();
     BOOL (^submenuTransition)(void) = action[@"submenuTransition"];
-    if (submenuTransition && submenuTransition()) BeginMenuTransition(self.menuPresentation);
+    BOOL nativeCommand = submenuTransition && submenuTransition();
+    if (nativeCommand) BeginMenuTransition(self.menuPresentation);
     ((YTKACEMenuPresentation *)self.menuPresentation).selectedAction = YES;
+    ((YTKACEMenuPresentation *)self.menuPresentation).closing = YES;
     UIView *source = YTKACEPlayerMenuSource(self.menuPresentation);
     YTKACERememberPlayerMenuSource(source);
     if (source) [NSNotificationCenter.defaultCenter postNotificationName:YTKACEPlayerMenuWillSelectAction
         object:source userInfo:action];
-    // Dismiss before invoking actions which may immediately open another controller.
-    // One presentation animation is enough for a submenu transition.
+    // ELM owns the native source's dismissal and captures child presentations.
+    // Start its work now, overlapping the wrapper's dismissal instead of
+    // waiting for the popover to close before dispatching the command.
+    if (nativeCommand) { if (handler) handler(); return; }
+    // Other callbacks require the wrapper to have left the presentation stack.
     [self.menuPresentation dismissViewControllerAnimated:NO completion:^{ if (handler) handler(); }];
 }
 @end

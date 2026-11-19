@@ -766,16 +766,16 @@ static void PresentGearAfterLayout(UIViewController *controller, UIView *source,
     if (!controller.presentingViewController || controller.isBeingDismissed || controller.presentedViewController ||
         !YTKACEIsPlayerMenuSource(source)) { controller.view.alpha = alpha; return; }
     controller.view.alpha = alpha;
-    NSArray *rows = NativePlayerActions(controller,YES,attempt >= 3);
+    NSArray *rows = NativePlayerActions(controller,YES,attempt >= 6);
     if (rows) {
         os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] gear layout-ready attempts=%lu",(unsigned long)attempt + 1);
         YTKACEPresentAdaptedPlayerMenu(controller,source,rows);
         return;
     }
-    if ([objc_getAssociatedObject(controller,NativeRowsPendingKey) boolValue] && attempt < 3) {
+    if ([objc_getAssociatedObject(controller,NativeRowsPendingKey) boolValue] && attempt < 6) {
         controller.view.alpha = 0;
         if (!attempt) os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] gear layout-pending reason=short-native-row");
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,50 * NSEC_PER_MSEC),dispatch_get_main_queue(),^{
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,16 * NSEC_PER_MSEC),dispatch_get_main_queue(),^{
             PresentGearAfterLayout(controller,source,alpha,attempt + 1);
         });
         return;
@@ -824,7 +824,8 @@ static void DismissNativeMenu(UIViewController *native, dispatch_block_t complet
 @property(nonatomic, copy) dispatch_block_t command;
 @property(nonatomic, copy) dispatch_block_t restoreAppearance;
 @property(nonatomic, strong) NSMutableArray<YTKACEELMPresentationRequest *> *requests;
-@property(nonatomic) BOOL shouldDismiss, finished, recordOnly;
+@property(nonatomic) BOOL shouldDismiss, finished, recordOnly, childRequested, awaitingChild, commandDismissedWrapper;
+@property(nonatomic) NSUInteger wrapperCloseAttempts;
 @end
 @implementation YTKACEELMNavigation @end
 static YTKACEELMNavigation *ActiveELMNavigation, *ClosingELMNavigation;
@@ -834,11 +835,36 @@ static BOOL ControllerWithin(UIViewController *controller, UIViewController *anc
         if (controller == ancestor) return YES;
     return NO;
 }
+static void ReplayELMPresentations(YTKACEELMNavigation *navigation);
+static void FinishELMNavigation(YTKACEELMNavigation *navigation) {
+    navigation.finished = YES; navigation.awaitingChild = NO;
+    if (navigation.restoreAppearance) { navigation.restoreAppearance(); navigation.restoreAppearance = nil; }
+    if (ClosingELMNavigation == navigation) ClosingELMNavigation = nil;
+}
+static void RetainPendingELMNavigation(YTKACEELMNavigation *navigation) {
+    navigation.awaitingChild = YES;
+    ClosingELMNavigation = navigation;
+    // Native ELM commands can schedule their child after dismissal has completed.
+    // Retain the owner/node graph and history until that request or a fresh touch.
+    static dispatch_once_t once;
+    dispatch_once(&once,^{
+        [NSNotificationCenter.defaultCenter addObserverForName:YTKACEPlayerMenuTouchSource object:nil
+            queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *notification) {
+                YTKACEELMNavigation *pending = ClosingELMNavigation;
+                UIView *target = [notification.object isKindOfClass:UIView.class] ? notification.object : nil;
+                if (pending.awaitingChild && target.window == pending.source.window)
+                    FinishELMNavigation(pending);
+            }];
+    });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,NSEC_PER_SEC),dispatch_get_main_queue(),^{
+        if (navigation.awaitingChild) FinishELMNavigation(navigation);
+    });
+}
 BOOL YTKACEDeferNativeELMPresentation(UIViewController *presenter, UIViewController *presented,
     BOOL animated, dispatch_block_t completion) {
     if (!NSThread.isMainThread) return NO;
     YTKACEELMNavigation *navigation = ActiveELMNavigation ?: ClosingELMNavigation;
-    if (!navigation || navigation.finished || presented == navigation.native ||
+    if (!navigation || navigation.finished || YTKACEIsPlayerPopover(presented) || presented == navigation.native ||
         presented.presentingViewController ||
         !(ControllerWithin(presenter,navigation.native) || ControllerWithin(presenter,navigation.presenter) ||
           ControllerWithin(navigation.presenter,presenter))) return NO;
@@ -846,6 +872,18 @@ BOOL YTKACEDeferNativeELMPresentation(UIViewController *presenter, UIViewControl
     previous.controller = navigation.native; previous.owner = navigation.owner;
     objc_setAssociatedObject(presented,&NativePreviousPageKey,previous,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     if (navigation.recordOnly) return NO;
+    navigation.childRequested = YES;
+    YTKACEContinueSystemMenuTransition(navigation.source);
+    if (navigation.awaitingChild) {
+        navigation.awaitingChild = NO;
+        YTKACEELMPresentationRequest *request = [YTKACEELMPresentationRequest new];
+        request.presenter = presenter; request.controller = presented;
+        request.animated = animated; request.completion = completion;
+        [navigation.requests addObject:request];
+        os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] elm late-child controller=%{public}@",TraceClass(presented));
+        ReplayELMPresentations(navigation);
+        return YES;
+    }
     // A self-dismissing command may reach its own completion before our close
     // observer runs. Keep its anchor fresh and let a stable presenter proceed.
     if (!navigation.native.presentingViewController && !ControllerWithin(presenter,navigation.native)) {
@@ -862,9 +900,12 @@ BOOL YTKACEDeferNativeELMPresentation(UIViewController *presenter, UIViewControl
 }
 static void ReplayELMPresentations(YTKACEELMNavigation *navigation) {
     if (navigation.finished) return;
-    navigation.finished = YES;
     if (navigation.restoreAppearance) { navigation.restoreAppearance(); navigation.restoreAppearance = nil; }
-    if (ClosingELMNavigation == navigation) ClosingELMNavigation = nil;
+    if (!navigation.childRequested && navigation.shouldDismiss) {
+        RetainPendingELMNavigation(navigation);
+        return;
+    }
+    FinishELMNavigation(navigation);
     NSArray<YTKACEELMPresentationRequest *> *requests = navigation.requests.copy;
     [navigation.requests removeAllObjects];
     for (YTKACEELMPresentationRequest *request in requests) {
@@ -903,11 +944,35 @@ static void AwaitELMDismissal(YTKACEELMNavigation *navigation, NSUInteger attemp
     });
 }
 static void CompleteELMNavigation(YTKACEELMNavigation *navigation) {
+    if (navigation.finished) return;
     UIViewController *native = navigation.native;
+    UIViewController *wrapper = native.presentedViewController;
+    if (YTKACEIsPlayerPopover(wrapper)) {
+        ClosingELMNavigation = navigation;
+        if (wrapper.isBeingDismissed) {
+            navigation.commandDismissedWrapper = YES;
+            if (++navigation.wrapperCloseAttempts >= 180) {
+                os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] elm replay-stopped reason=wrapper-dismissal-incomplete");
+                FinishELMNavigation(navigation); [navigation.requests removeAllObjects];
+                return;
+            }
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW,16 * NSEC_PER_MSEC),dispatch_get_main_queue(),^{
+                CompleteELMNavigation(navigation);
+            });
+            return;
+        }
+        // UIKit dismisses only the presented wrapper when asked to dismiss its
+        // native parent. Finish that wrapper first, then close the native owner.
+        // The ELM command has already run, so its async work overlaps this step.
+        [UIView performWithoutAnimation:^{
+            [wrapper dismissViewControllerAnimated:NO completion:^{ CompleteELMNavigation(navigation); }];
+        }];
+        return;
+    }
     if (!navigation.shouldDismiss) { ReplayELMPresentations(navigation); return; }
     // A command that has already presented its own child retains native control
     // of that hierarchy. Never dismiss an entire newly opened child stack.
-    if (native.presentedViewController) {
+    if (native.presentedViewController && !YTKACEIsPlayerPopover(native.presentedViewController)) {
         os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] elm close-skipped reason=native-child-presented");
         ReplayELMPresentations(navigation); return;
     }
@@ -917,7 +982,12 @@ static void CompleteELMNavigation(YTKACEELMNavigation *navigation) {
         AwaitELMDismissal(navigation,0);
     } else {
         os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] elm close-after-command owner=%{public}@",TraceClass(navigation.owner));
-        DismissNativeMenu(native,^{ AwaitELMDismissal(navigation,0); });
+        // A self-closing command already invoked its owner; UIKit consumed that
+        // dismissal on the wrapper. Detach the source without tearing down the
+        // owner's state a second time.
+        if (navigation.commandDismissedWrapper)
+            [native dismissViewControllerAnimated:NO completion:^{ AwaitELMDismissal(navigation,0); }];
+        else DismissNativeMenu(native,^{ AwaitELMDismissal(navigation,0); });
     }
 }
 

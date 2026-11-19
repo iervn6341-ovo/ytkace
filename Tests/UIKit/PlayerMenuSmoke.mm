@@ -389,7 +389,7 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
         } else if ([NSProcessInfo.processInfo.arguments containsObject:@"--composite-quality-regression"]) {
             [self testCompositeQuality];
         } else if ([NSProcessInfo.processInfo.arguments containsObject:@"--elm-command-regression"]) {
-            [self testELMCommandOrder:0];
+            [self testELMCommandOrder:[NSProcessInfo.processInfo.arguments containsObject:@"--late-back-regression"] ? 11 : 0];
         } else if ([NSProcessInfo.processInfo.arguments containsObject:@"--native-activation-regression"]) {
             [self testNativeActivation:0];
         } else if ([NSProcessInfo.processInfo.arguments containsObject:@"--menu-lifecycle-regression"] ||
@@ -626,7 +626,7 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
     NativeTestAction *model = [NativeTestAction new]; model.button = button;
     model.shouldDismissOnAction = mode != 3;
     model.handler = ^{ Check(NO,@"an ELM content command must not invoke its placeholder model handler"); };
-    NativeTestOwner *owner = [NativeTestOwner new]; owner.native = native; owner.actions = @[model];
+    __block NativeTestOwner *owner = [NativeTestOwner new]; owner.native = native; owner.actions = @[model];
     if (mode == 1) owner.dismissalDelay = 0.1;
     native.actionsController = owner;
     __block NSUInteger completions = 0, leafCalls = 0;
@@ -634,7 +634,10 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
     __weak UIViewController *weakNative = native;
     __weak NativeTestOwner *weakOwner = owner;
     __weak PlayerMenuSmoke *weak = self;
+    __block NSTimeInterval selectedAt = 0;
     command.callback = ^{
+        Check(NSProcessInfo.processInfo.systemUptime - selectedAt < .1,
+            @"submenu commands must begin on selection without waiting for a separate popover dismissal");
         UIViewController *parent = weakNative;
         Check(parent.presentingViewController != nil &&
             (weakOwner.dismissals == 0 || ([NSProcessInfo.processInfo.arguments containsObject:@"--back-regression"] && command.calls == 2)) &&
@@ -672,6 +675,9 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
             child.actions = @[leaf,divider,delayed,compact];
         }
         dispatch_block_t present = ^{
+            if (mode == 11 || mode == 12)
+                Check(!weakNative.presentingViewController && weakOwner != nil,
+                    @"late child requests must retain their dismissed source owner until presentation");
             UIViewController *presenter = (mode == 3 || mode == 7) ? weakNative : weak.root;
             [presenter presentViewController:child animated:YES completion:^{
                 completions++;
@@ -679,7 +685,11 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
                     @"child presentation completion must follow the required source dismissal");
             }];
         };
-        if (mode == 1) dispatch_after(dispatch_time(DISPATCH_TIME_NOW,30 * NSEC_PER_MSEC),dispatch_get_main_queue(),present);
+        if (mode == 13)
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW,500 * NSEC_PER_MSEC),dispatch_get_main_queue(),present);
+        else if (mode == 11 || mode == 12)
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW,350 * NSEC_PER_MSEC),dispatch_get_main_queue(),present);
+        else if (mode == 1) dispatch_after(dispatch_time(DISPATCH_TIME_NOW,30 * NSEC_PER_MSEC),dispatch_get_main_queue(),present);
         else if (mode == 2) [weakOwner dismissViewControllerAnimated:NO completion:present];
         else present();
     };
@@ -708,7 +718,14 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
             [checkmark.tintColor isEqual:UIColor.greenColor],@"leading glyphs and trailing checkmarks must keep their native styling");
         if (mode == 6) InstallELMTap(element,command,YES);
         UITableViewController *table = (id)MenuNavigation(menu).topViewController;
+        selectedAt = NSProcessInfo.processInfo.systemUptime;
         [table.tableView.delegate tableView:table.tableView didSelectRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]];
+        [table.tableView.delegate tableView:table.tableView didSelectRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]];
+        if (mode == 12) { native.actionsController = nil; owner = nil; }
+        if (mode == 13) dispatch_after(dispatch_time(DISPATCH_TIME_NOW,400 * NSEC_PER_MSEC),dispatch_get_main_queue(),^{
+            Check(!weakNative.presentingViewController,@"fresh-touch history cancellation must occur after source dismissal");
+            YTKACEUpdatePlayerMenuTouchSource(gear,self.window);
+        });
         Later(^{
             if (mode == 8 || mode == 9 || mode == 10) {
                 Check(command.calls == 1 && dialog.closeCalls == 0 && owner.dismissals == 1 &&
@@ -726,7 +743,7 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
                 return;
             }
             Check(command.calls == 1 && dialog.closeCalls == 0 && completions == 1 &&
-                owner.dismissals == (mode == 3 ? 0u : 1u),
+                weakOwner.dismissals == (mode == 3 ? 0u : 1u),
                 @"ELM selection must dispatch the content command once and close through its owner at most once");
             Check(child && YTKACEIsPlayerPopover(child.presentedViewController) &&
                 child.presentedViewController.popoverPresentationController.sourceView == self.window,
@@ -737,7 +754,13 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
             UITableViewController *leaf = (id)MenuNavigation(child.presentedViewController).topViewController;
             Check([leaf.tableView.dataSource tableView:leaf.tableView numberOfRowsInSection:0] == 2,
                 @"9pt structural row must be skipped only after layout, while the delayed 56pt row remains selectable");
-            Check(leaf.navigationItem.leftBarButtonItem != nil,@"every adapted ELM child must offer Back in its leading navigation item");
+            Check((leaf.navigationItem.leftBarButtonItem != nil) == (mode != 13),
+                @"late children must offer Back, while a fresh player touch must invalidate the previous command's history");
+            if ([NSProcessInfo.processInfo.arguments containsObject:@"--preview-late-child"]) {
+                [@"ready" writeToFile:[ResultPath().stringByDeletingLastPathComponent stringByAppendingPathComponent:@"late-child-preview.txt"]
+                    atomically:YES encoding:NSUTF8StringEncoding error:nil];
+                return;
+            }
             if ([NSProcessInfo.processInfo.arguments containsObject:@"--back-regression"]) {
                 UIBarButtonItem *back = leaf.navigationItem.leftBarButtonItem;
                 [UIApplication.sharedApplication sendAction:back.action to:back.target from:back forEvent:nil];
@@ -747,6 +770,7 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
                     Check(!native.view.layer.mask && native.view.alpha == 0 && leafCalls == 0,
                         @"Back must restore the previous page's rendering without executing a leaf action");
                     UITableViewController *parentList = (id)MenuNavigation(native.presentedViewController).topViewController;
+                    selectedAt = NSProcessInfo.processInfo.systemUptime;
                     [parentList.tableView.delegate tableView:parentList.tableView didSelectRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]];
                     Later(^{
                         Check(command.calls == 2 && YTKACEIsPlayerPopover(child.presentedViewController),@"the returned parent must remain selectable and reopen its child");
@@ -767,7 +791,7 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
                     @"the child leaf must remain selectable and close exactly once");
                 dispatch_block_t next = ^{
                     [gear removeFromSuperview];
-                    [self testELMCommandOrder:mode == 3 ? 6 : (mode == 6 ? 7 : (mode == 7 ? 8 : mode + 1))];
+                    [self testELMCommandOrder:mode == 3 ? 6 : (mode == 6 ? 7 : (mode == 7 ? 11 : (mode == 11 ? 12 : (mode == 12 ? 13 : (mode == 13 ? 8 : mode + 1)))))];
                 };
                 if (self.root.presentedViewController) [self.root dismissViewControllerAnimated:NO completion:next];
                 else next();

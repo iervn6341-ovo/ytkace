@@ -88,6 +88,14 @@ November 19 regressions:
   restoration of the retained parent page, reentering its child, and exact-once
   selection after returning. The ordinary ELM suite also requires a Back item on
   each adapted child and keeps the source visually masked during command dispatch.
+- Add `--late-back-regression` to the ELM/Back launch to request the child
+  350 ms after selection, after its native source has gone away. Back must still
+  appear, return to the parent, and allow reentry. For a held visual preview,
+  use `--elm-command-regression --late-back-regression --preview-late-child`;
+  wait for `Documents/late-child-preview.txt`. The ordinary ELM suite also
+  releases the source's owner before that late request, rejects duplicate row
+  selection, checks command dispatch within 100 ms of selection, and verifies
+  that a fresh player touch prevents stale Back history on a subsequent menu.
 - `--composite-quality-regression` reproduces the spacer-backed native quality
   component plus its Auto sibling. It must preserve the complete native sheet,
   rather than render an Auto-only popover. Tall spacer-backed custom components
