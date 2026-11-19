@@ -274,11 +274,13 @@ static NativeTestAction *VirtualAction(NSString *title, NSUInteger mode, dispatc
 @property(nonatomic, weak) UIViewController *native;
 @property(nonatomic) NSUInteger dismissals;
 @property(nonatomic) NSTimeInterval dismissalDelay;
+@property(nonatomic) BOOL clearsActionsOnDismiss;
 - (void)dismissViewControllerAnimated:(BOOL)animated completion:(void (^)(void))completion;
 @end
 @implementation NativeTestOwner
 - (void)dismissViewControllerAnimated:(BOOL)animated completion:(void (^)(void))completion {
     self.dismissals++;
+    if (self.clearsActionsOnDismiss) { self.actions = nil; [(id)self.native setActionsController:nil]; }
     if (self.dismissalDelay > 0) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(self.dismissalDelay * NSEC_PER_SEC)),dispatch_get_main_queue(),^{
             [self.native dismissViewControllerAnimated:animated completion:completion];
@@ -388,8 +390,11 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
             [self testGearPopover];
         } else if ([NSProcessInfo.processInfo.arguments containsObject:@"--composite-quality-regression"]) {
             [self testCompositeQuality];
+        } else if ([NSProcessInfo.processInfo.arguments containsObject:@"--rebuild-back-regression"]) {
+            [self testRebuiltBack];
         } else if ([NSProcessInfo.processInfo.arguments containsObject:@"--elm-command-regression"]) {
-            [self testELMCommandOrder:[NSProcessInfo.processInfo.arguments containsObject:@"--late-back-regression"] ? 11 : 0];
+            [self testELMCommandOrder:[NSProcessInfo.processInfo.arguments containsObject:@"--late-back-regression"] ? 11 :
+                ([NSProcessInfo.processInfo.arguments containsObject:@"--retained-back-regression"] ? 3 : 0)];
         } else if ([NSProcessInfo.processInfo.arguments containsObject:@"--native-activation-regression"]) {
             [self testNativeActivation:0];
         } else if ([NSProcessInfo.processInfo.arguments containsObject:@"--menu-lifecycle-regression"] ||
@@ -591,6 +596,104 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
             writeToFile:ResultPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
     });
 }
+// Real YTDefaultSheetController tears down its actions on dismissal. Every
+// gear activation creates new controllers, owners and node graphs here.
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-retain-cycles"
+- (void)testRebuiltBack {
+    UIButton *gear = [UIButton buttonWithType:UIButtonTypeSystem];
+    gear.frame = CGRectMake(240,140,44,44); [self.button.superview addSubview:gear];
+    YTKACERegisterNativeGearMenuSource(gear);
+    __block NSUInteger generations = 0, leafCalls = 0;
+    BOOL changedActions = [NSProcessInfo.processInfo.arguments containsObject:@"--changed-back-regression"];
+    NSMutableArray<NativeTestOwner *> *owners = [NSMutableArray array];
+    NSMutableArray<UIViewController *> *pages = [NSMutableArray array];
+    __block YTBottomSheetController *(^makePage)(NSUInteger);
+    makePage = ^YTBottomSheetController *(NSUInteger depth) {
+        YTBottomSheetController *page = [YTBottomSheetController new];
+        page.title = [NSString stringWithFormat:@"Page %lu",(unsigned long)depth];
+        page.modalPresentationStyle = UIModalPresentationCustom; page.transitioningDelegate = self;
+        YTDraggableView *panel = [[YTDraggableView alloc] initWithFrame:CGRectMake(8,80,320,180)];
+        [page.view addSubview:panel];
+        NativeTestOwner *owner = [NativeTestOwner new];
+        owner.native = page; owner.clearsActionsOnDismiss = YES;
+        [owners addObject:owner]; [pages addObject:page];
+        NSMutableArray *actions = [NSMutableArray array];
+        NSUInteger count = depth == 1 || (changedActions && depth == 0 && generations > 1) ? 2 : 1;
+        for (NSUInteger row = 0; row < count; row++) {
+            NativeTestAction *item = [NativeTestAction new];
+            item.button = [[YTMenuItemElementsMDCButton alloc] initWithFrame:CGRectMake(0,row * 56,320,56)];
+            [panel addSubview:item.button];
+            if (depth < 2 && row == 0) {
+                UIView *element = [[UIView alloc] initWithFrame:[item.button bounds]]; [item.button addSubview:element];
+                ELMTouchCommandPropertiesHandler *command = [ELMTouchCommandPropertiesHandler new];
+                InstallELMTap(element,command,YES);
+                command.callback = ^{
+                    Check(page.presentingViewController && owner.actions.count > 0,
+                        @"rebuilt navigation must execute against a live owner and node graph");
+                    YTBottomSheetController *child = makePage(depth + 1);
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,30 * NSEC_PER_MSEC),dispatch_get_main_queue(),^{
+                        [self.root presentViewController:child animated:NO completion:nil];
+                    });
+                };
+                item.handler = ^{ Check(NO,@"the placeholder action must not replace the ELM command"); };
+            } else item.handler = ^{ leafCalls++; };
+            [actions addObject:item];
+        }
+        owner.actions = actions; page.actionsController = owner;
+        return page;
+    };
+    [gear addAction:[UIAction actionWithHandler:^(__unused UIAction *action) {
+        generations++;
+        YTKACERememberPlayerMenuSource(gear);
+        [self.root presentViewController:makePage(0) animated:NO completion:nil];
+    }] forControlEvents:UIControlEventTouchUpInside];
+    [gear sendActionsForControlEvents:UIControlEventTouchUpInside];
+    __block void (^step)(NSUInteger);
+    step = ^(NSUInteger index) {
+        Later(^{
+            UIViewController *page = self.root.presentedViewController;
+            UITableViewController *list = (id)MenuNavigation(page.presentedViewController).topViewController;
+            if (index == 8 || (changedActions && index == 4)) {
+                Check(!page && leafCalls == 1,@"a rebuilt submenu leaf must execute once and close the stack");
+                [@"PASS: fresh owners after teardown, nested Back replay, root Back and exact-once leaf selection\n"
+                    writeToFile:ResultPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
+                step = nil; makePage = nil; return;
+            }
+            Check(list && YTKACEIsPlayerPopover(page.presentedViewController) && page.view.alpha == 0,
+                @"every returned page must use the floating UI with a valid native model");
+            Check(!TransitionCover(self.window),@"Back must settle without leaving a transition cover");
+            if (changedActions && index == 3) {
+                Check([page.title isEqual:@"Page 0"] && generations == 2 && leafCalls == 0,
+                    @"changed actions must stop route replay at the fresh floating root without executing another row");
+                [list.tableView.delegate tableView:list.tableView didSelectRowAtIndexPath:[NSIndexPath indexPathForRow:1 inSection:0]];
+                step(4); return;
+            }
+            if (index == 3 || index == 5) {
+                Check([page.title isEqual:@"Page 1"] && generations == (index == 3 ? 2u : 3u),
+                    @"nested Back must rebuild and replay only the route to the preceding page");
+                for (NativeTestOwner *old in owners) if (old.native != page)
+                    Check(old.actions == nil,@"dismissed owners must be torn down, never reused on Back");
+            }
+            if (index == 6) Check([page.title isEqual:@"Page 0"] && generations == 4,
+                @"Back from the first submenu must rebuild a fresh gear root");
+            if (index == 2 || index == 4 || index == 5) {
+                UIBarButtonItem *back = list.navigationItem.leftBarButtonItem;
+                Check(back != nil,@"nested menus must offer Back");
+                [UIApplication.sharedApplication sendAction:back.action to:back.target from:back forEvent:nil];
+                // A second tap during dismissal must not rebuild a second stack.
+                [UIApplication.sharedApplication sendAction:back.action to:back.target from:back forEvent:nil];
+            } else {
+                NSUInteger row = index == 7 ? 1 : 0;
+                [list.tableView.delegate tableView:list.tableView didSelectRowAtIndexPath:[NSIndexPath indexPathForRow:row inSection:0]];
+            }
+            step(index + 1);
+        });
+    };
+    step(0);
+}
+
+#pragma clang diagnostic pop
 - (void)testELMCommandOrder:(NSUInteger)mode {
     UIButton *gear = [UIButton buttonWithType:UIButtonTypeSystem];
     gear.frame = CGRectMake(240,140,44,44); [self.button.superview addSubview:gear];
@@ -629,6 +732,12 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
     __block NativeTestOwner *owner = [NativeTestOwner new]; owner.native = native; owner.actions = @[model];
     if (mode == 1) owner.dismissalDelay = 0.1;
     native.actionsController = owner;
+    owner.clearsActionsOnDismiss = [NSProcessInfo.processInfo.arguments containsObject:@"--back-regression"];
+    [gear addAction:[UIAction actionWithHandler:^(__unused UIAction *action) {
+        owner.actions = @[model]; native.actionsController = owner;
+        YTKACERememberPlayerMenuSource(gear);
+        [self.root presentViewController:native animated:NO completion:nil];
+    }] forControlEvents:UIControlEventTouchUpInside];
     __block NSUInteger completions = 0, leafCalls = 0;
     __block YTBottomSheetController *child;
     __weak UIViewController *weakNative = native;
@@ -777,7 +886,8 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
                         UITableViewController *reopened = (id)MenuNavigation(child.presentedViewController).topViewController;
                         [reopened.tableView.delegate tableView:reopened.tableView didSelectRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]];
                         Later(^{
-                            Check(leafCalls == 1 && !self.root.presentedViewController,@"reopened child selection must execute once and close cleanly");
+                            Check(leafCalls == 1 && !(mode == 3 ? child.presentingViewController : self.root.presentedViewController),
+                                @"reopened child selection must execute once and honor the native owner's retention policy");
                             [@"PASS: submenu Back, parent reentry and exact-once reopened leaf selection\n"
                                 writeToFile:ResultPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
                         });

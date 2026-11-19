@@ -599,6 +599,8 @@ void YTKACESetSystemMenuBackAction(UIViewController *presenter, dispatch_block_t
 - (void)goBack {
     if (!self.backAction || ((YTKACEMenuPresentation *)self.menuPresentation).closing) return;
     ((YTKACEMenuPresentation *)self.menuPresentation).selectedAction = YES;
+    ((YTKACEMenuPresentation *)self.menuPresentation).closing = YES;
+    BeginMenuTransition(self.menuPresentation);
     dispatch_block_t back = self.backAction;
     [self.menuPresentation dismissViewControllerAnimated:NO completion:back];
 }

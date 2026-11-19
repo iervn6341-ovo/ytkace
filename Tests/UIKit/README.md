@@ -84,8 +84,15 @@ into the shipped tweak.
 
 November 19 regressions:
 
+- `--rebuild-back-regression` makes each gear activation create fresh owners,
+  controllers and ELM nodes, and clears every dismissed owner's actions. It checks
+  two submenu levels, Back route replay, repeated Back taps, fresh root entry and
+  exact-once leaf selection. Add `--changed-back-regression` to change the root
+  action count during reconstruction: replay must stop at the fresh floating root.
+- `--elm-command-regression --back-regression --retained-back-regression` checks
+  Back when the original command intentionally keeps its parent presented.
 - `--elm-command-regression --back-regression` checks the leading Back button,
-  restoration of the retained parent page, reentering its child, and exact-once
+  reopening the parent through the gear entry, reentering its child, and exact-once
   selection after returning. The ordinary ELM suite also requires a Back item on
   each adapted child and keeps the source visually masked during command dispatch.
 - Add `--late-back-regression` to the ELM/Back launch to request the child

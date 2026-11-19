@@ -27,14 +27,55 @@ static IMP OriginalFactories[9];
 @property(nonatomic, weak) id value;
 @end
 @implementation YTKACENativeMenuOwner @end
-// A child retains the preceding page and its native action owner. The previous
-// page never retains its child, so closing the stack releases the history.
-static char NativePreviousPageKey;
+// Retained native pages can be reused only while still presented. YouTube clears
+// dismissed owners' action models; rebuild those pages from the gear entry point.
+static char NativePreviousPageKey, NativePagePathKey, NativeSelectedPathKey;
 @interface YTKACENativePreviousPage : NSObject
 @property(nonatomic, strong) UIViewController *controller;
 @property(nonatomic, strong) id owner;
+@property(nonatomic, copy) NSArray<NSDictionary *> *path;
 @end
 @implementation YTKACENativePreviousPage @end
+
+@interface YTKACENativePageRebuild : NSObject
+@property(nonatomic, weak) UIView *source;
+@property(nonatomic, copy) NSArray<NSDictionary *> *path;
+@property(nonatomic) NSUInteger depth;
+@end
+@implementation YTKACENativePageRebuild @end
+static YTKACENativePageRebuild *PendingPageRebuild;
+
+static BOOL CanRebuildPage(UIView *source) {
+    return [source isKindOfClass:UIControl.class] && YTKACEIsNativeGearMenuSource(source) &&
+        [(UIControl *)source allControlEvents] & UIControlEventTouchUpInside;
+}
+static void RebuildNativePage(UIView *source, NSArray<NSDictionary *> *path) {
+    if (!CanRebuildPage(source) || !source.window) {
+        YTKACECancelSystemMenuTransition(source); return;
+    }
+    static dispatch_once_t once;
+    dispatch_once(&once,^{
+        [NSNotificationCenter.defaultCenter addObserverForName:YTKACEPlayerMenuTouchSource object:nil
+            queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *notification) {
+                UIView *target = [notification.object isKindOfClass:UIView.class] ? notification.object : nil;
+                if (!notification.userInfo[@"activation"] && target.window == PendingPageRebuild.source.window) {
+                    YTKACECancelSystemMenuTransition(PendingPageRebuild.source);
+                    PendingPageRebuild = nil;
+                }
+            }];
+    });
+    YTKACENativePageRebuild *rebuild = [YTKACENativePageRebuild new];
+    rebuild.source = source; rebuild.path = path ?: @[];
+    PendingPageRebuild = rebuild;
+    YTKACERememberPlayerMenuSource(source);
+    os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] back rebuild depth=%lu",(unsigned long)rebuild.path.count);
+    [(UIControl *)source sendActionsForControlEvents:UIControlEventTouchUpInside];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,3 * NSEC_PER_SEC),dispatch_get_main_queue(),^{
+        if (PendingPageRebuild == rebuild) {
+            PendingPageRebuild = nil; YTKACECancelSystemMenuTransition(source);
+        }
+    });
+}
 
 static void RememberControl(id action, id button) {
     if (![button isKindOfClass:UIView.class]) return;
@@ -870,6 +911,9 @@ BOOL YTKACEDeferNativeELMPresentation(UIViewController *presenter, UIViewControl
           ControllerWithin(navigation.presenter,presenter))) return NO;
     YTKACENativePreviousPage *previous = [YTKACENativePreviousPage new];
     previous.controller = navigation.native; previous.owner = navigation.owner;
+    previous.path = objc_getAssociatedObject(navigation.native,&NativePagePathKey) ?: @[];
+    NSArray *childPath = objc_getAssociatedObject(navigation.native,&NativeSelectedPathKey);
+    objc_setAssociatedObject(presented,&NativePagePathKey,childPath,OBJC_ASSOCIATION_COPY_NONATOMIC);
     objc_setAssociatedObject(presented,&NativePreviousPageKey,previous,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     if (navigation.recordOnly) return NO;
     navigation.childRequested = YES;
@@ -965,7 +1009,9 @@ static void CompleteELMNavigation(YTKACEELMNavigation *navigation) {
         // native parent. Finish that wrapper first, then close the native owner.
         // The ELM command has already run, so its async work overlaps this step.
         [UIView performWithoutAnimation:^{
-            [wrapper dismissViewControllerAnimated:NO completion:^{ CompleteELMNavigation(navigation); }];
+            [wrapper dismissViewControllerAnimated:NO completion:^{
+                dispatch_async(dispatch_get_main_queue(),^{ CompleteELMNavigation(navigation); });
+            }];
         }];
         return;
     }
@@ -1229,6 +1275,15 @@ void YTKACEPresentAdaptedPlayerMenu(UIViewController *controller, UIView *source
             copy[@"submenuTransition"] = [^BOOL { return selectedCommand != nil && !unsupportedELM; } copy];
             copy[@"handler"] = [^{
                 if (!trace) prepare();
+                NSDictionary *metadata = item[@"nativeDiagnostics"];
+                id model = [(YTKACENativeMenuOwner *)metadata[@"model"] value];
+                id button = [(YTKACENativeMenuOwner *)metadata[@"button"] value];
+                NSDictionary *step = @{@"index":metadata[@"index"] ?: @0,
+                    @"model":TraceClass(model),@"button":TraceClass(button),
+                    @"title":item[@"title"] ?: @"",@"count":@(actions.count),
+                    @"identifier":objc_getAssociatedObject(model,NativeItemIdentifierKey) ?: @""};
+                NSArray *path = objc_getAssociatedObject(controller,&NativePagePathKey) ?: @[];
+                objc_setAssociatedObject(controller,&NativeSelectedPathKey,[path arrayByAddingObject:step],OBJC_ASSOCIATION_COPY_NONATOMIC);
                 if (unsupportedELM) { [session returnToNative]; return; }
                 id command = selectedCommand;
                 dispatch_block_t effective = original;
@@ -1244,18 +1299,50 @@ void YTKACEPresentAdaptedPlayerMenu(UIViewController *controller, UIView *source
         }
         [adapted addObject:copy];
     }
+    YTKACENativePageRebuild *rebuild = PendingPageRebuild;
+    if (rebuild.source == source) {
+        NSArray *currentPath = objc_getAssociatedObject(controller,&NativePagePathKey) ?: @[];
+        if (currentPath.count == rebuild.depth && rebuild.depth < rebuild.path.count) {
+            NSDictionary *step = rebuild.path[rebuild.depth];
+            for (NSDictionary *candidate in adapted) {
+                NSDictionary *metadata = candidate[@"nativeDiagnostics"];
+                id model = [(YTKACENativeMenuOwner *)metadata[@"model"] value];
+                id button = [(YTKACENativeMenuOwner *)metadata[@"button"] value];
+                if (![metadata[@"index"] isEqual:step[@"index"]] ||
+                    ![TraceClass(model) isEqual:step[@"model"]] || ![TraceClass(button) isEqual:step[@"button"]] ||
+                    ![(candidate[@"title"] ?: @"") isEqual:step[@"title"]] ||
+                    adapted.count != [step[@"count"] unsignedIntegerValue] ||
+                    ![(objc_getAssociatedObject(model,NativeItemIdentifierKey) ?: @"") isEqual:step[@"identifier"]]) continue;
+                dispatch_block_t prepare = candidate[@"diagnosticSelection"], handler = candidate[@"handler"];
+                if (!prepare || !handler) break;
+                rebuild.depth++;
+                prepare(); handler();
+                return;
+            }
+            // A changed native model must never cause replay of a different row.
+            os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] back rebuild stopped reason=changed-actions");
+        }
+        PendingPageRebuild = nil;
+    }
     YTKACENativePreviousPage *previous = objc_getAssociatedObject(controller,&NativePreviousPageKey);
-    if (previous) {
+    if (previous && (previous.controller.presentingViewController || CanRebuildPage(source))) {
         YTKACESetSystemMenuBackAction(controller,^{
             UIViewController *presenter = controller.presentingViewController;
             [session finish:^{ dispatch_async(dispatch_get_main_queue(),^{
                 if (!presenter.viewIfLoaded.window || presenter.presentedViewController) return;
                 YTKACERememberPlayerMenuSource(source);
                 if (previous.controller.presentingViewController) {
-                    YTKACEPresentNativeGearMenu(previous.controller,source);
-                } else {
-                    [presenter presentViewController:previous.controller animated:NO completion:nil];
-                }
+                    id current = Value(previous.owner,@"actions");
+                    if ([current isKindOfClass:NSArray.class] && [current count]) {
+                        YTKACEPresentNativeGearMenu(previous.controller,source);
+                    } else {
+                        // Some commands clear their owner while UIKit dismisses
+                        // only the floating wrapper. Detach that empty shell too.
+                        [previous.controller dismissViewControllerAnimated:NO completion:^{
+                            RebuildNativePage(source,previous.path);
+                        }];
+                    }
+                } else RebuildNativePage(source,previous.path);
             }); }];
         });
     }

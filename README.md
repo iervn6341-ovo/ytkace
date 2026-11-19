@@ -211,6 +211,15 @@ retained owners, late gesture binding, exact-once leaf selection, and
 unsupported-command fallback. This does not replace testing
 against the target YouTube binary.
 
+Back reuses a preceding native page only while its presented owner still has
+valid actions. Dismissed owners are rebuilt through the registered gear control;
+the adapter replays the saved submenu route against fresh action models and
+renders only the destination as a floating menu. Route replay checks the row's
+index, model/control classes, title, identifier and row count; changed menus stop
+at the nearest fresh page instead of invoking a different option. Repeated Back
+taps during dismissal are ignored. The old, model-less native sheet is never
+re-presented. Diagnostics include `back rebuild depth` and `changed-actions`.
+
 ELM submenu navigation preserves an outgoing popover snapshot while native
 owners change, then slides/fades the incoming content inside that menu frame.
 The incoming popover skips its separate presentation animation; Reduce Motion
