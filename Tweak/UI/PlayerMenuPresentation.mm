@@ -14,7 +14,7 @@ static const void *NativeGearKey = &NativeGearKey;
 static const void *LastTouchKey = &LastTouchKey;
 static const void *GearAnchorKey = &GearAnchorKey;
 static const void *NativeSourceKey = &NativeSourceKey;
-static IMP OriginalSendAction, OriginalSendUIAction, OriginalPresent, OriginalWindowEvent;
+static IMP OriginalSendAction, OriginalSendUIAction, OriginalPresent, OriginalWindowEvent, OriginalDismiss;
 
 @interface YTKACEPlayerMenuTap : NSObject
 @property(nonatomic, weak) UIView *source;
@@ -293,18 +293,30 @@ static void WindowEvent(UIWindow *receiver, SEL selector, UIEvent *event) {
     if (OriginalWindowEvent) ((void (*)(id,SEL,id))OriginalWindowEvent)(receiver,selector,event);
 }
 
+void YTKACEDetachNativePlayerMenu(UIViewController *controller, dispatch_block_t completion) {
+    if (OriginalDismiss) ((void (*)(id,SEL,BOOL,id))OriginalDismiss)(controller,@selector(dismissViewControllerAnimated:completion:),NO,completion);
+    else [controller dismissViewControllerAnimated:NO completion:completion];
+}
+
+static void Dismiss(UIViewController *receiver, SEL selector, BOOL animated, void (^completion)(void)) {
+    if (NSThread.isMainThread && YTKACEHandleNativeContentDismissal(receiver,animated,completion)) return;
+    if (OriginalDismiss) ((void (*)(id,SEL,BOOL,id))OriginalDismiss)(receiver,selector,animated,completion);
+}
+
 static void Present(UIViewController *receiver, SEL selector, UIViewController *controller,
                      BOOL animated, void (^completion)(void)) {
     YTKACETraceNativePresentation(receiver,controller);
     if (YTKACEDeferNativeELMPresentation(receiver,controller,animated,completion)) return;
-    if (NSThread.isMainThread && Enabled() && !YTKACEIsPlayerPopover(controller) && IsYouTubeMenu(controller)) {
+    if (NSThread.isMainThread && ([controller isKindOfClass:UIAlertController.class] || [controller isKindOfClass:UIActivityViewController.class]))
+        YTKACECancelSystemMenuTransition(SourceForPresenter(receiver));
+    if (NSThread.isMainThread && Enabled() && !YTKACEIsPlayerPopover(controller) && (IsYouTubeMenu(controller) || YTKACEIsNativePlayerSubmenu(controller))) {
         UIView *source = SourceForPresenter(receiver);
         if (source) {
             YTKACEContinueSystemMenuTransition(source);
             YTKACEPlayerPopoverDelegate *nativeSource = [YTKACEPlayerPopoverDelegate new];
             nativeSource.source = source;
             objc_setAssociatedObject(controller,NativeSourceKey,nativeSource,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            if (YTKACEIsNativeGearMenuSource(source) && !receiver.presentedViewController && OriginalPresent) {
+            if (!receiver.presentedViewController && OriginalPresent) {
                 YTKACEPlayerMenuTap *tap = objc_getAssociatedObject(SourceWindow(source),TapKey);
                 tap.pending = NO; tap.menu = controller;
                 CGFloat alpha = controller.view.alpha; controller.view.alpha = 0;
@@ -313,46 +325,6 @@ static void Present(UIViewController *receiver, SEL selector, UIViewController *
                     if (completion) completion();
                     if (!controller.presentingViewController || controller.isBeingDismissed) return;
                     YTKACEPresentNativeGearMenu(controller,source);
-                });
-                return;
-            }
-            os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] origin=tweak route=adapter");
-            YTKACEPlayerMenuTap *tap = objc_getAssociatedObject(source.window, TapKey);
-            tap.menu = controller;
-            tap.pending = NO;
-            NSArray *actions = YTKACENativePlayerActions(controller);
-            BOOL retryText = !actions && YTKACENativeMenuNeedsTextRetry(controller);
-            if ((actions || retryText) && !receiver.presentedViewController && OriginalPresent) {
-                // Let the real sheet complete its own presentation lifecycle,
-                // without displaying its full-screen-sized content for a frame.
-                // Render its complete action model in an owned UIKit popover.
-                CGFloat alpha = controller.view.alpha;
-                controller.view.alpha = 0;
-                ((void (*)(id,SEL,id,BOOL,id))OriginalPresent)(receiver,selector,controller,NO,^{
-                    controller.view.alpha = alpha;
-                    if (completion) completion();
-                    if (!controller.presentingViewController || controller.isBeingDismissed) return;
-                    // Element text can be populated during the native sheet's
-                    // appearance. Retry once after that lifecycle, before deciding
-                    // to retain the original sheet; never fabricate empty labels.
-                    NSArray *ready = actions ?: YTKACENativePlayerActions(controller);
-                    if (ready) YTKACEPresentAdaptedPlayerMenu(controller,source,ready);
-                    else {
-                        YTKACEEnableNativeMenuOutsideDismissal(controller);
-                        os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] native fallback reason=missing-label-after-presentation");
-                    }
-                });
-                return;
-            }
-            // Unsupported custom controls keep their original sheet. Never
-            // change a native controller's modal style or transitioning delegate.
-            os_log(OS_LOG_DEFAULT, "[YTKACE PlayerMenus] native class=%{public}@ style=%ld transition=%{public}@",
-                NSStringFromClass(controller.class), (long)controller.modalPresentationStyle,
-                controller.transitioningDelegate ? NSStringFromClass([controller.transitioningDelegate class]) : @"none");
-            if (OriginalPresent) {
-                ((void (*)(id,SEL,id,BOOL,id))OriginalPresent)(receiver,selector,controller,animated,^{
-                    if (completion) completion();
-                    YTKACEEnableNativeMenuOutsideDismissal(controller);
                 });
                 return;
             }
@@ -371,6 +343,8 @@ void YTKACEInstallPlayerMenuPresentation(void) {
         YTKACEInstallInstanceHook(@"UIWindow", @"sendEvent:", (IMP)WindowEvent, &OriginalWindowEvent);
         YTKACEInstallInstanceHook(@"UIControl", @"sendAction:to:forEvent:", (IMP)SendAction, &OriginalSendAction);
         YTKACEInstallInstanceHook(@"UIControl", @"sendAction:", (IMP)SendUIAction, &OriginalSendUIAction);
+        YTKACEInstallInstanceHook(@"UIViewController", @"dismissViewControllerAnimated:completion:",
+            (IMP)Dismiss, &OriginalDismiss);
         YTKACEInstallInstanceHook(@"UIViewController", @"presentViewController:animated:completion:", (IMP)Present, &OriginalPresent);
     });
 }

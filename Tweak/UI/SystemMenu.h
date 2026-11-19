@@ -11,6 +11,9 @@ FOUNDATION_EXPORT NSNotificationName const YTKACEPlayerMenuTouchSource;
 @property(nonatomic, readonly) CGFloat height;
 @property(nonatomic, strong) UIColor *disclosureColor;
 - (nullable instancetype)initWithView:(UIView *)view;
+// Keep a complete native selector interactive inside the shared menu shell.
+- (nullable instancetype)initWithView:(UIView *)view interactive:(BOOL)interactive;
+@property(nonatomic, readonly) BOOL interactive;
 - (void)mountInView:(UIView *)host;
 - (void)restore;
 // Freeze only the rendered row, while returning the live node to its owner.
@@ -30,8 +33,10 @@ FOUNDATION_EXPORT BOOL YTKACEPresentSystemMenu(UIViewController *presenter,
 FOUNDATION_EXPORT BOOL YTKACEPresentSystemMenuWithDismissal(UIViewController *presenter,
     UIView * _Nullable source, NSString * _Nullable title, NSString * _Nullable subtitle,
     NSArray<NSDictionary *> *actions, void (^ _Nullable handler)(BOOL selectedAction));
+FOUNDATION_EXPORT void YTKACEMarkSystemMenuSelected(UIViewController *menu);
 FOUNDATION_EXPORT void YTKACENotifySystemMenuDismissed(UIViewController *menu);
 // Preserve the outgoing popover while native owners change underneath it.
+FOUNDATION_EXPORT void YTKACEBeginSystemMenuTransition(UIViewController *menu);
 FOUNDATION_EXPORT void YTKACEContinueSystemMenuTransition(UIView *source);
 FOUNDATION_EXPORT void YTKACECancelSystemMenuTransition(UIView *source);
 NS_ASSUME_NONNULL_END

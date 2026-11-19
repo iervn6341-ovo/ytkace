@@ -15,5 +15,7 @@ FOUNDATION_EXPORT BOOL YTKACEConfigurePlayerPopover(UIViewController *controller
     UIViewController *presenter, UIView * _Nullable source, CGSize size);
 FOUNDATION_EXPORT BOOL YTKACEIsPlayerPopover(UIViewController *controller);
 FOUNDATION_EXPORT void YTKACERememberPlayerMenuSource(UIView * _Nullable source);
+// Finish a native owner's already-requested close without invoking its override twice.
+FOUNDATION_EXPORT void YTKACEDetachNativePlayerMenu(UIViewController *controller, dispatch_block_t _Nullable completion);
 FOUNDATION_EXPORT void YTKACEInstallPlayerMenuPresentation(void);
 NS_ASSUME_NONNULL_END

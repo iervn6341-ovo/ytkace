@@ -85,7 +85,9 @@ static UIImage *RenderedNativeRow(UIView *view) {
 @property(nonatomic) BOOL translates;
 @property(nonatomic) BOOL interaction;
 @property(nonatomic) BOOL mounted;
+@property(nonatomic) BOOL interactive;
 @property(nonatomic, copy) NSArray<NSLayoutConstraint *> *constraints;
+@property(nonatomic, copy) NSArray<NSDictionary *> *sheetGestures;
 @property(nonatomic, strong) NSMutableArray<NSDictionary *> *disclosures;
 @property(nonatomic, weak) UIView *host;
 @property(nonatomic, strong) UIImage *rendering;
@@ -93,14 +95,16 @@ static UIImage *RenderedNativeRow(UIView *view) {
 @property(nonatomic) BOOL renderingPreserved;
 @end
 @implementation YTKACEMenuNativeRow
-- (instancetype)initWithView:(UIView *)view {
+- (instancetype)initWithView:(UIView *)view { return [self initWithView:view interactive:NO]; }
+- (instancetype)initWithView:(UIView *)view interactive:(BOOL)interactive {
     if (!view.superview || !view.window || view.hidden || view.alpha < 0.05 ||
         !CGAffineTransformIsIdentity(view.transform) ||
         !isfinite(view.bounds.size.width) || !isfinite(view.bounds.size.height) ||
-        view.bounds.size.width < 44 || view.bounds.size.height < 24 || view.bounds.size.height > 240) return nil;
+        view.bounds.size.width < 44 || view.bounds.size.height < 24 || view.bounds.size.height > (interactive ? 2048 : 240)) return nil;
     for (UIView *ancestor = view.superview; ancestor; ancestor = ancestor.superview)
         if (ancestor.hidden || ancestor.alpha < 0.05) return nil;
     if ((self = [super init])) {
+        _interactive = interactive;
         _view = view; _height = MAX(44,view.bounds.size.height); _parent = view.superview;
         _index = [view.superview.subviews indexOfObjectIdenticalTo:view]; _frame = view.frame;
         _resizing = view.autoresizingMask; _translates = view.translatesAutoresizingMaskIntoConstraints;
@@ -117,6 +121,16 @@ static UIImage *RenderedNativeRow(UIView *view) {
         _constraints = constraints;
         _disclosureColor = UIColor.secondaryLabelColor;
         _disclosures = [NSMutableArray array];
+        if (interactive) {
+            NSMutableArray *gestures = [NSMutableArray array];
+            Class draggable = NSClassFromString(@"YTDraggableView");
+            if (draggable && [view isKindOfClass:draggable])
+                for (UIGestureRecognizer *gesture in view.gestureRecognizers)
+                    if ([gesture isKindOfClass:UIPanGestureRecognizer.class])
+                        [gestures addObject:@{@"gesture":gesture,@"enabled":@(gesture.enabled)}];
+            _sheetGestures = gestures;
+            return self;
+        }
         NSMutableArray<UIView *> *views = [NSMutableArray arrayWithObject:view];
         for (NSUInteger i = 0; i < views.count && i < 64; i++) {
             UIView *candidate = views[i];
@@ -188,14 +202,17 @@ static UIImage *RenderedNativeRow(UIView *view) {
         }
     }
     if (self.disclosures.count) os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] disclosure normalized count=%lu",(unsigned long)self.disclosures.count);
-    if (!self.rendering) self.rendering = RenderedNativeRow(self.view);
+    if (!self.interactive && !self.rendering) self.rendering = RenderedNativeRow(self.view);
     [NSLayoutConstraint deactivateConstraints:self.constraints];
     self.mounted = YES;
     self.view.translatesAutoresizingMaskIntoConstraints = YES;
     self.view.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     // The table restores and activates this control through one selected route.
     // Do not also deliver touches to the embedded button and dispatch it twice.
-    self.view.userInteractionEnabled = NO;
+    self.view.userInteractionEnabled = self.interactive && self.interaction;
+    // The floating container owns dismissal. Keep slider/scroll gestures on
+    // descendants, but do not carry the old bottom-sheet drag gesture into it.
+    for (NSDictionary *entry in self.sheetGestures) [(UIGestureRecognizer *)entry[@"gesture"] setEnabled:NO];
     [host addSubview:self.view]; self.view.frame = host.bounds;
     [self.view setNeedsLayout]; [self.view layoutIfNeeded];
 
@@ -221,6 +238,8 @@ static UIImage *RenderedNativeRow(UIView *view) {
     self.view.translatesAutoresizingMaskIntoConstraints = self.translates;
     self.view.autoresizingMask = self.resizing; self.view.frame = self.frame;
     self.view.userInteractionEnabled = self.interaction;
+    for (NSDictionary *entry in self.sheetGestures)
+        [(UIGestureRecognizer *)entry[@"gesture"] setEnabled:[entry[@"enabled"] boolValue]];
     for (NSLayoutConstraint *constraint in self.constraints) {
         id first = constraint.firstItem, second = constraint.secondItem;
         UIView *a = [first isKindOfClass:UILayoutGuide.class] ? [first owningView] : first;
@@ -233,7 +252,7 @@ static UIImage *RenderedNativeRow(UIView *view) {
     }
 }
 - (void)captureRendering {
-    if (!self.mounted || self.renderingPreserved || !self.host.window ||
+    if (self.interactive || !self.mounted || self.renderingPreserved || !self.host.window ||
         UIApplication.sharedApplication.applicationState != UIApplicationStateActive ||
         self.view.bounds.size.width < 44 || self.view.bounds.size.height < 24) return;
     UIImage *image = RenderedNativeRow(self.view);
@@ -243,7 +262,7 @@ static UIImage *RenderedNativeRow(UIView *view) {
         os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] row rendering=pre-reparent-bitmap");
     }
 }
-- (BOOL)renderingAvailable { return self.rendering != nil; }
+- (BOOL)renderingAvailable { return self.interactive || self.rendering != nil; }
 - (BOOL)preserveRendering {
     if (self.renderingPreserved) return self.rendering != nil;
     UIView *host = self.host;
@@ -268,7 +287,8 @@ static UIImage *RenderedNativeRow(UIView *view) {
 static char MenuTransitionKey;
 @interface YTKACEMenuTransition : NSObject
 @property(nonatomic, weak) UIWindow *window;
-@property(nonatomic, weak) UIViewController *outgoing;
+@property(nonatomic, strong) UIViewController *outgoing;
+@property(nonatomic) BOOL reusing;
 @property(nonatomic, weak) UIView *source;
 @property(nonatomic, strong) UIView *cover, *snapshot;
 @property(nonatomic) BOOL receivedChild;
@@ -293,7 +313,7 @@ void YTKACEContinueSystemMenuTransition(UIView *source) {
 static void BeginMenuTransition(UIViewController *menu) {
     UIWindow *window = menu.view.window;
     UIView *source = YTKACEPlayerMenuSource(menu);
-    if (!window || !source || !YTKACEIsNativeGearMenuSource(source)) return;
+    if (!window || !source || !YTKACEIsPlayerMenuSource(source)) return;
     YTKACEMenuTransition *previous = objc_getAssociatedObject(window,&MenuTransitionKey);
     RemoveMenuTransition(previous);
     UIView *container = menu.presentationController.containerView;
@@ -325,10 +345,12 @@ static void BeginMenuTransition(UIViewController *menu) {
     });
 }
 
+void YTKACEBeginSystemMenuTransition(UIViewController *menu) { BeginMenuTransition(menu); }
+
 static void CompleteMenuTransition(UIViewController *menu, UIView *content) {
     UIWindow *window = menu.view.window;
     YTKACEMenuTransition *transition = objc_getAssociatedObject(window,&MenuTransitionKey);
-    if (!transition || transition.outgoing == menu || transition.source != YTKACEPlayerMenuSource(menu)) return;
+    if (!transition || (transition.outgoing == menu && !transition.reusing) || transition.source != YTKACEPlayerMenuSource(menu)) return;
     if (!CGRectEqualToRect(transition.windowBounds,window.bounds)) { RemoveMenuTransition(transition); return; }
     objc_setAssociatedObject(window,&MenuTransitionKey,nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     CGRect target = [menu.view convertRect:menu.view.bounds toView:window];
@@ -395,6 +417,10 @@ static void CompleteMenuTransition(UIViewController *menu, UIView *content) {
     if (handler) handler(self.selectedAction);
 }
 @end
+
+void YTKACEMarkSystemMenuSelected(UIViewController *menu) {
+    if ([menu isKindOfClass:YTKACEMenuPresentation.class]) ((YTKACEMenuPresentation *)menu).selectedAction = YES;
+}
 
 void YTKACENotifySystemMenuDismissed(UIViewController *menu) {
     if ([menu isKindOfClass:YTKACEMenuPresentation.class])
@@ -479,18 +505,25 @@ void YTKACESetSystemMenuBackAction(UIViewController *presenter, dispatch_block_t
 }
 - (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; }
 - (BOOL)acceptLifecycleNotification:(NSNotification *)notification {
+    if (self.navigationController.topViewController != self) return NO;
     if ([notification.name isEqual:UISceneWillDeactivateNotification] || [notification.name isEqual:UISceneDidActivateNotification])
         return notification.object == self.viewIfLoaded.window.windowScene;
     return YES;
 }
 - (void)captureNativeRows {
-    if (self.nativeRowsSuspended || !self.viewIfLoaded.window ||
+    if (self.navigationController.topViewController != self || self.nativeRowsSuspended || !self.viewIfLoaded.window ||
         ((YTKACEMenuPresentation *)self.menuPresentation).closing) return;
     for (NSDictionary *action in self.actions) [action[@"nativeRow"] captureRendering];
 }
 - (void)preserveNativeRows:(NSNotification *)notification {
     if (![self acceptLifecycleNotification:notification] ||
         !self.menuPresentation.presentingViewController || !self.viewIfLoaded.window) return;
+    for (NSDictionary *action in self.actions) {
+        if ([action[@"nativeRow"] interactive]) {
+            // A native slider/form cannot be replaced with a frozen bitmap.
+            [self.menuPresentation dismissViewControllerAnimated:NO completion:nil]; return;
+        }
+    }
     if (self.nativeRowsSuspended) { self.awaitingActivation = YES; return; }
     NSUInteger rows = 0;
     for (NSDictionary *action in self.actions) {
@@ -542,6 +575,9 @@ void YTKACESetSystemMenuBackAction(UIViewController *presenter, dispatch_block_t
     __weak YTKACESystemMenuController *weak = self;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,100 * NSEC_PER_MSEC),dispatch_get_main_queue(),^{
         YTKACESystemMenuController *owner = weak;
+        // The floating shell may already belong to a new page. Retired pages
+        // must not resize it, dispatch an old action or run a delayed fallback.
+        if (!owner || owner.navigationController.topViewController != owner) return;
         [owner captureNativeRows];
         if (!owner || owner.nativeRowsSuspended || !owner.viewIfLoaded.window ||
             owner.menuPresentation.isBeingDismissed || !owner.menuPresentation.presentingViewController ||
@@ -562,7 +598,7 @@ void YTKACESetSystemMenuBackAction(UIViewController *presenter, dispatch_block_t
     });
 }
 - (void)updateMenuHeight {
-    if (self.updatingSize || !self.view.window) return;
+    if (self.navigationController.topViewController != self || self.updatingSize || !self.view.window) return;
     self.updatingSize = YES;
     @try {
     UINavigationController *navigation = self.navigationController;
@@ -597,14 +633,16 @@ void YTKACESetSystemMenuBackAction(UIViewController *presenter, dispatch_block_t
     } @finally { self.updatingSize = NO; }
 }
 - (void)goBack {
-    if (!self.backAction || ((YTKACEMenuPresentation *)self.menuPresentation).closing) return;
+    if (self.navigationController.topViewController != self || !self.backAction || ((YTKACEMenuPresentation *)self.menuPresentation).closing) return;
     ((YTKACEMenuPresentation *)self.menuPresentation).selectedAction = YES;
     ((YTKACEMenuPresentation *)self.menuPresentation).closing = YES;
     BeginMenuTransition(self.menuPresentation);
     dispatch_block_t back = self.backAction;
     [self.menuPresentation dismissViewControllerAnimated:NO completion:back];
 }
-- (void)closeMenu { [self.menuPresentation dismissViewControllerAnimated:YES completion:nil]; }
+- (void)closeMenu {
+    if (self.navigationController.topViewController == self) [self.menuPresentation dismissViewControllerAnimated:YES completion:nil];
+}
 - (BOOL)accessibilityPerformEscape { [self closeMenu]; return YES; }
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     (void)tableView; (void)section; return self.actions.count;
@@ -678,9 +716,10 @@ void YTKACESetSystemMenuBackAction(UIViewController *presenter, dispatch_block_t
 }
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     YTKACEMenuPresentation *presentation = (id)self.menuPresentation;
-    if (!presentation || presentation.closing) return;
+    if (self.navigationController.topViewController != self || !presentation || presentation.closing) return;
     [tableView deselectRowAtIndexPath:indexPath animated:NO];
     NSDictionary *action = self.actions[indexPath.row];
+    if ([action[@"nativeRow"] interactive]) return;
     if (action[@"enabled"] && ![action[@"enabled"] boolValue]) return;
     dispatch_block_t handler = action[@"handler"];
     dispatch_block_t diagnostic = action[@"diagnosticSelection"];
@@ -725,9 +764,18 @@ BOOL YTKACEPresentSystemMenuWithDismissal(UIViewController *presenter, UIView *s
     controller.backAction = objc_getAssociatedObject(presenter,&MenuBackActionKey);
     controller.actions = actions;
     controller.playerPopover = YTKACEIsPlayerMenuSource(source);
-    UINavigationController *navigation = [[UINavigationController alloc] initWithRootViewController:controller];
+    YTKACEMenuTransition *transition = objc_getAssociatedObject(presenter.view.window,&MenuTransitionKey);
+    YTKACEMenuPresentation *previous = [transition.outgoing isKindOfClass:YTKACEMenuPresentation.class] ? (id)transition.outgoing : nil;
+    BOOL reuse = transition.source == source && previous && !previous.presentingViewController && !previous.isBeingDismissed;
+    YTKACEMenuPresentation *presentation = reuse ? previous : [YTKACEMenuPresentation new];
+    UINavigationController *navigation = reuse ? presentation.contentNavigation : [[UINavigationController alloc] initWithRootViewController:controller];
+    if (reuse) {
+        transition.reusing = YES;
+        [navigation setViewControllers:@[controller] animated:NO];
+        os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] submenu container=reused");
+    }
     navigation.view.backgroundColor = UIColor.clearColor;
-    YTKACEMenuPresentation *presentation = [YTKACEMenuPresentation new];
+    presentation.selectedAction = NO; presentation.notifiedDismissal = NO; presentation.closing = NO;
     presentation.dismissalHandler = handler;
     presentation.contentNavigation = navigation;
     controller.menuPresentation = presentation;
@@ -763,7 +811,6 @@ BOOL YTKACEPresentSystemMenuWithDismissal(UIViewController *presenter, UIView *s
             sheet.selectedDetentIdentifier = @"YTKACE.Menu";
         } else sheet.detents = @[UISheetPresentationControllerDetent.mediumDetent, UISheetPresentationControllerDetent.largeDetent];
     }
-    YTKACEMenuTransition *transition = objc_getAssociatedObject(presenter.view.window,&MenuTransitionKey);
     BOOL continuing = transition && transition.source == source;
     [presenter presentViewController:presentation animated:!continuing completion:nil];
     return YES;

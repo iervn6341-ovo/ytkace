@@ -29,7 +29,9 @@ static IMP OriginalFactories[9];
 @implementation YTKACENativeMenuOwner @end
 // Retained native pages can be reused only while still presented. YouTube clears
 // dismissed owners' action models; rebuild those pages from the gear entry point.
-static char NativePreviousPageKey, NativePagePathKey, NativeSelectedPathKey;
+static char NativePreviousPageKey, NativePagePathKey, NativeSelectedPathKey, NativeContentSessionKey, NativeContentRequiredKey;
+static UIView *NativePanel(UIViewController *controller);
+static BOOL DeferNativeContentPresentation(UIViewController *, UIViewController *, BOOL, dispatch_block_t);
 @interface YTKACENativePreviousPage : NSObject
 @property(nonatomic, strong) UIViewController *controller;
 @property(nonatomic, strong) id owner;
@@ -46,7 +48,7 @@ static char NativePreviousPageKey, NativePagePathKey, NativeSelectedPathKey;
 static YTKACENativePageRebuild *PendingPageRebuild;
 
 static BOOL CanRebuildPage(UIView *source) {
-    return [source isKindOfClass:UIControl.class] && YTKACEIsNativeGearMenuSource(source) &&
+    return [source isKindOfClass:UIControl.class] && YTKACEIsPlayerMenuSource(source) &&
         [(UIControl *)source allControlEvents] & UIControlEventTouchUpInside;
 }
 static void RebuildNativePage(UIView *source, NSArray<NSDictionary *> *path) {
@@ -75,6 +77,11 @@ static void RebuildNativePage(UIView *source, NSArray<NSDictionary *> *path) {
             PendingPageRebuild = nil; YTKACECancelSystemMenuTransition(source);
         }
     });
+}
+
+BOOL YTKACEIsNativePlayerSubmenu(UIViewController *controller) {
+    if ([controller isKindOfClass:UIAlertController.class] || [controller isKindOfClass:UIActivityViewController.class]) return NO;
+    return objc_getAssociatedObject(controller,&NativePreviousPageKey) != nil;
 }
 
 static void RememberControl(id action, id button) {
@@ -582,6 +589,31 @@ void YTKACEInstallNativePlayerMenuAdapter(void) {
         YTKACEInstallClassHook(@"YTActionSheetAction",selectors[index],factories[index],&OriginalFactories[index]);
 }
 
+static void AddNativeMetadataFields(NSMutableDictionary *action, id model, NSDictionary *captured) {
+    for (NSString *key in @[@"subtitle",@"currentValue"]) {
+        NSString *text = Text(model,key) ?: captured[[key isEqual:@"currentValue"] ? @"value" : key];
+        if (text.length) action[[key isEqual:@"currentValue"] ? @"value" : key] = text;
+    }
+    for (NSArray *keys in @[@[@"iconImage",@"icon"],@[@"secondaryIconImage",@"secondary"]]) {
+        id image = Value(model,keys[0]) ?: captured[keys[1]];
+        if ([image isKindOfClass:UIImage.class]) action[keys[1]] = image;
+    }
+}
+
+static BOOL ContainsNativeInput(UIView *root) {
+    if (![root isKindOfClass:UIView.class]) return NO;
+    NSMutableArray<UIView *> *views = [NSMutableArray arrayWithObject:root];
+    for (NSUInteger index = 0; index < views.count && index < 128; index++) {
+        UIView *view = views[index];
+        if ([view isKindOfClass:UISwitch.class] || [view isKindOfClass:UISlider.class] ||
+            [view isKindOfClass:UISegmentedControl.class] || [view isKindOfClass:UIStepper.class] ||
+            [view isKindOfClass:UITextField.class] || [view isKindOfClass:UITextView.class] ||
+            [view isKindOfClass:UIPickerView.class] || [view isKindOfClass:UIDatePicker.class]) return YES;
+        for (UIView *child in view.subviews) if (views.count < 128) [views addObject:child];
+    }
+    return NO;
+}
+
 static NSArray<NSDictionary *> *NativePlayerActions(UIViewController *controller, BOOL nativeViewsOnly, BOOL settled = YES) {
     // These links are used by YouTube's default/action/contextual sheet models.
     // Inspect a bounded controller/model graph, never infer actions from labels
@@ -608,15 +640,23 @@ static NSArray<NSDictionary *> *NativePlayerActions(UIViewController *controller
         for (NSString *key in @[@"contentViewController",@"actionsController",@"delegate",@"actionSheetController"])
             if (id next = Value(object,key)) [queue addObject:next];
     }
+    objc_setAssociatedObject(controller,&NativeContentRequiredKey,nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     if (!models.count || models.count > 100) {
+        if (!models.count) {
+            objc_setAssociatedObject(controller,&NativeContentRequiredKey,@YES,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            YTKACENativeMenuOwner *owner = [YTKACENativeMenuOwner new];
+            owner.value = Value(controller,@"actionsController") ?: controller;
+            objc_setAssociatedObject(controller,NativeOwnerKey,owner,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
         os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] native fallback reason=no-action-model class=%{public}@",
             NSStringFromClass(controller.class));
         return nil;
     }
-    if (nativeViewsOnly && models.count <= 2) {
+    if (models.count <= 2 && (nativeViewsOnly || (controller.view.window && NativePanel(controller)))) {
         Class spacer = NSClassFromString(@"YTSpacerButton");
         for (id model in models) if (spacer && [Value(model,@"button") isKindOfClass:spacer]) {
-            os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] native fallback reason=composite-selector");
+            objc_setAssociatedObject(controller,&NativeContentRequiredKey,@YES,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] native content reason=composite-selector");
             return nil;
         }
     }
@@ -640,16 +680,21 @@ static NSArray<NSDictionary *> *NativePlayerActions(UIViewController *controller
         if (activation) handler = activation;
         NSDictionary *diagnostics = TraceMetadata(model,button,nativeIndex,
             command ? @"elm-command" : (activation ? @"control-event" : (objc_getAssociatedObject(model,NativeRouteKey) ? @"verified-route" : @"model-handler")));
+        if (ContainsNativeInput(button)) {
+            objc_setAssociatedObject(controller,&NativeContentRequiredKey,@YES,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            return nil;
+        }
         Class spacerClass = NSClassFromString(@"YTSpacerButton");
+        // A tall spacer is a host for native custom content, not an empty
+        // action. Quality sheets put their actual selector here; decoding
+        // only the sibling Auto action produces a misleading one-row menu.
+        if (spacerClass && [button isKindOfClass:spacerClass] &&
+            [button isDescendantOfView:controller.view] && [button bounds].size.height >= 24) {
+            objc_setAssociatedObject(controller,&NativeContentRequiredKey,@YES,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] native content reason=embedded-selector");
+            return nil;
+        }
         if (nativeViewsOnly) {
-            // A tall spacer is a host for native custom content, not an empty
-            // action. Quality sheets put their actual selector here; decoding
-            // only the sibling Auto action produces a misleading one-row menu.
-            if (spacerClass && [button isKindOfClass:spacerClass] &&
-                [button isDescendantOfView:controller.view] && [button bounds].size.height >= 24) {
-                os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] native fallback reason=embedded-selector");
-                return nil;
-            }
             if (spacerClass && [button isKindOfClass:spacerClass] && (!handler ||
                 (isfinite([button bounds].size.height) && [button bounds].size.height >= 0 && [button bounds].size.height < 24)) &&
                 !Nonempty(PlainString(captured[@"title"])) && !Nonempty(Text(button,@"currentTitle")) &&
@@ -785,14 +830,7 @@ static NSArray<NSDictionary *> *NativePlayerActions(UIViewController *controller
         action[@"nativeDiagnostics"] = diagnostics;
         if (nativeViewsOnly) action[@"refreshELMAtSelection"] = @YES;
         if (command) action[@"elmDismissAfterCommand"] = @(Flag(model,@"shouldDismissOnAction",YES));
-        for (NSString *key in @[@"subtitle",@"currentValue"]) {
-            NSString *text = Text(model,key) ?: captured[[key isEqual:@"currentValue"] ? @"value" : key];
-            if (text.length) action[[key isEqual:@"currentValue"] ? @"value" : key] = text;
-        }
-        for (NSArray *keys in @[@[@"iconImage",@"icon"],@[@"secondaryIconImage",@"secondary"]]) {
-            id image = Value(model,keys[0]) ?: captured[keys[1]];
-            if ([image isKindOfClass:UIImage.class]) action[keys[1]] = image;
-        }
+        AddNativeMetadataFields(action,model,captured);
         [actions addObject:action];
     }
     if (!actions.count) return nil;
@@ -807,7 +845,41 @@ static void PresentGearAfterLayout(UIViewController *controller, UIView *source,
     if (!controller.presentingViewController || controller.isBeingDismissed || controller.presentedViewController ||
         !YTKACEIsPlayerMenuSource(source)) { controller.view.alpha = alpha; return; }
     controller.view.alpha = alpha;
-    NSArray *rows = NativePlayerActions(controller,YES,attempt >= 6);
+    NSArray *rows = NativePlayerActions(controller,YTKACEIsNativeGearMenuSource(source),attempt >= 6);
+    if (!rows && [objc_getAssociatedObject(controller,NativeTextRetryKey) boolValue] && attempt < 6)
+        objc_setAssociatedObject(controller,NativeRowsPendingKey,@YES,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (!rows && [objc_getAssociatedObject(controller,&NativeContentRequiredKey) boolValue]) {
+        UIView *panel = NativePanel(controller);
+        YTKACEMenuNativeRow *content = [[YTKACEMenuNativeRow alloc] initWithView:panel interactive:YES];
+        if (content) {
+            NSMutableArray *complete = [NSMutableArray arrayWithObject:
+                @{@"nativeRow":content,@"nativeContent":@YES,@"enabled":@YES}];
+            // Tweak actions can exist only in the model array, without a native
+            // button. Keep them alongside the complete native form.
+            id owner = [(YTKACENativeMenuOwner *)objc_getAssociatedObject(controller,NativeOwnerKey) value];
+            id models = Value(owner,@"actions");
+            if ([models isKindOfClass:NSArray.class]) for (NSUInteger index = 0; index < [models count]; index++) {
+                id model = models[index], button = Value(model,@"button");
+                if ([button isKindOfClass:UIView.class]) continue;
+                NSString *titleSource = nil;
+                NSString *title = ActionTitle(model,button,&titleSource);
+                dispatch_block_t handler = ActionHandler(model);
+                if (!title.length || !handler) continue;
+                NSDictionary *captured = objc_getAssociatedObject(model,NativePresentationKey);
+                NSMutableDictionary *action = [@{@"title":title,@"handler":handler,@"enabled":@(Flag(model,@"isEnabled",YES)),
+                    @"selected":@(Flag(model,@"visiblySelected",[captured[@"selected"] boolValue])),
+                    @"nativeDiagnostics":TraceMetadata(model,button,index,@"model-handler")} mutableCopy];
+                AddNativeMetadataFields(action,model,captured);
+                if (YTKACEIsNativeGearMenuSource(source) && [objc_getAssociatedObject(model,NativeItemIdentifierKey) isEqual:@"menu_item_video_quality"])
+                    action[@"qualityEntry"] = @YES;
+                [complete addObject:action];
+            }
+            rows = complete;
+            os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] native content route=shared-container class=%{public}@",TraceClass(panel));
+        } else if (attempt < 6) {
+            objc_setAssociatedObject(controller,NativeRowsPendingKey,@YES,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+    }
     if (rows) {
         os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] gear layout-ready attempts=%lu",(unsigned long)attempt + 1);
         YTKACEPresentAdaptedPlayerMenu(controller,source,rows);
@@ -865,7 +937,7 @@ static void DismissNativeMenu(UIViewController *native, dispatch_block_t complet
 @property(nonatomic, copy) dispatch_block_t command;
 @property(nonatomic, copy) dispatch_block_t restoreAppearance;
 @property(nonatomic, strong) NSMutableArray<YTKACEELMPresentationRequest *> *requests;
-@property(nonatomic) BOOL shouldDismiss, finished, recordOnly, childRequested, awaitingChild, commandDismissedWrapper;
+@property(nonatomic) BOOL shouldDismiss, finished, childRequested, awaitingChild, commandDismissedWrapper;
 @property(nonatomic) NSUInteger wrapperCloseAttempts;
 @end
 @implementation YTKACEELMNavigation @end
@@ -904,6 +976,7 @@ static void RetainPendingELMNavigation(YTKACEELMNavigation *navigation) {
 BOOL YTKACEDeferNativeELMPresentation(UIViewController *presenter, UIViewController *presented,
     BOOL animated, dispatch_block_t completion) {
     if (!NSThread.isMainThread) return NO;
+    if (!ActiveELMNavigation && DeferNativeContentPresentation(presenter,presented,animated,completion)) return YES;
     YTKACEELMNavigation *navigation = ActiveELMNavigation ?: ClosingELMNavigation;
     if (!navigation || navigation.finished || YTKACEIsPlayerPopover(presented) || presented == navigation.native ||
         presented.presentingViewController ||
@@ -915,7 +988,6 @@ BOOL YTKACEDeferNativeELMPresentation(UIViewController *presenter, UIViewControl
     NSArray *childPath = objc_getAssociatedObject(navigation.native,&NativeSelectedPathKey);
     objc_setAssociatedObject(presented,&NativePagePathKey,childPath,OBJC_ASSOCIATION_COPY_NONATOMIC);
     objc_setAssociatedObject(presented,&NativePreviousPageKey,previous,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    if (navigation.recordOnly) return NO;
     navigation.childRequested = YES;
     YTKACEContinueSystemMenuTransition(navigation.source);
     if (navigation.awaitingChild) {
@@ -1111,10 +1183,10 @@ void YTKACEEnableNativeMenuOutsideDismissal(UIViewController *controller) {
 @property(nonatomic) CGFloat originalAlpha;
 @property(nonatomic, copy) NSArray<UIView *> *backdrops;
 @property(nonatomic, copy) NSArray<NSNumber *> *backdropAlphas;
-@property(nonatomic) BOOL finished;
+@property(nonatomic) BOOL finished, interactive;
+@property(nonatomic, strong) CALayer *originalMask;
 @property(nonatomic, copy) NSArray<YTKACEMenuNativeRow *> *nativeRows;
 - (void)finish:(dispatch_block_t)action;
-- (void)activateNative:(dispatch_block_t)action;
 - (void)activateELM:(dispatch_block_t)action shouldDismiss:(BOOL)shouldDismiss;
 - (void)returnToNative;
 - (void)returnToNativeWithReason:(NSString *)reason;
@@ -1123,10 +1195,13 @@ void YTKACEEnableNativeMenuOutsideDismissal(UIViewController *controller) {
 - (void)restore {
     for (YTKACEMenuNativeRow *row in self.nativeRows) [row restore];
     self.native.view.alpha = self.originalAlpha;
+    if (self.interactive) self.native.view.layer.mask = self.originalMask;
     [self.backdrops enumerateObjectsUsingBlock:^(UIView *view, NSUInteger index, BOOL *stop) {
         (void)stop; view.alpha = self.backdropAlphas[index].doubleValue;
     }];
     self.backdrops = nil; self.backdropAlphas = nil;
+    if (self.interactive && self.finished && objc_getAssociatedObject(self.native,&NativeContentSessionKey) == self)
+        objc_setAssociatedObject(self.native,&NativeContentSessionKey,nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 - (void)returnToNative {
     [self returnToNativeWithReason:@"command-changed-before-selection"];
@@ -1171,25 +1246,6 @@ void YTKACEEnableNativeMenuOutsideDismissal(UIViewController *controller) {
     @finally { ActiveELMNavigation = previous; }
     CompleteELMNavigation(navigation);
 }
-- (void)activateNative:(dispatch_block_t)action {
-    if (self.finished) return;
-    self.finished = YES;
-    [self restore];
-    UIViewController *native = self.native;
-    YTKACENativeMenuOwner *box = objc_getAssociatedObject(native,NativeOwnerKey);
-    // Keep the owner and its responders alive for synchronous native dispatch.
-    __attribute__((objc_precise_lifetime)) id owner = box.value;
-    (void)owner;
-    YTKACERememberPlayerMenuSource(self.source);
-    os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] adapted activation=native owner=%{public}@",
-        owner ? NSStringFromClass([owner class]) : @"none");
-    YTKACEELMNavigation *navigation = [YTKACEELMNavigation new];
-    navigation.native = native; navigation.presenter = native.presentingViewController;
-    navigation.owner = owner; navigation.source = self.source; navigation.recordOnly = YES;
-    YTKACEELMNavigation *previous = ActiveELMNavigation;
-    ActiveELMNavigation = navigation;
-    @try { if (action) action(); } @finally { ActiveELMNavigation = previous; }
-}
 - (void)finish:(dispatch_block_t)action {
     if (self.finished) return;
     self.finished = YES;
@@ -1222,6 +1278,72 @@ void YTKACEEnableNativeMenuOutsideDismissal(UIViewController *controller) {
 }
 @end
 
+static BOOL DeferNativeContentPresentation(UIViewController *presenter, UIViewController *presented,
+    BOOL animated, dispatch_block_t completion) {
+    if (YTKACEIsPlayerPopover(presented) || presented.presentingViewController) return NO;
+    UIViewController *native = presenter;
+    YTKACENativeMenuSession *session = nil;
+    for (NSUInteger depth = 0; native && depth < 16; depth++,native = native.parentViewController) {
+        session = objc_getAssociatedObject(native,&NativeContentSessionKey);
+        if (session && !session.finished) break;
+    }
+    if (!native) {
+        native = presenter.presentedViewController;
+        for (NSUInteger depth = 0; native && depth < 16; depth++,native = native.presentedViewController) {
+            session = objc_getAssociatedObject(native,&NativeContentSessionKey);
+            if (session && !session.finished) break;
+        }
+    }
+    if (!native || !session || session.finished || !YTKACEIsPlayerPopover(native.presentedViewController)) return NO;
+    session.finished = YES;
+    YTKACEBeginSystemMenuTransition(native.presentedViewController);
+    for (YTKACEMenuNativeRow *row in session.nativeRows) [row restore];
+    YTKACEMarkSystemMenuSelected(native.presentedViewController);
+    YTKACEELMNavigation *navigation = [YTKACEELMNavigation new];
+    navigation.native = native; navigation.presenter = native.presentingViewController;
+    navigation.owner = [(YTKACENativeMenuOwner *)objc_getAssociatedObject(native,NativeOwnerKey) value];
+    navigation.source = session.source; navigation.shouldDismiss = YES;
+    navigation.requests = [NSMutableArray array]; navigation.restoreAppearance = ^{ [session restore]; };
+    YTKACEELMNavigation *previous = ActiveELMNavigation;
+    ActiveELMNavigation = navigation;
+    BOOL handled;
+    @try { handled = YTKACEDeferNativeELMPresentation(presenter,presented,animated,completion); }
+    @finally { ActiveELMNavigation = previous; }
+    CompleteELMNavigation(navigation);
+    return handled;
+}
+
+BOOL YTKACEHandleNativeContentDismissal(UIViewController *native, BOOL animated, void (^completion)(void)) {
+    (void)animated;
+    YTKACENativeMenuSession *session = objc_getAssociatedObject(native,&NativeContentSessionKey);
+    UIViewController *wrapper = native.presentedViewController;
+    if (!session || session.finished || !YTKACEIsPlayerPopover(wrapper)) return NO;
+    session.finished = YES;
+    YTKACEBeginSystemMenuTransition(native.presentedViewController);
+    for (YTKACEMenuNativeRow *row in session.nativeRows) [row restore];
+    YTKACEMarkSystemMenuSelected(wrapper);
+    YTKACEELMNavigation *navigation = [YTKACEELMNavigation new];
+    navigation.native = native; navigation.presenter = native.presentingViewController;
+    navigation.owner = [(YTKACENativeMenuOwner *)objc_getAssociatedObject(native,NativeOwnerKey) value];
+    navigation.source = session.source; navigation.shouldDismiss = YES;
+    navigation.requests = [NSMutableArray array];
+    ClosingELMNavigation = navigation;
+    [wrapper dismissViewControllerAnimated:NO completion:^{
+        dispatch_async(dispatch_get_main_queue(),^{
+            // The native action already called its owner's close API. Finish
+            // UIKit detachment without calling that owner a second time.
+            YTKACEDetachNativePlayerMenu(native,^{
+                [session restore];
+                YTKACEELMNavigation *previous = ActiveELMNavigation;
+                ActiveELMNavigation = navigation;
+                @try { if (completion) completion(); } @finally { ActiveELMNavigation = previous; }
+                ReplayELMPresentations(navigation);
+            });
+        });
+    }];
+    return YES;
+}
+
 void YTKACEPresentAdaptedPlayerMenu(UIViewController *controller, UIView *source, NSArray<NSDictionary *> *actions) {
     YTKACENativeMenuSession *session = [YTKACENativeMenuSession new];
     session.native = controller;
@@ -1230,6 +1352,11 @@ void YTKACEPresentAdaptedPlayerMenu(UIViewController *controller, UIView *source
     NSMutableArray *nativeRows = [NSMutableArray array];
     for (NSDictionary *item in actions) if (item[@"nativeRow"]) [nativeRows addObject:item[@"nativeRow"]];
     session.nativeRows = nativeRows;
+    for (YTKACEMenuNativeRow *row in nativeRows) if (row.interactive) session.interactive = YES;
+    if (session.interactive) {
+        session.originalMask = controller.view.layer.mask;
+        objc_setAssociatedObject(controller,&NativeContentSessionKey,session,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
     // The native sheet remains presented, retaining the callbacks/state used by
     // quality and submenu controllers. Its content is replaced visually only.
     NSMutableArray *backdrops = [NSMutableArray array], *alphas = [NSMutableArray array];
@@ -1239,11 +1366,12 @@ void YTKACEPresentAdaptedPlayerMenu(UIViewController *controller, UIView *source
         [backdrops addObject:view]; [alphas addObject:@(view.alpha)]; view.alpha = 0;
     }
     session.backdrops = backdrops; session.backdropAlphas = alphas;
-    controller.view.alpha = 0;
+    if (session.interactive) { controller.view.alpha = 1; controller.view.layer.mask = [CALayer layer]; }
+    else controller.view.alpha = 0;
     NSMutableArray *adapted = [NSMutableArray array];
     for (NSDictionary *item in actions) {
         NSMutableDictionary *copy = [item mutableCopy];
-        if (item[@"nativeRow"]) copy[@"renderingFallback"] = [^{ [session returnToNativeWithReason:@"unavailable-row-rendering"]; } copy];
+        if (item[@"nativeRow"] && ![item[@"nativeContent"] boolValue]) copy[@"renderingFallback"] = [^{ [session returnToNativeWithReason:@"unavailable-row-rendering"]; } copy];
         if (item[@"nativeRow"]) copy[@"nativeRenderingValid"] = [^BOOL {
             NSDictionary *metadata = item[@"nativeDiagnostics"];
             id model = [(YTKACENativeMenuOwner *)metadata[@"model"] value];
@@ -1272,7 +1400,7 @@ void YTKACEPresentAdaptedPlayerMenu(UIViewController *controller, UIView *source
                 trace = BeginTrace(session.native,metadata);
             };
             copy[@"diagnosticSelection"] = [prepare copy];
-            copy[@"submenuTransition"] = [^BOOL { return selectedCommand != nil && !unsupportedELM; } copy];
+            copy[@"submenuTransition"] = [^BOOL { return !unsupportedELM && (selectedCommand != nil || [item[@"nativeActivation"] boolValue]); } copy];
             copy[@"handler"] = [^{
                 if (!trace) prepare();
                 NSDictionary *metadata = item[@"nativeDiagnostics"];
@@ -1293,7 +1421,7 @@ void YTKACEPresentAdaptedPlayerMenu(UIViewController *controller, UIView *source
                     NSDictionary *metadata = item[@"nativeDiagnostics"];
                     id model = [(YTKACENativeMenuOwner *)metadata[@"model"] value];
                     [session activateELM:invocation shouldDismiss:Flag(model,@"shouldDismissOnAction",YES)];
-                } else if ([item[@"nativeActivation"] boolValue]) [session activateNative:invocation];
+                } else if ([item[@"nativeActivation"] boolValue]) [session activateELM:invocation shouldDismiss:NO];
                 else [session finish:invocation];
             } copy];
         }

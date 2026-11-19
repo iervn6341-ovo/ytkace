@@ -129,10 +129,25 @@ November 19 regressions:
   releases the source's owner before that late request, rejects duplicate row
   selection, checks command dispatch within 100 ms of selection, and verifies
   that a fresh player touch prevents stale Back history on a subsequent menu.
-- `--composite-quality-regression` reproduces the spacer-backed native quality
-  component plus its Auto sibling. It must preserve the complete native sheet,
-  rather than render an Auto-only popover. Tall spacer-backed custom components
-  also remain native.
+- `--composite-quality-regression` embeds a complete native selector in the same
+  floating component, with a live slider and original choice handler. It checks
+  one owner dismissal and one native dismissal override, restored geometry/masks,
+  exact-once selection, root sheet-pan suppression and retained slider gestures. Variants: `--native-content-speed`, `--content-cancel`,
+  `--content-no-model`, `--content-switch-form`, `--content-background`, `--content-text-input`, `--content-next-step` and
+  `--content-tweak-source`. The next-step case requires reuse of the exact same
+  presentation instance. The switch-form case also retains a metadata-only tweak
+  action alongside the complete native input panel. `--preview-native-content` holds the rendered selector
+  and writes `Documents/native-content-preview.txt`.
+- `--elm-command-regression --back-regression --other-controller-regression`
+  checks a native settings controller outside the legacy sheet-class list. ELM
+  children must reuse the existing container; a delayed tap on the retired list
+  must not dispatch another command or disable the new page. Native UIAction and
+  target/selector navigation additionally check handler start within 100 ms.
+
+Visual QA: the interactive speed fixture was rendered and inspected on the
+  disposable iPhone 17 simulator (iOS 27.2). The shared header, close button,
+  native slider, choice and gear anchor were visible. This is a stand-in selector,
+  not a screenshot or timing certification of YouTube's private UI.
 - Controls `--direct-quality-regression` additionally removes the controls view's
   playerViewController, resolves the player through eventsDelegate.delegate, and
   applies a real format constraint to its playerItem. Existing direct format,

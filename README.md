@@ -157,8 +157,19 @@ behind the replacement list and closes before the original action runs. Closing 
 tapping outside the list also closes that native session, so quality/submenu state
 can be released. Native content is never cropped into an estimated popover rectangle.
 
-Unsupported custom controls, incomplete/unknown action models and unavailable anchors retain
-the original sheet, styled by Liquid Glass → Menus and Sheets where supported.
+Composite selectors with a recognized native content panel use that same floating
+container: the entire live panel is embedded, including sliders and native choices,
+instead of decoding only a sibling Auto row. Mixed switch/slider/input rows also
+use this live-content path, with metadata-only tweak actions retained alongside it. The native owner stays presented and
+masked; closing restores the panel's original parent, constraints and geometry.
+Only the old sheet's root drag gesture is suppressed; descendant slider/scroll
+gestures remain native. Text-entry alerts and share sheets retain their system
+presentation and are never flattened into action rows. Native close requests finish UIKit detachment without invoking an owner's override
+a second time. Interactive native pages close when the app resigns active rather
+than replacing usable controls with a frozen image.
+
+Unsupported/unidentifiable content and unavailable anchors retain the original
+sheet, styled by Liquid Glass → Menus and Sheets where supported.
 This is a bounded adapter, not a universal replacement for YouTube's server-driven
 screens. Console tags `[YTKACE PlayerMenus]` and `[YTKACE Quality]` report adaptation,
 fallback and action routing without video/account details. Actual YouTube versions
@@ -194,7 +205,10 @@ activation events use one original event, rather than a possibly empty model
 handler. Non-dismissing native actions run while their sheet owner is still
 presented, and child sheets inherit the same gear anchor. Other model actions
 close the native owner before invoking their handler. Diagnostics include
-`adapted activation=native` for retained-owner dispatch. Unlaid-out/hidden controls
+`elm command-before-close shouldDismiss=0` for retained-owner dispatch. Registered
+control events start before the outgoing popover closes, sharing ELM's deferred
+presentation bridge instead of adding a dismissal-before-dispatch delay.
+Unlaid-out/hidden controls
 and unreadable rows while VoiceOver is active retain the native sheet. Diagnostics
 record `preserved native row` and `native-view` title-source counts without text.
 
@@ -225,6 +239,14 @@ index, model/control classes, title, identifier and row count; changed menus sto
 at the nearest fresh page instead of invoking a different option. Repeated Back
 taps during dismissal are ignored. The old, model-less native sheet is never
 re-presented. Diagnostics include `back rebuild depth` and `changed-actions`.
+
+Gear and registered tweak entries now share one native-presentation path. Native
+children identified by a verified action are handled even when their controller
+class is absent from the legacy sheet-class list. During submenu transitions the
+existing floating presentation and navigation controller are reused; only the
+page content is replaced. Retired page callbacks cannot resize, dismiss, or lock
+the reused shell. Diagnostics record `submenu container=reused` and
+`native content route=shared-container`.
 
 ELM submenu navigation preserves an outgoing popover snapshot while native
 owners change, then slides/fades the incoming content inside that menu frame.

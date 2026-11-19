@@ -269,6 +269,31 @@ static NativeTestAction *VirtualAction(NSString *title, NSUInteger mode, dispatc
     });
 }
 @end
+@interface NativeSettingsPage : UIViewController
+@property(nonatomic, copy) NSArray *actions;
+@property(nonatomic, strong) UIView *lateGeometryButton;
+@end
+@implementation NativeSettingsPage
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,80 * NSEC_PER_MSEC),dispatch_get_main_queue(),^{
+        CGRect frame = self.lateGeometryButton.frame; frame.size.height = 56;
+        self.lateGeometryButton.frame = frame;
+        [self.lateGeometryButton setNeedsDisplay]; [self.view setNeedsLayout];
+    });
+}
+@end
+
+@interface NativeSelectorSheet : YTBottomSheetController
+@property(nonatomic) NSUInteger closeRequests;
+@end
+@implementation NativeSelectorSheet
+- (void)dismissViewControllerAnimated:(BOOL)animated completion:(void (^)(void))completion {
+    self.closeRequests++;
+    [super dismissViewControllerAnimated:animated completion:completion];
+}
+@end
+
 @interface NativeTestOwner : NSObject
 @property(nonatomic, copy) NSArray *actions;
 @property(nonatomic, weak) UIViewController *native;
@@ -577,23 +602,136 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
     });
 }
 - (void)testCompositeQuality {
-    YTKACERegisterNativeGearMenuSource(self.nativeButton);
-    YTBottomSheetController *native = [YTBottomSheetController new];
+    NSArray *flags = NSProcessInfo.processInfo.arguments;
+    BOOL speed = [flags containsObject:@"--native-content-speed"];
+    BOOL navigate = [flags containsObject:@"--content-next-step"];
+    BOOL textInput = [flags containsObject:@"--content-text-input"];
+    BOOL switchForm = [flags containsObject:@"--content-switch-form"];
+    BOOL background = [flags containsObject:@"--content-background"];
+    BOOL cancel = [flags containsObject:@"--content-cancel"] || background;
+    if ([flags containsObject:@"--content-tweak-source"]) YTKACERegisterTweakPlayerMenuSource(self.nativeButton);
+    else YTKACERegisterNativeGearMenuSource(self.nativeButton);
+    NativeSelectorSheet *native = [NativeSelectorSheet new];
+    native.title = speed ? @"Playback speed" : @"Video quality";
     native.modalPresentationStyle = UIModalPresentationCustom; native.transitioningDelegate = self;
-    NativeTestAction *host = [NativeTestAction new]; host.button = [YTSpacerButton new];
-    [(UIView *)host.button setFrame:CGRectMake(0,0,320,1)];
-    [native.view addSubview:host.button];
+    YTDraggableView *panel = [[YTDraggableView alloc] initWithFrame:CGRectMake(8,120,340,192)];
+    panel.backgroundColor = UIColor.clearColor; [native.view addSubview:panel];
+    UIPanGestureRecognizer *sheetPan = [[UIPanGestureRecognizer alloc] initWithTarget:nil action:NULL];
+    [panel addGestureRecognizer:sheetPan];
+    UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(16,12,300,30)];
+    label.text = speed ? @"Playback speed · 1.25×" : @"Quality for this video";
+    label.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+    label.autoresizingMask = UIViewAutoresizingFlexibleWidth; [panel addSubview:label];
+    UISlider *slider = [[UISlider alloc] initWithFrame:CGRectMake(16,55,300,44)];
+    slider.minimumValue = .25; slider.maximumValue = 5; slider.value = 1.25;
+    slider.accessibilityLabel = @"Playback speed"; slider.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    [panel addSubview:slider];
+    UIPanGestureRecognizer *sliderPan = [[UIPanGestureRecognizer alloc] initWithTarget:nil action:NULL];
+    [slider addGestureRecognizer:sliderPan];
+    NativeTestAction *host = [NativeTestAction new];
+    host.button = switchForm ? [UIControl new] : [YTSpacerButton new];
+    [(UIView *)host.button setFrame:CGRectMake(0,0,340,switchForm ? 56 : 1)]; [panel addSubview:host.button];
+    UISwitch *toggle = [UISwitch new]; toggle.frame = CGRectMake(240,10,52,32); toggle.on = YES;
+    if (switchForm) [host.button addSubview:toggle];
     NativeTestAction *automatic = [NativeTestAction new]; automatic.title = @"Auto (recommended)";
-    automatic.handler = ^{ Check(NO,@"presentation must not select Auto"); };
-    automatic.button = [[YTMenuItemElementsMDCButton alloc] initWithFrame:CGRectMake(0,1,320,56)];
-    [native.view addSubview:automatic.button]; native.actions = @[host,automatic];
+    UIButton *choice = [UIButton buttonWithType:UIButtonTypeSystem];
+    [choice setTitle:navigate ? @"Advanced" : (speed ? @"Normal · 1×" : @"Auto (recommended)") forState:UIControlStateNormal];
+    choice.frame = CGRectMake(16,116,300,52); choice.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    [panel addSubview:choice]; automatic.button = choice;
+    NativeTestOwner *owner = [NativeTestOwner new]; owner.native = native;
+    owner.clearsActionsOnDismiss = YES;
+    owner.actions = [flags containsObject:@"--content-no-model"] ? nil : @[host,automatic];
+    native.actionsController = owner;
+    __block NSUInteger values = 0, choices = 0, leaves = 0;
+    if (switchForm) {
+        NativeTestAction *extra = [NativeTestAction new]; extra.title = @"Caption settings";
+        extra.handler = ^{ choices++; };
+        owner.actions = @[host,automatic,extra];
+        [toggle addAction:[UIAction actionWithHandler:^(__unused UIAction *action) { values++; }]
+            forControlEvents:UIControlEventValueChanged];
+    }
+    [slider addAction:[UIAction actionWithHandler:^(__unused UIAction *action) { values++; }]
+        forControlEvents:UIControlEventValueChanged];
+    [choice addAction:[UIAction actionWithHandler:^(__unused UIAction *action) {
+        Check(native.presentingViewController && native.view.alpha == 1 && choices == 0,
+            @"native selector actions must run against their live presented owner exactly once");
+        choices++;
+        if (textInput) {
+            UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Custom speed" message:nil preferredStyle:UIAlertControllerStyleAlert];
+            [alert addTextFieldWithConfigurationHandler:nil];
+            [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+            [self.root presentViewController:alert animated:NO completion:nil]; return;
+        }
+        if (!navigate) { [owner dismissViewControllerAnimated:NO completion:nil]; return; }
+        YTBottomSheetController *child = [YTBottomSheetController new]; child.title = @"Advanced quality";
+        YTDraggableView *childPanel = [[YTDraggableView alloc] initWithFrame:CGRectMake(0,100,340,100)];
+        [child.view addSubview:childPanel];
+        NativeTestAction *leaf = [NativeTestAction new];
+        UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
+        button.frame = CGRectMake(0,0,340,56); [button setTitle:@"1080p" forState:UIControlStateNormal];
+        [childPanel addSubview:button]; leaf.button = button; leaf.title = @"1080p"; leaf.handler = ^{ leaves++; };
+        child.actions = @[leaf];
+        [self.root presentViewController:child animated:NO completion:nil];
+    }] forControlEvents:UIControlEventTouchUpInside];
+    automatic.handler = ^{ Check(NO,@"the container must preserve original native controls, never dispatch a second model handler"); };
+    CGRect originalFrame = panel.frame;
     YTKACERememberPlayerMenuSource(self.nativeButton);
     [self.root presentViewController:native animated:NO completion:nil];
     Later(^{
-        Check(self.root.presentedViewController == native && !native.presentedViewController && native.view.alpha == 1,
-            @"native quality component must stay intact instead of being replaced by only its Auto action");
-        [@"PASS: composite native quality sheet preserves its original selector\n"
-            writeToFile:ResultPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        UIViewController *menu = native.presentedViewController;
+        UITableViewController *list = (id)MenuNavigation(menu).topViewController;
+        Check(YTKACEIsPlayerPopover(menu) && [list.tableView numberOfRowsInSection:0] == (switchForm ? 2 : 1),
+            @"composite selectors must use the same floating container as the gear menu");
+        Check(panel.window && [panel isDescendantOfView:menu.view] && slider.userInteractionEnabled && panel.userInteractionEnabled,
+            @"the complete native selector, including its slider and choices, must remain interactive");
+        Check(!sheetPan.enabled && sliderPan.enabled,@"only the old sheet drag gesture must be suppressed inside the shared container");
+        Check(native.view.alpha == 1 && native.view.layer.mask != nil && owner.dismissals == 0,
+            @"the native owner must stay alive and visually masked behind its shared content page");
+        slider.value = 1.75; [slider sendActionsForControlEvents:UIControlEventValueChanged];
+        Check(values == 1 && fabs(slider.value - 1.75) < .001,@"continuous selection must reach the original native handler once");
+        if (switchForm) {
+            Check(toggle.userInteractionEnabled && [toggle isDescendantOfView:menu.view],@"native switches must remain live inside mixed forms");
+            toggle.on = NO; [toggle sendActionsForControlEvents:UIControlEventValueChanged];
+            Check(values == 2 && !toggle.on,@"mixed form toggles must keep their original value-change route");
+        }
+        if ([flags containsObject:@"--preview-native-content"]) {
+            [@"READY: shared native content" writeToFile:[NSHomeDirectory() stringByAppendingPathComponent:@"Documents/native-content-preview.txt"]
+                atomically:YES encoding:NSUTF8StringEncoding error:nil]; return;
+        }
+        if (background) {
+            [NSNotificationCenter.defaultCenter postNotificationName:UIApplicationWillResignActiveNotification object:nil];
+        } else if (cancel) {
+            UIBarButtonItem *close = list.navigationItem.rightBarButtonItem;
+            [UIApplication.sharedApplication sendAction:close.action to:close.target from:close forEvent:nil];
+        } else if (switchForm) {
+            [list.tableView.delegate tableView:list.tableView didSelectRowAtIndexPath:[NSIndexPath indexPathForRow:1 inSection:0]];
+        } else [choice sendActionsForControlEvents:UIControlEventTouchUpInside];
+        Later(^{
+            dispatch_block_t verify = ^{
+                Check(!self.root.presentedViewController && native.closeRequests == 1 && owner.dismissals == 1 && choices == (cancel ? 0u : 1u) && leaves == (navigate ? 1u : 0u),
+                    [NSString stringWithFormat:@"selector close must run once: root=%@ native=%lu owner=%lu choices=%lu leaves=%lu",
+                        NSStringFromClass(self.root.presentedViewController.class),(unsigned long)native.closeRequests,
+                        (unsigned long)owner.dismissals,(unsigned long)choices,(unsigned long)leaves]);
+                Check(panel.superview == native.view && CGRectEqualToRect(panel.frame,originalFrame) && !native.view.layer.mask && sheetPan.enabled && sliderPan.enabled,
+                    @"closing must restore the original selector hierarchy, geometry and mask");
+                [@"PASS: shared native selector container, continuous controls, exact-once choices/cancel and container reuse\n"
+                    writeToFile:ResultPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            };
+            if (textInput) {
+                UIAlertController *alert = (id)self.root.presentedViewController;
+                Check([alert isKindOfClass:UIAlertController.class] && alert.textFields.count == 1 && !YTKACEIsPlayerPopover(alert) && !TransitionCover(self.window),
+                    @"native text entry must retain its fields and must not be converted to an action-only menu");
+                [alert dismissViewControllerAnimated:NO completion:verify]; return;
+            } else if (navigate) {
+                UIViewController *child = self.root.presentedViewController;
+                Check(YTKACEIsPlayerPopover(child.presentedViewController) && child.presentedViewController == menu,
+                    @"a native selector child must reuse the existing floating container instance");
+                UITableViewController *childList = (id)MenuNavigation(menu).topViewController;
+                [childList.tableView.delegate tableView:childList.tableView didSelectRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]];
+            }
+            Later(verify);
+
+        });
     });
 }
 // Real YTDefaultSheetController tears down its actions on dismissal. Every
@@ -758,7 +896,8 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
         Check(accessory.contents == originalContents && fabs(accessory.opacity - .6) < .01,
             @"AsyncDisplayKit accessory contents and opacity must be restored before native command dispatch");
         if (mode == 8) return; // A leaf command closes without requesting a child.
-        child = [YTBottomSheetController new];
+        child = [NSProcessInfo.processInfo.arguments containsObject:@"--other-controller-regression"]
+            ? (id)[NativeSettingsPage new] : [YTBottomSheetController new];
         NativeTestAction *leaf = [NativeTestAction new]; leaf.title = @"ELM child leaf";
         leaf.handler = ^{ leafCalls++; };
         YTDraggableView *childPanel = [[YTDraggableView alloc] initWithFrame:CGRectMake(8,80,320,180)];
@@ -843,8 +982,13 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
                     Check(!self.root.presentedViewController && completions == 0,@"a leaf must close normally without waiting for a submenu");
                     [gear removeFromSuperview]; [self testELMCommandOrder:9];
                 } else {
-                    Check(child.presentingViewController && !child.presentedViewController && child.view.alpha == 1,
-                        @"a short actionable row must remain available in its native fallback instead of being omitted");
+                    if (mode == 10) {
+                        UIView *toggle = [((NativeTestAction *)child.actions.lastObject).button subviews].firstObject;
+                        Check(YTKACEIsPlayerPopover(child.presentedViewController) && [toggle isKindOfClass:UISwitch.class] &&
+                            [toggle isDescendantOfView:child.presentedViewController.view] && toggle.userInteractionEnabled,
+                            @"a short native switch must remain live inside the shared content page");
+                    } else Check(child.presentingViewController && !child.presentedViewController && child.view.alpha == 1,
+                        @"an unsupported short command must retain its original native fallback");
                     [self.root dismissViewControllerAnimated:NO completion:^{
                         [gear removeFromSuperview]; [self testELMCommandOrder:mode == 9 ? 10 : 4];
                     }];
@@ -858,6 +1002,11 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
                 child.presentedViewController.popoverPresentationController.sourceView == self.window,
                 @"ELM child must open visibly at the original gear anchor");
             Check(!TransitionCover(self.window),@"submenu slide must remove its transition cover after the new page appears");
+            if (mode != 13) Check(child.presentedViewController == menu,
+                @"gear and native child pages must reuse the same floating container instance");
+            [table.tableView.delegate tableView:table.tableView didSelectRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]];
+            Check(command.calls == 1 && ![[child.presentedViewController valueForKey:@"closing"] boolValue],
+                @"a delayed tap on the retired page must not close or disable the reused container");
             Check(self.root.presentedViewController == (mode == 3 ? native : child),
                 @"a dismissed source must not remain as an invisible parent of the child menu");
             UITableViewController *leaf = (id)MenuNavigation(child.presentedViewController).topViewController;
@@ -925,8 +1074,11 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
     NativeTestOwner *owner = [NativeTestOwner new]; owner.native = native; owner.actions = @[model];
     native.actionsController = owner;
     __block NSUInteger calls = 0;
+    __block NSTimeInterval selectedAt = 0;
     __weak UIViewController *weakNative = native;
     dispatch_block_t navigate = ^{
+        Check(NSProcessInfo.processInfo.systemUptime - selectedAt < .1,
+            @"native submenu handlers must start without waiting for the outgoing popover dismissal");
         UIViewController *parent = weakNative;
         Check(parent.presentingViewController != nil && owner.dismissals == 0,
             @"native navigation must run before the native owner is dismissed");
@@ -959,6 +1111,7 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
         UIViewController *menu = native.presentedViewController;
         Check(YTKACEIsPlayerPopover(menu),@"native activation fixture must open an adapted gear menu");
         UITableViewController *table = (id)MenuNavigation(menu).topViewController;
+        selectedAt = NSProcessInfo.processInfo.systemUptime;
         [table.tableView.delegate tableView:table.tableView didSelectRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]];
         Later(^{
             UIViewController *child = native.presentedViewController;
