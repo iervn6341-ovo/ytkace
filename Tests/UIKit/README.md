@@ -13,6 +13,32 @@ Auto reset, old-video callback isolation and repeated native action routing,
 cancelled pans, zero size, native glass reuse and layout reentry. It does not load
 YTVideoOverlay or simulate YouTube's private transition controller.
 
+`--glass-work-regression` also measures 100 steady-state layouts per glass state.
+It warms each state once to separate one-time material restoration from repeated
+work. Instrumented native classes count actual native layout callbacks, receiver
+`superview` reads and a descendant probe's `subviews` reads. Results are written
+to `Documents/result.txt.work`; all native callback counts must remain 100.
+The fixture also checks disabled-layout reentry, native alpha updates while the
+feature is off, reparenting out of/back into the player, and state recovery.
+
+Measured on the disposable iOS 27.2 simulator, before/after this optimization:
+
+| State | Receiver parent reads | Descendant probe reads |
+| --- | ---: | ---: |
+| Stable control | 600 → 600 | 100 → 100 |
+| Feature disabled | 200 → 0 | 0 → 0 |
+| Transformed control | 600 → 500 | 100 → 0 |
+| Interactive pan | 600 → 500 | 100 → 0 |
+| Invalid bounds | 200 → 100 | 100 → 0 |
+| Large native surface | 200 → 100 | 100 → 0 |
+| Offscreen player hierarchy | 400 → 0 | 100 → 0 |
+
+These counts demonstrate eliminated hierarchy work, not measured CPU, frame-time
+or energy improvements on a device. Stable-state scanning intentionally remains
+so an asynchronously inserted native glass effect is detected. For baseline
+comparison, add `--measure-glass-work` to retain measurements and lifecycle checks
+while skipping the new scan-count and disabled-reentry assertions.
+
 From the YTKACE root, build with a selected Xcode:
 
 ```sh

@@ -82,22 +82,31 @@ static BOOL YTKACEHasNativeGlass(UIView *view, UIView *owned, NSUInteger depth) 
     return NO;
 }
 
-static void YTKACEApplyFrostedGlass(UIView *receiver) {
-    UIVisualEffectView *glass = objc_getAssociatedObject(receiver, YTKACEPlayerGlassAssociation);
-    BOOL enabled = YTKACELiquidGlassAvailable() && YTKACEFeatureEnabled(@"YTKACE.Preference.Glass.Player") &&
-        !UIAccessibilityIsReduceTransparencyEnabled();
-    if (!enabled || !YTKACEInPlayerControls(receiver)) {
+static void YTKACEApplyFrostedGlass(UIView *receiver, UIVisualEffectView *glass) {
+    if (!receiver.window) {
+        YTKACERestoreNativeGlass(receiver, glass);
+        YTKACEGlassReport(receiver, @"offscreen");
+        return;
+    }
+    if (!YTKACEInPlayerControls(receiver)) {
         YTKACERestoreNativeGlass(receiver, glass);
         return;
     }
-    NSString *deferred = receiver.window ? YTKACEGlassDeferral(receiver) : @"offscreen";
+    NSString *deferred = YTKACEGlassDeferral(receiver);
+    // These states already require the native material. Scanning descendants
+    // for another glass effect cannot change that decision.
+    if (deferred) {
+        YTKACERestoreNativeGlass(receiver, glass);
+        YTKACEGlassReport(receiver, deferred);
+        return;
+    }
     BOOL nativeGlass = YTKACEHasNativeGlass(receiver, glass, 5);
     for (UIView *node = receiver.superview; node && !nativeGlass; node = node.superview)
         if ([node isKindOfClass:UIVisualEffectView.class] &&
             [((UIVisualEffectView *)node).effect isKindOfClass:NSClassFromString(@"UIGlassEffect")]) nativeGlass = YES;
-    if (deferred || nativeGlass) {
+    if (nativeGlass) {
         YTKACERestoreNativeGlass(receiver, glass);
-        YTKACEGlassReport(receiver, deferred ?: @"native-glass");
+        YTKACEGlassReport(receiver, @"native-glass");
         return;
     }
     if (glass == nil) {
@@ -135,19 +144,19 @@ static void YTKACEApplyFrostedGlass(UIView *receiver) {
 }
 
 static void YTKACEFrostedLayout(UIView *receiver, SEL selector) {
-    UIVisualEffectView *glass = objc_getAssociatedObject(receiver, YTKACEPlayerGlassAssociation);
-    if (!glass && !YTKACEInPlayerControls(receiver)) {
-        if (OriginalFrostedLayout) ((void (*)(id, SEL))OriginalFrostedLayout)(receiver, selector);
-        return;
-    }
     if ([objc_getAssociatedObject(receiver, YTKACEGlassLayoutBusy) boolValue]) return;
     objc_setAssociatedObject(receiver, YTKACEGlassLayoutBusy, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     @try {
+        UIVisualEffectView *glass = objc_getAssociatedObject(receiver, YTKACEPlayerGlassAssociation);
+        BOOL enabled = YTKACEFeatureEnabled(@"YTKACE.Preference.Glass.Player") &&
+            YTKACELiquidGlassAvailable() && !UIAccessibilityIsReduceTransparencyEnabled();
         // Release our material before native transition layout, allowing native
         // alpha/geometry updates to take precedence throughout the animation.
-        if (glass && YTKACEGlassDeferral(receiver)) YTKACERestoreNativeGlass(receiver, glass);
+        if (glass && (!enabled || !receiver.window || YTKACEGlassDeferral(receiver))) YTKACERestoreNativeGlass(receiver, glass);
         if (OriginalFrostedLayout) ((void (*)(id, SEL))OriginalFrostedLayout)(receiver, selector);
-        YTKACEApplyFrostedGlass(receiver);
+        // Disabled features do not walk player ancestry or effect subtrees.
+        // Keep the native callback and the reentry guard in either state.
+        if (enabled) YTKACEApplyFrostedGlass(receiver, glass);
     } @finally {
         objc_setAssociatedObject(receiver, YTKACEGlassLayoutBusy, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }

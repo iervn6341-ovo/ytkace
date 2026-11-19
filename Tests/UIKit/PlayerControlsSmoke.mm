@@ -14,7 +14,17 @@
 NSString * const YTKACEPreferencesDidChangeNotification = @"YTKACEPreferencesDidChange";
 static BOOL KeepControls = YES, HiddenFeatures = NO, ReenterLayout = NO;
 static BOOL GlassEnabled = YES, ReenterGlass = NO;
-static NSUInteger NativeLayouts;
+static NSUInteger NativeLayouts, NativeGlassLayouts;
+static CGFloat NativeOverlayAlpha = -1;
+static BOOL CountGlassWork;
+static NSUInteger GlassAncestorReads, GlassSubtreeReads;
+@interface GlassScanProbe : UIView @end
+@implementation GlassScanProbe
+- (NSArray<UIView *> *)subviews {
+    if (CountGlassWork) GlassSubtreeReads++;
+    return [super subviews];
+}
+@end
 BOOL YTKACEFeatureEnabled(NSString *key) {
     if ([key hasSuffix:@"AlwaysShowControls"]) return KeepControls;
     if ([key isEqual:@"YTKACE.Preference.Glass.Player"]) return GlassEnabled;
@@ -118,7 +128,13 @@ void YTKACEShowNotice(NSString *message) { (void)message; }
 @property(nonatomic, strong) UIView *_overlayView;
 @end
 @implementation YTFrostedGlassView
+- (UIView *)superview {
+    if (CountGlassWork) GlassAncestorReads++;
+    return [super superview];
+}
 - (void)layoutSubviews {
+    NativeGlassLayouts++;
+    if (NativeOverlayAlpha >= 0) self._overlayView.alpha = NativeOverlayAlpha;
     if (ReenterGlass) [self layoutSubviews];
     [super layoutSubviews];
 }
@@ -371,6 +387,60 @@ static BOOL Finite(CGRect r) { return std::isfinite(r.origin.x) && std::isfinite
     frosted.bounds = CGRectZero; [frosted layoutSubviews]; Check(glass.hidden, @"zero-sized glass must not render");
     frosted.bounds = CGRectMake(0,0,56,56);
     [frosted layoutSubviews]; Check(!glass.hidden, @"glass must recover from zero size");
+    if ([NSProcessInfo.processInfo.arguments containsObject:@"--glass-work-regression"]) {
+        BOOL measureOnly = [NSProcessInfo.processInfo.arguments containsObject:@"--measure-glass-work"];
+        UIView *playerHost = player.superview;
+        GlassScanProbe *probe = [GlassScanProbe new]; [frosted addSubview:probe];
+        [probe addSubview:[UIView new]];
+        NSUInteger nativeBefore;
+        NSMutableArray *measurements = [NSMutableArray array];
+        for (NSString *phase in @[@"stable",@"disabled",@"transformed",@"interactive-pan",@"invalid-bounds",@"large-surface",@"offscreen"]) {
+            GlassEnabled = ![phase isEqual:@"disabled"];
+            if ([phase isEqual:@"transformed"]) player.transform = CGAffineTransformMakeScale(.8,.8);
+            if ([phase isEqual:@"interactive-pan"]) pan.testState = UIGestureRecognizerStateChanged;
+            if ([phase isEqual:@"invalid-bounds"]) frosted.bounds = CGRectZero;
+            if ([phase isEqual:@"large-surface"]) frosted.bounds = CGRectMake(0,0,300,200);
+            if ([phase isEqual:@"offscreen"]) [player removeFromSuperview];
+            // Restore the native material once before measuring steady-state work.
+            [frosted layoutSubviews];
+            GlassAncestorReads = GlassSubtreeReads = 0; nativeBefore = NativeGlassLayouts;
+            CountGlassWork = YES;
+            for (NSUInteger frame = 0; frame < 100; frame++) [frosted layoutSubviews];
+            CountGlassWork = NO;
+            [measurements addObject:[NSString stringWithFormat:@"%@: native=%lu ancestor=%lu subtree=%lu",phase,
+                (unsigned long)(NativeGlassLayouts - nativeBefore),(unsigned long)GlassAncestorReads,(unsigned long)GlassSubtreeReads]];
+            [[measurements componentsJoinedByString:@"\n"] writeToFile:[ResultPath() stringByAppendingString:@".work"]
+                atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            Check(NativeGlassLayouts == nativeBefore + 100,@"optimization must preserve every native layout callback");
+            if ([phase isEqual:@"stable"]) Check(GlassSubtreeReads > 0,@"stable controls must still detect newly inserted native glass");
+            else {
+                if (!measureOnly) Check(GlassSubtreeReads == 0,[@"deferred glass must skip native descendant scans: " stringByAppendingString:phase]);
+                Check(glass.hidden && fabs(frosted._blurEffectView.alpha - .65) < .001 && fabs(frosted._overlayView.alpha - .4) < .001,
+                    @"skipped glass work must restore native materials");
+            }
+            if (!measureOnly && [phase isEqual:@"disabled"]) Check(GlassAncestorReads == 0,@"disabled glass must not scan the player ancestry");
+            if ([phase isEqual:@"offscreen"]) [playerHost addSubview:player];
+            GlassEnabled = YES; player.transform = CGAffineTransformIdentity;
+            pan.testState = UIGestureRecognizerStateEnded; frosted.bounds = CGRectMake(0,0,56,56);
+            [frosted layoutSubviews]; Check(!glass.hidden,@"glass must recover after each skipped-work state");
+        }
+        [self.window.rootViewController.view addSubview:frosted]; [frosted layoutSubviews];
+        Check(glass.hidden && fabs(frosted._overlayView.alpha - .4) < .001,
+            @"moving a styled view outside the player must restore native material");
+        [overlay addSubview:frosted]; [frosted layoutSubviews];
+        Check(!glass.hidden,@"reparenting back into the player must recover custom glass");
+        if (!measureOnly) {
+            GlassEnabled = NO; nativeBefore = NativeGlassLayouts;
+            ReenterGlass = YES; [frosted layoutSubviews]; ReenterGlass = NO;
+            Check(NativeGlassLayouts == nativeBefore + 1 && glass.hidden,@"disabled glass must also bound native layout reentry");
+            NativeOverlayAlpha = .23; [frosted layoutSubviews];
+            Check(fabs(frosted._overlayView.alpha - .23) < .001,@"disabled custom glass must preserve native appearance updates");
+            NativeOverlayAlpha = -1; frosted._overlayView.alpha = .4;
+            GlassEnabled = YES; [frosted layoutSubviews];
+        }
+        [[measurements componentsJoinedByString:@"\n"] writeToFile:[ResultPath() stringByAppendingString:@".work"]
+            atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    }
     Class effectClass = NSClassFromString(@"UIGlassEffect");
     frosted._blurEffectView.effect = ((id (*)(id, SEL, NSInteger))objc_msgSend)(effectClass, NSSelectorFromString(@"effectWithStyle:"), 0);
     [frosted layoutSubviews];

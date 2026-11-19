@@ -94,6 +94,12 @@ Liquid Glass and preserves native layers during transforms. System menus measure
 actual table content for their popover/sheet height instead of a fixed estimate.
 Console diagnostics use `[YTKACE PlayerControls]` and `[YTKACE PlayerGlass]`.
 
+Player-glass layout skips custom hierarchy scans when the feature is disabled or
+the view is offscreen. Transform, pan, invalid-geometry and large-surface deferrals
+return before scanning descendants for native glass. Native layout still runs;
+existing custom material is restored before native appearance updates, and stable
+controls continue checking for newly inserted native glass on every layout.
+
 ### Telemetry Audit
 
 The audit page includes an observed-request list with host/method/service/path search
