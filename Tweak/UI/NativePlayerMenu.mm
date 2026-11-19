@@ -27,6 +27,15 @@ static IMP OriginalFactories[9];
 @property(nonatomic, weak) id value;
 @end
 @implementation YTKACENativeMenuOwner @end
+// A child retains the preceding page and its native action owner. The previous
+// page never retains its child, so closing the stack releases the history.
+static char NativePreviousPageKey;
+@interface YTKACENativePreviousPage : NSObject
+@property(nonatomic, strong) UIViewController *controller;
+@property(nonatomic, strong) id owner;
+@end
+@implementation YTKACENativePreviousPage @end
+
 static void RememberControl(id action, id button) {
     if (![button isKindOfClass:UIView.class]) return;
     YTKACENativeMenuOwner *box = [YTKACENativeMenuOwner new]; box.value = action;
@@ -563,6 +572,13 @@ static NSArray<NSDictionary *> *NativePlayerActions(UIViewController *controller
             NSStringFromClass(controller.class));
         return nil;
     }
+    if (nativeViewsOnly && models.count <= 2) {
+        Class spacer = NSClassFromString(@"YTSpacerButton");
+        for (id model in models) if (spacer && [Value(model,@"button") isKindOfClass:spacer]) {
+            os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] native fallback reason=composite-selector");
+            return nil;
+        }
+    }
     NSMutableArray *actions = [NSMutableArray array];
     NSMutableDictionary<NSString *,NSNumber *> *titleSources = [NSMutableDictionary dictionary];
     NSUInteger spacers = 0, collapsed = 0;
@@ -585,6 +601,14 @@ static NSArray<NSDictionary *> *NativePlayerActions(UIViewController *controller
             command ? @"elm-command" : (activation ? @"control-event" : (objc_getAssociatedObject(model,NativeRouteKey) ? @"verified-route" : @"model-handler")));
         Class spacerClass = NSClassFromString(@"YTSpacerButton");
         if (nativeViewsOnly) {
+            // A tall spacer is a host for native custom content, not an empty
+            // action. Quality sheets put their actual selector here; decoding
+            // only the sibling Auto action produces a misleading one-row menu.
+            if (spacerClass && [button isKindOfClass:spacerClass] &&
+                [button isDescendantOfView:controller.view] && [button bounds].size.height >= 24) {
+                os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] native fallback reason=embedded-selector");
+                return nil;
+            }
             if (spacerClass && [button isKindOfClass:spacerClass] && (!handler ||
                 (isfinite([button bounds].size.height) && [button bounds].size.height >= 0 && [button bounds].size.height < 24)) &&
                 !Nonempty(PlainString(captured[@"title"])) && !Nonempty(Text(button,@"currentTitle")) &&
@@ -798,8 +822,9 @@ static void DismissNativeMenu(UIViewController *native, dispatch_block_t complet
 @property(nonatomic, strong) id owner;
 @property(nonatomic, weak) UIView *source;
 @property(nonatomic, copy) dispatch_block_t command;
+@property(nonatomic, copy) dispatch_block_t restoreAppearance;
 @property(nonatomic, strong) NSMutableArray<YTKACEELMPresentationRequest *> *requests;
-@property(nonatomic) BOOL shouldDismiss, finished;
+@property(nonatomic) BOOL shouldDismiss, finished, recordOnly;
 @end
 @implementation YTKACEELMNavigation @end
 static YTKACEELMNavigation *ActiveELMNavigation, *ClosingELMNavigation;
@@ -813,9 +838,14 @@ BOOL YTKACEDeferNativeELMPresentation(UIViewController *presenter, UIViewControl
     BOOL animated, dispatch_block_t completion) {
     if (!NSThread.isMainThread) return NO;
     YTKACEELMNavigation *navigation = ActiveELMNavigation ?: ClosingELMNavigation;
-    if (!navigation || navigation.finished || presented.presentingViewController ||
+    if (!navigation || navigation.finished || presented == navigation.native ||
+        presented.presentingViewController ||
         !(ControllerWithin(presenter,navigation.native) || ControllerWithin(presenter,navigation.presenter) ||
           ControllerWithin(navigation.presenter,presenter))) return NO;
+    YTKACENativePreviousPage *previous = [YTKACENativePreviousPage new];
+    previous.controller = navigation.native; previous.owner = navigation.owner;
+    objc_setAssociatedObject(presented,&NativePreviousPageKey,previous,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (navigation.recordOnly) return NO;
     // A self-dismissing command may reach its own completion before our close
     // observer runs. Keep its anchor fresh and let a stable presenter proceed.
     if (!navigation.native.presentingViewController && !ControllerWithin(presenter,navigation.native)) {
@@ -833,6 +863,7 @@ BOOL YTKACEDeferNativeELMPresentation(UIViewController *presenter, UIViewControl
 static void ReplayELMPresentations(YTKACEELMNavigation *navigation) {
     if (navigation.finished) return;
     navigation.finished = YES;
+    if (navigation.restoreAppearance) { navigation.restoreAppearance(); navigation.restoreAppearance = nil; }
     if (ClosingELMNavigation == navigation) ClosingELMNavigation = nil;
     NSArray<YTKACEELMPresentationRequest *> *requests = navigation.requests.copy;
     [navigation.requests removeAllObjects];
@@ -863,6 +894,7 @@ static void AwaitELMDismissal(YTKACEELMNavigation *navigation, NSUInteger attemp
     if (attempt >= 60) {
         os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] elm replay-stopped reason=native-dismissal-incomplete");
         navigation.finished = YES; [navigation.requests removeAllObjects];
+        if (navigation.restoreAppearance) { navigation.restoreAppearance(); navigation.restoreAppearance = nil; }
         if (ClosingELMNavigation == navigation) ClosingELMNavigation = nil;
         return;
     }
@@ -992,6 +1024,7 @@ void YTKACEEnableNativeMenuOutsideDismissal(UIViewController *controller) {
 - (void)activateELM:(dispatch_block_t)action shouldDismiss:(BOOL)shouldDismiss {
     if (self.finished) return;
     self.finished = YES;
+    NSArray *backdrops = self.backdrops, *alphas = self.backdropAlphas;
     [self restore];
     YTKACEELMNavigation *navigation = [YTKACEELMNavigation new];
     navigation.native = self.native;
@@ -999,6 +1032,21 @@ void YTKACEEnableNativeMenuOutsideDismissal(UIViewController *controller) {
     navigation.owner = [(YTKACENativeMenuOwner *)objc_getAssociatedObject(self.native,NativeOwnerKey) value];
     navigation.source = self.source; navigation.command = action;
     navigation.shouldDismiss = shouldDismiss; navigation.requests = [NSMutableArray array];
+    if (shouldDismiss) {
+        // Alpha must remain valid for ELM's visibility/owner checks. An empty
+        // render mask conceals the outgoing sheet until it leaves the hierarchy.
+        UIView *view = self.native.view;
+        CALayer *mask = view.layer.mask;
+        view.layer.mask = [CALayer layer];
+        for (UIView *backdrop in backdrops)
+            if (backdrop != view && ![view isDescendantOfView:backdrop]) backdrop.alpha = 0;
+        navigation.restoreAppearance = ^{
+            view.layer.mask = mask;
+            [backdrops enumerateObjectsUsingBlock:^(UIView *backdrop, NSUInteger i, BOOL *stop) {
+                (void)stop; backdrop.alpha = [alphas[i] doubleValue];
+            }];
+        };
+    }
     YTKACERememberPlayerMenuSource(self.source);
     YTKACEELMNavigation *previous = ActiveELMNavigation;
     ActiveELMNavigation = navigation;
@@ -1019,7 +1067,12 @@ void YTKACEEnableNativeMenuOutsideDismissal(UIViewController *controller) {
     YTKACERememberPlayerMenuSource(self.source);
     os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] adapted activation=native owner=%{public}@",
         owner ? NSStringFromClass([owner class]) : @"none");
-    if (action) action();
+    YTKACEELMNavigation *navigation = [YTKACEELMNavigation new];
+    navigation.native = native; navigation.presenter = native.presentingViewController;
+    navigation.owner = owner; navigation.source = self.source; navigation.recordOnly = YES;
+    YTKACEELMNavigation *previous = ActiveELMNavigation;
+    ActiveELMNavigation = navigation;
+    @try { if (action) action(); } @finally { ActiveELMNavigation = previous; }
 }
 - (void)finish:(dispatch_block_t)action {
     if (self.finished) return;
@@ -1033,11 +1086,20 @@ void YTKACEEnableNativeMenuOutsideDismissal(UIViewController *controller) {
     // running an action which can synchronously present the next native page.
     YTKACENativeMenuOwner *box = objc_getAssociatedObject(native,NativeOwnerKey);
     id owner = box.value;
+    UIViewController *presenter = native.presentingViewController;
     void (^completion)(void) = ^{
         __attribute__((objc_precise_lifetime)) id retainedOwner = owner;
         (void)retainedOwner;
         [self restore];
-        if (action) { YTKACERememberPlayerMenuSource(self.source); action(); }
+        if (action) {
+            YTKACERememberPlayerMenuSource(self.source);
+            YTKACEELMNavigation *navigation = [YTKACEELMNavigation new];
+            navigation.native = native; navigation.presenter = presenter; navigation.owner = retainedOwner;
+            navigation.source = self.source;
+            YTKACEELMNavigation *previous = ActiveELMNavigation;
+            ActiveELMNavigation = navigation;
+            @try { action(); } @finally { ActiveELMNavigation = previous; }
+        }
     };
     // YTDefaultSheetController also owns state used by quality coordinators.
     DismissNativeMenu(native,completion);
@@ -1112,14 +1174,31 @@ void YTKACEPresentAdaptedPlayerMenu(UIViewController *controller, UIView *source
         }
         [adapted addObject:copy];
     }
+    YTKACENativePreviousPage *previous = objc_getAssociatedObject(controller,&NativePreviousPageKey);
+    if (previous) {
+        YTKACESetSystemMenuBackAction(controller,^{
+            UIViewController *presenter = controller.presentingViewController;
+            [session finish:^{ dispatch_async(dispatch_get_main_queue(),^{
+                if (!presenter.viewIfLoaded.window || presenter.presentedViewController) return;
+                YTKACERememberPlayerMenuSource(source);
+                if (previous.controller.presentingViewController) {
+                    YTKACEPresentNativeGearMenu(previous.controller,source);
+                } else {
+                    [presenter presentViewController:previous.controller animated:NO completion:nil];
+                }
+            }); }];
+        });
+    }
     if (!YTKACEPresentSystemMenuWithDismissal(controller,source,controller.title,nil,adapted,^(BOOL selected) {
         if (!selected) [session finish:nil];
     })) {
+        YTKACESetSystemMenuBackAction(controller,nil);
         [session restore];
         YTKACEEnableNativeMenuOutsideDismissal(controller);
         os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] native fallback reason=anchor-or-presenter");
         return;
     }
+    YTKACESetSystemMenuBackAction(controller,nil);
     os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] adapted class=%{public}@ actions=%lu",
         NSStringFromClass(controller.class),(unsigned long)actions.count);
 }

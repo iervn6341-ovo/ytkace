@@ -81,3 +81,22 @@ container classes retain the app's original presentation.
 Actions compiles this harness but does not boot a simulator or claim runtime UI
 coverage from compilation alone. The harness and its fake classes are not linked
 into the shipped tweak.
+
+November 19 regressions:
+
+- `--elm-command-regression --back-regression` checks the leading Back button,
+  restoration of the retained parent page, reentering its child, and exact-once
+  selection after returning. The ordinary ELM suite also requires a Back item on
+  each adapted child and keeps the source visually masked during command dispatch.
+- `--composite-quality-regression` reproduces the spacer-backed native quality
+  component plus its Auto sibling. It must preserve the complete native sheet,
+  rather than render an Auto-only popover. Tall spacer-backed custom components
+  also remain native.
+- Controls `--direct-quality-regression` additionally removes the controls view's
+  playerViewController, resolves the player through eventsDelegate.delegate, and
+  applies a real format constraint to its playerItem. Existing direct format,
+  Auto, deduplication, stale-video and unavailable-API cases remain covered.
+
+These fixtures exercise the production adapter with stand-in YouTube objects;
+actual YouTube 21.11.4 device presentation and private API availability still need
+verification with the packaged build.

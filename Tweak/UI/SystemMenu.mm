@@ -268,6 +268,7 @@ static UIImage *RenderedNativeRow(UIView *view) {
 static char MenuTransitionKey;
 @interface YTKACEMenuTransition : NSObject
 @property(nonatomic, weak) UIWindow *window;
+@property(nonatomic, weak) UIViewController *outgoing;
 @property(nonatomic, weak) UIView *source;
 @property(nonatomic, strong) UIView *cover, *snapshot;
 @property(nonatomic) BOOL receivedChild;
@@ -300,7 +301,7 @@ static void BeginMenuTransition(UIViewController *menu) {
     UIView *snapshot = [container resizableSnapshotViewFromRect:rect afterScreenUpdates:NO withCapInsets:UIEdgeInsetsZero];
     if (!snapshot || CGRectIsEmpty(rect)) return;
     YTKACEMenuTransition *transition = [YTKACEMenuTransition new];
-    transition.window = window; transition.windowBounds = window.bounds;
+    transition.window = window; transition.windowBounds = window.bounds; transition.outgoing = menu;
     transition.source = source; transition.snapshot = snapshot;
     UIView *cover = [[UIView alloc] initWithFrame:[menu.view convertRect:menu.view.bounds toView:window]];
     cover.accessibilityIdentifier = @"YTKACE.SubmenuTransition";
@@ -327,7 +328,7 @@ static void BeginMenuTransition(UIViewController *menu) {
 static void CompleteMenuTransition(UIViewController *menu, UIView *content) {
     UIWindow *window = menu.view.window;
     YTKACEMenuTransition *transition = objc_getAssociatedObject(window,&MenuTransitionKey);
-    if (!transition || transition.source != YTKACEPlayerMenuSource(menu)) return;
+    if (!transition || transition.outgoing == menu || transition.source != YTKACEPlayerMenuSource(menu)) return;
     if (!CGRectEqualToRect(transition.windowBounds,window.bounds)) { RemoveMenuTransition(transition); return; }
     objc_setAssociatedObject(window,&MenuTransitionKey,nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     CGRect target = [menu.view convertRect:menu.view.bounds toView:window];
@@ -405,11 +406,17 @@ void YTKACENotifySystemMenuDismissed(UIViewController *menu) {
 @property(nonatomic, weak) YTKACESystemMenuController *menuOwner;
 @end
 
+static char MenuBackActionKey;
+void YTKACESetSystemMenuBackAction(UIViewController *presenter, dispatch_block_t action) {
+    objc_setAssociatedObject(presenter,&MenuBackActionKey,action,OBJC_ASSOCIATION_COPY_NONATOMIC);
+}
+
 @interface YTKACESystemMenuController : UIViewController <UITableViewDataSource, UITableViewDelegate>
 @property(nonatomic, strong) UITableView *tableView;
 @property(nonatomic, weak) UIViewController *menuPresentation;
 @property(nonatomic, copy) NSArray<NSDictionary *> *actions;
 @property(nonatomic, copy) NSString *menuSubtitle;
+@property(nonatomic, copy) dispatch_block_t backAction;
 @property(nonatomic) BOOL playerPopover;
 @property(nonatomic) BOOL heightUpdatePending;
 @property(nonatomic) BOOL updatingSize;
@@ -458,6 +465,13 @@ void YTKACENotifySystemMenuDismissed(UIViewController *menu) {
     }
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
         initWithBarButtonSystemItem:UIBarButtonSystemItemClose target:self action:@selector(closeMenu)];
+    if (self.backAction) {
+        UIBarButtonItem *back = [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"chevron.backward"]
+            style:UIBarButtonItemStylePlain target:self action:@selector(goBack)];
+        back.accessibilityLabel = YTKACELocalized(@"Back");
+        back.accessibilityIdentifier = @"YTKACE.Menu.Back";
+        self.navigationItem.leftBarButtonItem = back;
+    }
     for (NSNotificationName name in @[UIApplicationWillResignActiveNotification,UISceneWillDeactivateNotification])
         [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(preserveNativeRows:) name:name object:nil];
     for (NSNotificationName name in @[UIApplicationDidBecomeActiveNotification,UISceneDidActivateNotification])
@@ -582,6 +596,12 @@ void YTKACENotifySystemMenuDismissed(UIViewController *menu) {
     }
     } @finally { self.updatingSize = NO; }
 }
+- (void)goBack {
+    if (!self.backAction || ((YTKACEMenuPresentation *)self.menuPresentation).closing) return;
+    ((YTKACEMenuPresentation *)self.menuPresentation).selectedAction = YES;
+    dispatch_block_t back = self.backAction;
+    [self.menuPresentation dismissViewControllerAnimated:NO completion:back];
+}
 - (void)closeMenu { [self.menuPresentation dismissViewControllerAnimated:YES completion:nil]; }
 - (BOOL)accessibilityPerformEscape { [self closeMenu]; return YES; }
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
@@ -693,6 +713,7 @@ BOOL YTKACEPresentSystemMenuWithDismissal(UIViewController *presenter, UIView *s
     YTKACESystemMenuController *controller = [YTKACESystemMenuController new];
     controller.title = title.length ? title : YTKACELocalized(@"Options");
     controller.menuSubtitle = subtitle;
+    controller.backAction = objc_getAssociatedObject(presenter,&MenuBackActionKey);
     controller.actions = actions;
     controller.playerPopover = YTKACEIsPlayerMenuSource(source);
     UINavigationController *navigation = [[UINavigationController alloc] initWithRootViewController:controller];

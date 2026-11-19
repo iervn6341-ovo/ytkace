@@ -33,6 +33,7 @@ void YTKACEShowNotice(NSString *message) { (void)message; }
 @end
 @interface QualityTestPresenter : NSObject
 @property(nonatomic) NSUInteger calls;
+@property(nonatomic, strong) id delegate;
 - (void)didPressVideoQuality:(id)sender;
 @end
 @implementation QualityTestPresenter
@@ -59,6 +60,15 @@ void YTKACEShowNotice(NSString *message) { (void)message; }
     if ((self = [super init])) { (void)setting; (void)reason; _qualityLabel = [label copy]; } return self;
 }
 @end
+@interface QualityTestItem : NSObject
+@property(nonatomic, copy) NSArray *selectableVideoFormats;
+@property(nonatomic, strong) id videoFormatConstraint;
+@end
+@implementation QualityTestItem @end
+@interface QualityTestWrapper : NSObject
+@property(nonatomic, strong) id singleVideo, playerItem;
+@end
+@implementation QualityTestWrapper @end
 @interface YTSingleVideoController : NSObject
 @property(nonatomic, strong) id singleVideo;
 @property(nonatomic) NSUInteger constraintCalls;
@@ -393,9 +403,29 @@ static BOOL Finite(CGRect r) { return std::isfinite(r.origin.x) && std::isfinite
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,NSEC_PER_SEC),dispatch_get_main_queue(),^{
         UIViewController *menu = self.window.rootViewController.presentedViewController;
         if (mode == 3) {
+            // Reproduce the device path: no playerViewController on the controls
+            // view, player reached through eventsDelegate.delegate, formats and
+            // setter living only on the HAM item.
+            QualityTestItem *item = [QualityTestItem new]; item.selectableVideoFormats = @[low,high];
+            QualityTestWrapper *wrapper = [QualityTestWrapper new]; wrapper.singleVideo = video.singleVideo;
+            wrapper.playerItem = item; player.activeVideo = wrapper;
+            overlay.playerViewController = nil; presenter.delegate = player;
+            [button sendActionsForControlEvents:UIControlEventTouchUpInside];
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW,NSEC_PER_SEC),dispatch_get_main_queue(),^{
+                UIViewController *direct = self.window.rootViewController.presentedViewController;
+                Check(YTKACEIsPlayerPopover(direct),@"delegate-owned player with HAM item must expose the direct resolution list");
+                UINavigationController *nav = [direct valueForKey:@"contentNavigation"];
+                UITableViewController *list = (id)nav.topViewController;
+                [list.tableView.delegate tableView:list.tableView didSelectRowAtIndexPath:[NSIndexPath indexPathForRow:2 inSection:0]];
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW,NSEC_PER_SEC),dispatch_get_main_queue(),^{
+                    Check([[item.videoFormatConstraint qualityLabel] isEqual:high.qualityLabel],@"HAM item must receive the native quality constraint");
+                    Check([button.currentTitle isEqual:@"1080p"],@"delegate-owned quality button must update immediately");
+                    [@"PASS: direct formats, Auto, stale-video guard, native fallback and delegate/HAM item resolution\n"
+                        writeToFile:ResultPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
+                });
+            });
             Check(!menu && presenter.calls == nativeCalls + 1,@"unavailable format API must use the native quality entry exactly once");
-            [@"PASS: direct native format list, exact-once format/Auto application, stale-video rejection and native API fallback\n"
-                writeToFile:ResultPath() atomically:YES encoding:NSUTF8StringEncoding error:nil]; return;
+            return;
         }
         Check(menu && YTKACEIsPlayerPopover(menu) && presenter.calls == nativeCalls,@"available format APIs must open the anchored resolution list directly");
         UINavigationController *navigation = [menu valueForKey:@"contentNavigation"];

@@ -386,6 +386,8 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
         if ([NSProcessInfo.processInfo.arguments containsObject:@"--preview-native-gear"]) {
             self.button.hidden = YES; self.qualityButton.hidden = YES;
             [self testGearPopover];
+        } else if ([NSProcessInfo.processInfo.arguments containsObject:@"--composite-quality-regression"]) {
+            [self testCompositeQuality];
         } else if ([NSProcessInfo.processInfo.arguments containsObject:@"--elm-command-regression"]) {
             [self testELMCommandOrder:0];
         } else if ([NSProcessInfo.processInfo.arguments containsObject:@"--native-activation-regression"]) {
@@ -569,6 +571,26 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
         });
     });
 }
+- (void)testCompositeQuality {
+    YTKACERegisterNativeGearMenuSource(self.nativeButton);
+    YTBottomSheetController *native = [YTBottomSheetController new];
+    native.modalPresentationStyle = UIModalPresentationCustom; native.transitioningDelegate = self;
+    NativeTestAction *host = [NativeTestAction new]; host.button = [YTSpacerButton new];
+    [(UIView *)host.button setFrame:CGRectMake(0,0,320,1)];
+    [native.view addSubview:host.button];
+    NativeTestAction *automatic = [NativeTestAction new]; automatic.title = @"Auto (recommended)";
+    automatic.handler = ^{ Check(NO,@"presentation must not select Auto"); };
+    automatic.button = [[YTMenuItemElementsMDCButton alloc] initWithFrame:CGRectMake(0,1,320,56)];
+    [native.view addSubview:automatic.button]; native.actions = @[host,automatic];
+    YTKACERememberPlayerMenuSource(self.nativeButton);
+    [self.root presentViewController:native animated:NO completion:nil];
+    Later(^{
+        Check(self.root.presentedViewController == native && !native.presentedViewController && native.view.alpha == 1,
+            @"native quality component must stay intact instead of being replaced by only its Auto action");
+        [@"PASS: composite native quality sheet preserves its original selector\n"
+            writeToFile:ResultPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    });
+}
 - (void)testELMCommandOrder:(NSUInteger)mode {
     UIButton *gear = [UIButton buttonWithType:UIButtonTypeSystem];
     gear.frame = CGRectMake(240,140,44,44); [self.button.superview addSubview:gear];
@@ -614,8 +636,9 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
     __weak PlayerMenuSmoke *weak = self;
     command.callback = ^{
         UIViewController *parent = weakNative;
-        Check(parent.presentingViewController != nil && weakOwner.dismissals == 0 &&
-            button.superview == panel && button.userInteractionEnabled && parent.view.alpha == 1,
+        Check(parent.presentingViewController != nil &&
+            (weakOwner.dismissals == 0 || ([NSProcessInfo.processInfo.arguments containsObject:@"--back-regression"] && command.calls == 2)) &&
+            button.superview == panel && button.userInteractionEnabled && parent.view.alpha == 1 && (mode == 3 || parent.view.layer.mask != nil),
             @"handleTap must execute once with its node graph restored and owner still presented");
         Check(TransitionCover(weak.window) != nil,@"the outgoing menu must remain visible while native owners change");
         Check(trailing.image == arrow && [trailing.tintColor isEqual:UIColor.whiteColor] && fabs(trailing.alpha - .6) < .01,
@@ -714,6 +737,30 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
             UITableViewController *leaf = (id)MenuNavigation(child.presentedViewController).topViewController;
             Check([leaf.tableView.dataSource tableView:leaf.tableView numberOfRowsInSection:0] == 2,
                 @"9pt structural row must be skipped only after layout, while the delayed 56pt row remains selectable");
+            Check(leaf.navigationItem.leftBarButtonItem != nil,@"every adapted ELM child must offer Back in its leading navigation item");
+            if ([NSProcessInfo.processInfo.arguments containsObject:@"--back-regression"]) {
+                UIBarButtonItem *back = leaf.navigationItem.leftBarButtonItem;
+                [UIApplication.sharedApplication sendAction:back.action to:back.target from:back forEvent:nil];
+                Later(^{
+                    Check(self.root.presentedViewController == native && YTKACEIsPlayerPopover(native.presentedViewController),
+                        @"Back must reopen the preceding anchored native page");
+                    Check(!native.view.layer.mask && native.view.alpha == 0 && leafCalls == 0,
+                        @"Back must restore the previous page's rendering without executing a leaf action");
+                    UITableViewController *parentList = (id)MenuNavigation(native.presentedViewController).topViewController;
+                    [parentList.tableView.delegate tableView:parentList.tableView didSelectRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]];
+                    Later(^{
+                        Check(command.calls == 2 && YTKACEIsPlayerPopover(child.presentedViewController),@"the returned parent must remain selectable and reopen its child");
+                        UITableViewController *reopened = (id)MenuNavigation(child.presentedViewController).topViewController;
+                        [reopened.tableView.delegate tableView:reopened.tableView didSelectRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]];
+                        Later(^{
+                            Check(leafCalls == 1 && !self.root.presentedViewController,@"reopened child selection must execute once and close cleanly");
+                            [@"PASS: submenu Back, parent reentry and exact-once reopened leaf selection\n"
+                                writeToFile:ResultPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
+                        });
+                    });
+                });
+                return;
+            }
             [leaf.tableView.delegate tableView:leaf.tableView didSelectRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]];
             Later(^{
                 Check(leafCalls == 1 && !child.presentingViewController,

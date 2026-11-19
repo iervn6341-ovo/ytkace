@@ -18,6 +18,7 @@ FOUNDATION_EXPORT NSNotificationName const YTKACEPlayerMenuTouchSource;
 - (BOOL)preserveRendering;
 @property(nonatomic, readonly) BOOL renderingAvailable;
 @end
+FOUNDATION_EXPORT void YTKACESetSystemMenuBackAction(UIViewController *presenter, dispatch_block_t _Nullable action);
 // UIKit list: anchored player popover, settings sheet; original action callbacks.
 FOUNDATION_EXPORT BOOL YTKACEPresentSystemMenu(UIViewController *presenter,
                                                UIView * _Nullable source,

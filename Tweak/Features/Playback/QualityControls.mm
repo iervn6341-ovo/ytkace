@@ -68,7 +68,21 @@ static id QualityVideo(id video) {
     return QualityObject(video,@"singleVideo") ?: QualityObject(video,@"videoData") ?: video;
 }
 static id OverlayVideoController(UIView *overlay) {
-    return QualityObject(QualityObject(overlay,@"playerViewController"),@"activeVideo");
+    if (!overlay) return nil;
+    // Controls views can be owned by the overlay controller rather than expose
+    // playerViewController themselves (notably the 21.11 player).
+    NSMutableArray *queue = [NSMutableArray arrayWithObject:overlay];
+    NSHashTable *seen = [NSHashTable hashTableWithOptions:NSPointerFunctionsObjectPointerPersonality];
+    for (NSUInteger i = 0; i < queue.count && i < 24; i++) {
+        id candidate = queue[i];
+        if ([seen containsObject:candidate]) continue;
+        [seen addObject:candidate];
+        id video = QualityObject(candidate,@"activeVideo");
+        if (video) return video;
+        for (NSString *key in @[@"playerViewController",@"eventsDelegate",@"delegate",@"playerController"])
+            if (id next = QualityObject(candidate,key)) [queue addObject:next];
+    }
+    return nil;
 }
 static id OverlayQualityVideo(UIView *overlay) {
     return QualityVideo(OverlayVideoController(overlay));
@@ -145,9 +159,24 @@ static id QualityPresenter(UIView *overlay) {
 
 static BOOL PresentDirectQuality(UIView *overlay, UIButton *source) {
     id video = OverlayVideoController(overlay);
-    id formats = QualityObject(video,@"selectableVideoFormats");
+    id target = video;
+    id formats = nil;
+    // Format selection lives on the HAM item / AV player on some releases.
+    NSMutableArray *candidates = [NSMutableArray array];
+    if (video) [candidates addObject:video];
+    for (NSUInteger i = 0; i < candidates.count && i < 12; i++) {
+        id candidate = candidates[i];
+        id available = QualityObject(candidate,@"selectableVideoFormats");
+        if ([available isKindOfClass:NSArray.class] && [available count] &&
+            [candidate respondsToSelector:NSSelectorFromString(@"setVideoFormatConstraint:")]) {
+            target = candidate; formats = available; break;
+        }
+        for (NSString *key in @[@"playerItem",@"player",@"queuePlayer",@"currentPlayer"])
+            if (id next = QualityObject(candidate,key))
+                if ([candidates indexOfObjectIdenticalTo:next] == NSNotFound) [candidates addObject:next];
+    }
     SEL apply = NSSelectorFromString(@"setVideoFormatConstraint:");
-    NSMethodSignature *signature = [video methodSignatureForSelector:apply];
+    NSMethodSignature *signature = [target methodSignatureForSelector:apply];
     Class constraintClass = NSClassFromString(@"MLQuickMenuVideoQualitySettingFormatConstraint");
     SEL initializer = NSSelectorFromString(@"initWithVideoQualitySetting:formatSelectionReason:qualityLabel:");
     NSMethodSignature *factory = [constraintClass instanceMethodSignatureForSelector:initializer];
@@ -165,7 +194,7 @@ static BOOL PresentDirectQuality(UIView *overlay, UIButton *source) {
         return NO;
     }
     __weak UIView *weakOverlay = overlay;
-    __weak id weakVideo = video, weakIdentity = QualityVideo(video);
+    __weak id weakVideo = video, weakTarget = target, weakIdentity = QualityVideo(video);
     NSString *identifier = [QualityVideoID(weakIdentity) copy];
     dispatch_block_t (^select)(NSString *) = ^dispatch_block_t(NSString *label) {
         return [^{
@@ -173,7 +202,7 @@ static BOOL PresentDirectQuality(UIView *overlay, UIButton *source) {
             id controller = weakVideo, identity = QualityVideo(controller);
             NSString *currentID = QualityVideoID(identity);
             BOOL sameID = identifier.length && [identifier isEqual:currentID];
-            if (!controller || OverlayVideoController(currentOverlay) != controller ||
+            if (!controller || !weakTarget || OverlayVideoController(currentOverlay) != controller ||
                 (identifier.length && currentID.length && !sameID) || (identity != weakIdentity && !sameID)) {
                 os_log(OS_LOG_DEFAULT,"[YTKACE Quality] direct-selection skipped=video-changed");
                 return;
@@ -183,7 +212,7 @@ static BOOL PresentDirectQuality(UIView *overlay, UIButton *source) {
                 constraint = ((id (*)(id,SEL,int,NSInteger,id))objc_msgSend)([constraintClass alloc],initializer,3,2,label);
                 if (!constraint) { os_log(OS_LOG_DEFAULT,"[YTKACE Quality] direct-selection skipped=constraint-unavailable"); return; }
             }
-            ((void (*)(id,SEL,id))objc_msgSend)(controller,apply,constraint);
+            ((void (*)(id,SEL,id))objc_msgSend)(weakTarget,apply,constraint);
             ApplyChoice(currentOverlay,label,@"direct-selector");
         } copy];
     };
