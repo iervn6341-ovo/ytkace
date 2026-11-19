@@ -1,5 +1,6 @@
 #import "SettingsTransferController.h"
 #import "YTKACESettingsPages.h"
+#import "CaptionIslandTransferRules.h"
 #import "../Runtime/SettingsTransfer.h"
 #import "../Runtime/Preferences.h"
 #import "../Runtime/Localization.h"
@@ -65,6 +66,7 @@ static void YTKACERegisterTransferRules(void) {
     caption[@"CaptionIsland.SourcePriority"] = @{@"default": @0, @"values": @[@0, @1]};
     caption[@"CaptionIsland.ReturnHomeMode"] = @{@"default": @0, @"values": @[@0, @1]};
     caption[@"CaptionIsland.MaximumVideoDurationMinutes"] = @{@"default": @5, @"minimum": @0, @"maximum": @180};
+    caption[@"CaptionIsland.VideoOverrides.v1"] = YTKACECaptionVideoOverridesRule();
     YTKACERegisterSettingsModule(@"CaptionIsland", caption);
     YTKACERegisterSettingsModule(@"PlayerButtons", @{
         @"YTVideoOverlay-CaptionIslandLyrics-Order": @{@"default": @0, @"minimum": @0, @"maximum": @100},

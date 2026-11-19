@@ -1,5 +1,6 @@
 #import <Foundation/Foundation.h>
 #import "../Tweak/Runtime/SettingsTransfer.h"
+#import "../Tweak/Settings/CaptionIslandTransferRules.h"
 #include <cassert>
 
 static NSData *Document(NSDictionary *modules, id version = @1) {
@@ -23,7 +24,8 @@ int main() {
             @"test.names": YTKACESettingsRule(@{}),
             @"test.color": @{@"default": @"#123ABC", @"pattern": @"^#[0-9A-Fa-f]{6}$"}
         });
-        YTKACERegisterSettingsModule(@"CaptionIsland", @{@"CaptionIsland.Enabled": YTKACESettingsRule(@YES)});
+        YTKACERegisterSettingsModule(@"CaptionIsland", @{@"CaptionIsland.Enabled": YTKACESettingsRule(@YES),
+            @"CaptionIsland.VideoOverrides.v1":YTKACECaptionVideoOverridesRule()});
         [defaults setObject:@"secret" forKey:@"YouTube.authToken"];
         [defaults setBool:NO forKey:@"test.bool"];
         NSError *error = nil;
@@ -32,7 +34,7 @@ int main() {
         NSString *text = [[NSString alloc] initWithData:exported encoding:NSUTF8StringEncoding];
         assert(![text containsString:@"secret"] && ![text containsString:@"YouTube.authToken"]);
         NSDictionary *preview = YTKACEPreviewSettings(exported, NULL, &error);
-        assert(preview.count == 7 && [preview[@"test.bool"] isEqual:@NO]);
+        assert(preview.count == 8 && [preview[@"test.bool"] isEqual:@NO]);
         assert([preview[@"test.rate"] isEqual:@1.0]);
 
         NSData *valid = Document(@{@"Test": @{@"test.bool": @YES, @"test.rate": @2.5,
@@ -76,8 +78,41 @@ int main() {
         NSDictionary *before = [defaults persistentDomainForName:suite];
         assert(!YTKACEApplySettings(valid, defaults, [directory URLByAppendingPathComponent:@"missing/file"], &error));
         assert([[defaults persistentDomainForName:suite] isEqual:before]);
+        NSDictionary *videoSettings = @{
+            @"video-one":@{@"captionAdvance":@500.125, @"searchTitle":@"A custom song", @"searchArtist":@"Artist",
+                @"originalTitle":@"Upload title", @"captionLanguagePriorities":@[@"ja",@"zh-Hant"],
+                @"captionSourcePreference":@2, @"lyricsSuppressed":@NO, @"updatedAt":@1234.0},
+            @"video-two":@{@"captionAdvance":@(-750.5), @"lyricsSuppressed":@YES}
+        };
+        [defaults setObject:videoSettings forKey:@"CaptionIsland.VideoOverrides.v1"];
+        error = nil;
+        NSData *timingExport = YTKACEExportSettings(defaults, &error);
+        NSDictionary *timingPreview = YTKACEPreviewSettings(timingExport, NULL, &error);
+        assert(timingExport && !error && [timingPreview[@"CaptionIsland.VideoOverrides.v1"] isEqual:videoSettings]);
+        [defaults removeObjectForKey:@"CaptionIsland.VideoOverrides.v1"];
+        assert(YTKACEApplySettings(timingExport,defaults,backup,&error));
+        assert([[defaults objectForKey:@"CaptionIsland.VideoOverrides.v1"] isEqual:videoSettings]);
+        // Legacy JSON settings omit this key and must leave current video timing intact.
+        assert(YTKACEApplySettings(valid,defaults,backup,&error));
+        assert([[defaults objectForKey:@"CaptionIsland.VideoOverrides.v1"] isEqual:videoSettings]);
+        for (NSDictionary *invalid in @[
+            @{@"video-one":@{@"captionAdvance":@"500"}}, @{@"video-one":@{@"captionAdvance":@YES}},
+            @{@"video-one":@{@"lyricsSuppressed":@1}}, @{@"video-one":@{@"captionSourcePreference":@99}},
+            @{@"video-one":@{@"unknown":@"injected"}}, @{@"":@{@"captionAdvance":@5}},
+            @{@"video-one":@{@"captionLanguagePriorities":@[@"not a language"]}}
+        ]) {
+            NSDictionary *beforeInvalid = [defaults persistentDomainForName:suite];
+            assert(!YTKACEApplySettings(Document(@{@"CaptionIsland":@{@"CaptionIsland.VideoOverrides.v1":invalid}}),
+                defaults,backup,&error));
+            assert([[defaults persistentDomainForName:suite] isEqual:beforeInvalid]);
+        }
+        NSMutableDictionary *maximumVideos = [NSMutableDictionary dictionary];
+        for (NSUInteger index=0; index<500; index++) maximumVideos[[NSString stringWithFormat:@"video-%lu",(unsigned long)index]] = @{@"captionAdvance":@45};
+        assert(YTKACEPreviewSettings(Document(@{@"CaptionIsland":@{@"CaptionIsland.VideoOverrides.v1":maximumVideos}}),NULL,&error));
+        maximumVideos[@"one-too-many"] = @{@"captionAdvance":@45};
+        assert(!YTKACEPreviewSettings(Document(@{@"CaptionIsland":@{@"CaptionIsland.VideoOverrides.v1":maximumVideos}}),NULL,&error));
         [defaults removePersistentDomainForName:suite];
         [NSFileManager.defaultManager removeItemAtURL:directory error:nil];
-        puts("Settings transfer validation, round-trip, isolation, and rollback passed.");
+        puts("Settings transfer validation, caption timing backup, legacy import, isolation, and rollback passed.");
     }
 }

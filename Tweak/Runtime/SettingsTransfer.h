@@ -3,6 +3,8 @@
 NS_ASSUME_NONNULL_BEGIN
 // Explicit opt-in: no prefix-based access to YouTube's defaults or credentials.
 // Rule fields: default (required), values, minimum, maximum, elementType, pattern.
+// Structured values may specify maximumLength, maximumCount, elementRule,
+// valueRule, fields (known dictionary fields), and keyPattern.
 FOUNDATION_EXPORT void YTKACERegisterSettingsModule(NSString *identifier,
                                                    NSDictionary<NSString *, NSDictionary *> *rules);
 FOUNDATION_EXPORT NSDictionary *YTKACESettingsRule(id defaultValue);

@@ -270,6 +270,10 @@ number of supported/changed/unknown entries, validate all known values before wr
 and save `Documents/YTKACE/Settings-before-import.json`. Restore Previous Settings
 restores that snapshot; restart YouTube after importing. This versioned format is
 settings-only and does not accept uYouEnhanced's legacy `key: value` text.
+CaptionIsland's per-video settings are included, with positive/negative caption
+offsets beyond 30 seconds, custom song metadata and caption-language/source
+choices. Old JSON files that omit per-video settings leave current values intact.
+Nested entries are validated before any preference is written.
 
 `Tweak/Runtime/SettingsTransfer.h` exposes an opt-in registration function. A separately
 loaded tweak can resolve it without adding a hard dependency on YTKACE:

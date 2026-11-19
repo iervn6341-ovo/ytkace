@@ -58,23 +58,30 @@ static BOOL YTKACEValidSetting(id value, NSDictionary *rule) {
         if (valid && rule[@"minimum"]) valid = [value doubleValue] >= [rule[@"minimum"] doubleValue];
         if (valid && rule[@"maximum"]) valid = [value doubleValue] <= [rule[@"maximum"] doubleValue];
     } else if ([fallback isKindOfClass:NSString.class]) {
-        valid = [value isKindOfClass:NSString.class] && [value length] <= 4096;
+        NSUInteger maximumLength = rule[@"maximumLength"] ? [rule[@"maximumLength"] unsignedIntegerValue] : 4096;
+        valid = [value isKindOfClass:NSString.class] && [value length] <= maximumLength;
         if (valid && rule[@"pattern"]) {
             NSRegularExpression *expression = [NSRegularExpression regularExpressionWithPattern:rule[@"pattern"] options:0 error:nil];
             valid = expression && [expression numberOfMatchesInString:value options:0 range:NSMakeRange(0, [value length])] == 1;
         }
     } else if ([fallback isKindOfClass:NSArray.class]) {
-        valid = [value isKindOfClass:NSArray.class] && [value count] <= 256;
+        NSUInteger maximumCount = rule[@"maximumCount"] ? [rule[@"maximumCount"] unsignedIntegerValue] : 256;
+        valid = [value isKindOfClass:NSArray.class] && [value count] <= maximumCount;
         if (valid) for (id item in value) {
             // Settings lists currently contain strings. Other tweaks may register numeric lists.
             id element = [rule[@"elementType"] isEqual:@"number"] ? @0 : @"";
-            if (!YTKACEValidSetting(item, YTKACESettingsRule(element))) { valid = NO; break; }
+            if (!YTKACEValidSetting(item, rule[@"elementRule"] ?: YTKACESettingsRule(element))) { valid = NO; break; }
         }
     } else if ([fallback isKindOfClass:NSDictionary.class]) {
-        valid = [value isKindOfClass:NSDictionary.class] && [value count] <= 256;
+        NSUInteger maximumCount = rule[@"maximumCount"] ? [rule[@"maximumCount"] unsignedIntegerValue] : 256;
+        valid = [value isKindOfClass:NSDictionary.class] && [value count] <= maximumCount;
         if (valid) for (id key in value) {
-            if (![key isKindOfClass:NSString.class] || [key length] > 128 ||
-                !YTKACEValidSetting(value[key], YTKACESettingsRule(@""))) { valid = NO; break; }
+            if (![key isKindOfClass:NSString.class] || [key length] > 128) { valid = NO; break; }
+            if (rule[@"keyPattern"] && !YTKACEValidSetting(key,
+                @{@"default":@"", @"pattern":rule[@"keyPattern"]})) { valid = NO; break; }
+            NSDictionary *child = rule[@"fields"] ? rule[@"fields"][key] :
+                (rule[@"valueRule"] ?: YTKACESettingsRule(@""));
+            if (!child || !YTKACEValidSetting(value[key],child)) { valid = NO; break; }
         }
     }
     if (valid && rule[@"values"]) valid = [rule[@"values"] containsObject:value];
