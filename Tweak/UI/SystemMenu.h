@@ -13,8 +13,11 @@ FOUNDATION_EXPORT NSNotificationName const YTKACEPlayerMenuTouchSource;
 - (nullable instancetype)initWithView:(UIView *)view;
 // Keep a complete native selector interactive inside the shared menu shell.
 - (nullable instancetype)initWithView:(UIView *)view interactive:(BOOL)interactive;
+// A child controller root requires a matching UIKit containment handoff.
+- (nullable instancetype)initWithContentController:(UIViewController *)controller;
 @property(nonatomic, readonly) BOOL interactive;
 - (void)mountInView:(UIView *)host;
+- (void)mountInView:(UIView *)host controller:(UIViewController * _Nullable)controller;
 - (void)restore;
 // Freeze only the rendered row, while returning the live node to its owner.
 - (void)captureRendering;

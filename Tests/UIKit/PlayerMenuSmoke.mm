@@ -38,6 +38,8 @@ static UIView *TransitionCover(UIWindow *window) {
 @implementation YTMainAppControlsOverlayView @end
 @interface YTDraggableView : UIView @end
 @implementation YTDraggableView @end
+@interface YTSheetContainerView : UIView @end
+@implementation YTSheetContainerView @end
 @interface NativeTestAction : NSObject
 @property(nonatomic, copy) NSString *title;
 @property(nonatomic, copy) id handler;
@@ -417,6 +419,10 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
             [self testCompositeQuality];
         } else if ([NSProcessInfo.processInfo.arguments containsObject:@"--rebuild-back-regression"]) {
             [self testRebuiltBack];
+        } else if ([NSProcessInfo.processInfo.arguments containsObject:@"--animated-owner-regression"]) {
+            [self testELMCommandOrder:15];
+        } else if ([NSProcessInfo.processInfo.arguments containsObject:@"--device-late-child-regression"]) {
+            [self testELMCommandOrder:14];
         } else if ([NSProcessInfo.processInfo.arguments containsObject:@"--elm-command-regression"]) {
             [self testELMCommandOrder:[NSProcessInfo.processInfo.arguments containsObject:@"--late-back-regression"] ? 11 :
                 ([NSProcessInfo.processInfo.arguments containsObject:@"--retained-back-regression"] ? 3 : 0)];
@@ -604,6 +610,9 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
 - (void)testCompositeQuality {
     NSArray *flags = NSProcessInfo.processInfo.arguments;
     BOOL speed = [flags containsObject:@"--native-content-speed"];
+    BOOL selfPresenter = [flags containsObject:@"--content-self-presenter"];
+    BOOL selfDismiss = [flags containsObject:@"--content-self-dismiss"];
+    BOOL unsafeShell = [flags containsObject:@"--content-unsafe-shell"];
     BOOL navigate = [flags containsObject:@"--content-next-step"];
     BOOL textInput = [flags containsObject:@"--content-text-input"];
     BOOL switchForm = [flags containsObject:@"--content-switch-form"];
@@ -614,10 +623,27 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
     NativeSelectorSheet *native = [NativeSelectorSheet new];
     native.title = speed ? @"Playback speed" : @"Video quality";
     native.modalPresentationStyle = UIModalPresentationCustom; native.transitioningDelegate = self;
-    YTDraggableView *panel = [[YTDraggableView alloc] initWithFrame:CGRectMake(8,120,340,192)];
-    panel.backgroundColor = UIColor.clearColor; [native.view addSubview:panel];
+    YTSheetContainerView *reference = [[YTSheetContainerView alloc] initWithFrame:native.view.bounds];
+    reference.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    [native.view addSubview:reference];
+    YTDraggableView *draggable = [[YTDraggableView alloc] initWithFrame:CGRectMake(8,120,340,192)];
+    [reference addSubview:draggable];
+    UIViewController *contentController = [UIViewController new];
+    [native addChildViewController:contentController];
+    UIView *panel = contentController.view; panel.frame = CGRectMake(0,0,340,192);
+    if ([flags containsObject:@"--content-short-shell"]) {
+        CGRect frame = draggable.frame; frame.size.height = 44; draggable.frame = frame;
+    }
+    panel.backgroundColor = UIColor.clearColor; [draggable addSubview:panel];
+    [contentController didMoveToParentViewController:native];
+    // Reproduce the device dependency: the sheet continues to update dynamics
+    // after the selector has been mounted in the floating wrapper.
+    UIDynamicAnimator *animator = [[UIDynamicAnimator alloc] initWithReferenceView:reference];
+    UIDynamicItemBehavior *motion = [[UIDynamicItemBehavior alloc] initWithItems:@[draggable]];
+    [animator addBehavior:motion];
+    [motion addLinearVelocity:CGPointMake(0,1) forItem:draggable];
     UIPanGestureRecognizer *sheetPan = [[UIPanGestureRecognizer alloc] initWithTarget:nil action:NULL];
-    [panel addGestureRecognizer:sheetPan];
+    [draggable addGestureRecognizer:sheetPan];
     UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(16,12,300,30)];
     label.text = speed ? @"Playback speed · 1.25×" : @"Quality for this video";
     label.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
@@ -660,9 +686,13 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
             UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Custom speed" message:nil preferredStyle:UIAlertControllerStyleAlert];
             [alert addTextFieldWithConfigurationHandler:nil];
             [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-            [self.root presentViewController:alert animated:NO completion:nil]; return;
+            [(selfPresenter ? contentController : self.root) presentViewController:alert animated:NO completion:nil]; return;
         }
-        if (!navigate) { [owner dismissViewControllerAnimated:NO completion:nil]; return; }
+        if (!navigate) {
+            if (selfDismiss) [contentController dismissViewControllerAnimated:YES completion:nil];
+            else [owner dismissViewControllerAnimated:NO completion:nil];
+            return;
+        }
         YTBottomSheetController *child = [YTBottomSheetController new]; child.title = @"Advanced quality";
         YTDraggableView *childPanel = [[YTDraggableView alloc] initWithFrame:CGRectMake(0,100,340,100)];
         [child.view addSubview:childPanel];
@@ -671,20 +701,45 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
         button.frame = CGRectMake(0,0,340,56); [button setTitle:@"1080p" forState:UIControlStateNormal];
         [childPanel addSubview:button]; leaf.button = button; leaf.title = @"1080p"; leaf.handler = ^{ leaves++; };
         child.actions = @[leaf];
-        [self.root presentViewController:child animated:NO completion:nil];
+        [(selfPresenter ? contentController : self.root) presentViewController:child animated:NO completion:nil];
     }] forControlEvents:UIControlEventTouchUpInside];
     automatic.handler = ^{ Check(NO,@"the container must preserve original native controls, never dispatch a second model handler"); };
     CGRect originalFrame = panel.frame;
+    if (unsafeShell) {
+        // A layout without an identifiable inner content boundary must stay native.
+        for (UIView *control in panel.subviews.copy) [draggable addSubview:control];
+        [contentController willMoveToParentViewController:nil];
+        [panel removeFromSuperview]; [contentController removeFromParentViewController];
+    }
     YTKACERememberPlayerMenuSource(self.nativeButton);
     [self.root presentViewController:native animated:NO completion:nil];
     Later(^{
         UIViewController *menu = native.presentedViewController;
+        if (unsafeShell) {
+            Check(!menu && native.presentingViewController && native.view.alpha == 1 && !native.view.layer.mask &&
+                draggable.superview == reference && choice.superview == draggable,
+                @"unrecognized content must preserve its native hierarchy without borrowing the dynamics item");
+            [animator updateItemUsingCurrentState:draggable];
+            [owner dismissViewControllerAnimated:NO completion:^{
+                Check(owner.dismissals == 1 && !self.root.presentedViewController,@"unsafe-layout native fallback must still close once");
+                [animator removeAllBehaviors];
+                [@"PASS: unidentified content retains native sheet physics and close behavior\n"
+                    writeToFile:ResultPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            }]; return;
+        }
         UITableViewController *list = (id)MenuNavigation(menu).topViewController;
         Check(YTKACEIsPlayerPopover(menu) && [list.tableView numberOfRowsInSection:0] == (switchForm ? 2 : 1),
             @"composite selectors must use the same floating container as the gear menu");
         Check(panel.window && [panel isDescendantOfView:menu.view] && slider.userInteractionEnabled && panel.userInteractionEnabled,
             @"the complete native selector, including its slider and choices, must remain interactive");
-        Check(!sheetPan.enabled && sliderPan.enabled,@"only the old sheet drag gesture must be suppressed inside the shared container");
+        Check([draggable isDescendantOfView:reference] && draggable.superview == reference,
+            @"a sheet dynamics item must remain inside its animator reference view while content is borrowed");
+        Check(![[YTKACEMenuNativeRow alloc] initWithView:draggable interactive:YES] &&
+            ![[YTKACEMenuNativeRow alloc] initWithView:reference interactive:YES],
+            @"the sheet item and animator reference subtree must be rejected for interactive borrowing");
+        [animator updateItemUsingCurrentState:draggable];
+        Check(contentController.parentViewController == list,@"the borrowed content controller must join the displayed UIKit container");
+        Check(sheetPan.enabled && sliderPan.enabled,@"sheet physics and inner slider gestures must retain their original state");
         Check(native.view.alpha == 1 && native.view.layer.mask != nil && owner.dismissals == 0,
             @"the native owner must stay alive and visually masked behind its shared content page");
         slider.value = 1.75; [slider sendActionsForControlEvents:UIControlEventValueChanged];
@@ -708,13 +763,15 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
         } else [choice sendActionsForControlEvents:UIControlEventTouchUpInside];
         Later(^{
             dispatch_block_t verify = ^{
-                Check(!self.root.presentedViewController && native.closeRequests == 1 && owner.dismissals == 1 && choices == (cancel ? 0u : 1u) && leaves == (navigate ? 1u : 0u),
+                Check(!self.root.presentedViewController && native.closeRequests == (selfDismiss ? 0u : 1u) && owner.dismissals == (selfDismiss ? 0u : 1u) && choices == (cancel ? 0u : 1u) && leaves == (navigate ? 1u : 0u),
                     [NSString stringWithFormat:@"selector close must run once: root=%@ native=%lu owner=%lu choices=%lu leaves=%lu",
                         NSStringFromClass(self.root.presentedViewController.class),(unsigned long)native.closeRequests,
                         (unsigned long)owner.dismissals,(unsigned long)choices,(unsigned long)leaves]);
-                Check(panel.superview == native.view && CGRectEqualToRect(panel.frame,originalFrame) && !native.view.layer.mask && sheetPan.enabled && sliderPan.enabled,
+                Check(panel.superview == draggable && [draggable isDescendantOfView:reference] && CGRectEqualToRect(panel.frame,originalFrame) && !native.view.layer.mask && sheetPan.enabled && sliderPan.enabled,
                     @"closing must restore the original selector hierarchy, geometry and mask");
-                [@"PASS: shared native selector container, continuous controls, exact-once choices/cancel and container reuse\n"
+                Check(contentController.parentViewController == native,@"closing must restore the original content controller parent");
+                [animator updateItemUsingCurrentState:draggable]; [animator removeAllBehaviors];
+                [@"PASS: live sheet dynamics hierarchy, native selector controls, exact-once close and container reuse\n"
                     writeToFile:ResultPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
             };
             if (textInput) {
@@ -913,11 +970,17 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
         delayed.handler = ^{}; [childPanel addSubview:delayed.button];
         child.lateGeometryButton = delayed.button;
         child.actions = @[leaf,divider,delayed];
+        if (mode == 10) {
+            UIViewController *content = [UIViewController new]; [child addChildViewController:content];
+            content.view.frame = childPanel.bounds;
+            for (UIView *row in childPanel.subviews.copy) [content.view addSubview:row];
+            [childPanel addSubview:content.view]; [content didMoveToParentViewController:child];
+        }
         if (mode == 9 || mode == 10) {
             // A short row with a real command is not a decorative divider.
             NativeTestAction *compact = [NativeTestAction new]; compact.handler = ^{};
             compact.button = [[YTMenuItemElementsMDCButton alloc] initWithFrame:CGRectMake(0,74,320,9)];
-            [childPanel addSubview:compact.button];
+            [(mode == 10 ? child.childViewControllers.firstObject.view : childPanel) addSubview:compact.button];
             if (mode == 9) InstallELMTap(compact.button,[ELMTouchCommandPropertiesHandler new],YES);
             else [compact.button addSubview:[UISwitch new]];
             child.actions = @[leaf,divider,delayed,compact];
@@ -933,11 +996,17 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
                     @"child presentation completion must follow the required source dismissal");
             }];
         };
-        if (mode == 13)
+        if (mode == 14)
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW,850 * NSEC_PER_MSEC),dispatch_get_main_queue(),present);
+        else if (mode == 13)
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW,500 * NSEC_PER_MSEC),dispatch_get_main_queue(),present);
         else if (mode == 11 || mode == 12)
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW,350 * NSEC_PER_MSEC),dispatch_get_main_queue(),present);
         else if (mode == 1) dispatch_after(dispatch_time(DISPATCH_TIME_NOW,30 * NSEC_PER_MSEC),dispatch_get_main_queue(),present);
+        else if (mode == 15) [weakOwner dismissViewControllerAnimated:YES completion:^{
+            Check(weakOwner.dismissals == 1,@"an animated native owner must complete exactly once");
+            present();
+        }];
         else if (mode == 2) [weakOwner dismissViewControllerAnimated:NO completion:present];
         else present();
     };
@@ -974,7 +1043,7 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
             Check(!weakNative.presentingViewController,@"fresh-touch history cancellation must occur after source dismissal");
             YTKACEUpdatePlayerMenuTouchSource(gear,self.window);
         });
-        Later(^{
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(mode == 14 ? 1600 : 1000) * NSEC_PER_MSEC),dispatch_get_main_queue(),^{
             if (mode == 8 || mode == 9 || mode == 10) {
                 Check(command.calls == 1 && dialog.closeCalls == 0 && owner.dismissals == 1 &&
                     !TransitionCover(self.window),@"leaf/fallback paths must remove the transition cover without duplicate commands");
@@ -1050,7 +1119,15 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
                     @"the child leaf must remain selectable and close exactly once");
                 dispatch_block_t next = ^{
                     [gear removeFromSuperview];
-                    [self testELMCommandOrder:mode == 3 ? 6 : (mode == 6 ? 7 : (mode == 7 ? 11 : (mode == 11 ? 12 : (mode == 12 ? 13 : (mode == 13 ? 8 : mode + 1)))))];
+                    if (mode == 15) {
+                        [@"PASS: animated native close preserves its completion, child routing and exact-once owner teardown\n"
+                            writeToFile:ResultPath() atomically:YES encoding:NSUTF8StringEncoding error:nil]; return;
+                    }
+                    if (mode == 14 && [NSProcessInfo.processInfo.arguments containsObject:@"--device-late-child-regression"]) {
+                        [@"PASS: 850 ms native child reuses the same shell, Back history and exact-once leaf\n"
+                            writeToFile:ResultPath() atomically:YES encoding:NSUTF8StringEncoding error:nil]; return;
+                    }
+                    [self testELMCommandOrder:mode == 3 ? 6 : (mode == 6 ? 7 : (mode == 7 ? 11 : (mode == 11 ? 12 : (mode == 12 ? 13 : (mode == 13 ? 14 : (mode == 14 ? 8 : mode + 1))))))];
                 };
                 if (self.root.presentedViewController) [self.root dismissViewControllerAnimated:NO completion:next];
                 else next();

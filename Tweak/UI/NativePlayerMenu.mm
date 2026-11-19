@@ -31,6 +31,7 @@ static IMP OriginalFactories[9];
 // dismissed owners' action models; rebuild those pages from the gear entry point.
 static char NativePreviousPageKey, NativePagePathKey, NativeSelectedPathKey, NativeContentSessionKey, NativeContentRequiredKey;
 static UIView *NativePanel(UIViewController *controller);
+static YTKACEMenuNativeRow *NativeContentRow(UIViewController *controller);
 static BOOL DeferNativeContentPresentation(UIViewController *, UIViewController *, BOOL, dispatch_block_t);
 @interface YTKACENativePreviousPage : NSObject
 @property(nonatomic, strong) UIViewController *controller;
@@ -849,8 +850,8 @@ static void PresentGearAfterLayout(UIViewController *controller, UIView *source,
     if (!rows && [objc_getAssociatedObject(controller,NativeTextRetryKey) boolValue] && attempt < 6)
         objc_setAssociatedObject(controller,NativeRowsPendingKey,@YES,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     if (!rows && [objc_getAssociatedObject(controller,&NativeContentRequiredKey) boolValue]) {
-        UIView *panel = NativePanel(controller);
-        YTKACEMenuNativeRow *content = [[YTKACEMenuNativeRow alloc] initWithView:panel interactive:YES];
+        YTKACEMenuNativeRow *content = NativeContentRow(controller);
+        UIView *panel = content.view;
         if (content) {
             NSMutableArray *complete = [NSMutableArray arrayWithObject:
                 @{@"nativeRow":content,@"nativeContent":@YES,@"enabled":@YES}];
@@ -899,7 +900,7 @@ static void PresentGearAfterLayout(UIViewController *controller, UIView *source,
         NSStringFromClass(controller.class),NSStringFromCGRect(controller.view.bounds));
 }
 void YTKACEPresentNativeGearMenu(UIViewController *controller, UIView *source) {
-    os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] gear revision=%{public}s youtube=%{public}@ rowRenderer=pre-reparent-v2",YTKACE_REVISION_STRING,
+    os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] gear revision=%{public}s youtube=%{public}@ rowRenderer=safe-content-v3",YTKACE_REVISION_STRING,
         NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"] ?: @"unknown");
     PresentGearAfterLayout(controller,source,controller.view.alpha,0);
 }
@@ -965,12 +966,17 @@ static void RetainPendingELMNavigation(YTKACEELMNavigation *navigation) {
             queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *notification) {
                 YTKACEELMNavigation *pending = ClosingELMNavigation;
                 UIView *target = [notification.object isKindOfClass:UIView.class] ? notification.object : nil;
-                if (pending.awaitingChild && target.window == pending.source.window)
+                if (pending.awaitingChild && target.window == pending.source.window) {
+                    YTKACECancelSystemMenuTransition(pending.source);
                     FinishELMNavigation(pending);
+                }
             }];
     });
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,NSEC_PER_SEC),dispatch_get_main_queue(),^{
-        if (navigation.awaitingChild) FinishELMNavigation(navigation);
+        if (navigation.awaitingChild) {
+            YTKACECancelSystemMenuTransition(navigation.source);
+            FinishELMNavigation(navigation);
+        }
     });
 }
 BOOL YTKACEDeferNativeELMPresentation(UIViewController *presenter, UIViewController *presented,
@@ -1131,6 +1137,55 @@ static UIView *NativePanel(UIViewController *controller) {
     return nil;
 }
 
+// Unlike the outside-hit panel, content borrowing must stop below the sheet's
+// physics hierarchy. Prefer a UIKit child-controller root; older dialog layouts
+// expose a named inner wrapper instead. Unknown layouts retain their native UI.
+static YTKACEMenuNativeRow *NativeContentRow(UIViewController *controller) {
+    UIView *panel = NativePanel(controller);
+    if (!panel) return nil;
+    NSMutableArray<UIView *> *candidates = [NSMutableArray array];
+    NSMapTable<UIView *,UIViewController *> *contentControllers = [NSMapTable strongToStrongObjectsMapTable];
+    NSMutableArray<UIViewController *> *controllers = [NSMutableArray arrayWithArray:controller.childViewControllers];
+    for (NSUInteger index = 0; index < controllers.count && index < 32; index++) {
+        UIViewController *child = controllers[index];
+        UIView *view = child.viewIfLoaded;
+        if (view && view != controller.view && [view isDescendantOfView:panel]) {
+            [candidates addObject:view]; [contentControllers setObject:child forKey:view];
+        }
+        for (UIViewController *nested in child.childViewControllers)
+            if (controllers.count < 32) [controllers addObject:nested];
+    }
+    NSMutableArray<UIView *> *views = [NSMutableArray arrayWithObject:panel];
+    NSArray *names = @[@"YTContextualWrapView",@"YTMinimumWidthDialogView",@"GOODialogView"];
+    for (NSUInteger index = 0; index < views.count && index < 256; index++) {
+        UIView *view = views[index];
+        for (NSString *name in names) {
+            Class cls = NSClassFromString(name);
+            if (cls && [view isKindOfClass:cls] && ![candidates containsObject:view]) [candidates addObject:view];
+        }
+        for (UIView *child in view.subviews) if (views.count < 256) [views addObject:child];
+    }
+    id owner = [(YTKACENativeMenuOwner *)objc_getAssociatedObject(controller,NativeOwnerKey) value];
+    id models = Value(owner,@"actions");
+    for (UIView *candidate in candidates) {
+        BOOL complete = YES;
+        if ([models isKindOfClass:NSArray.class]) for (id model in models) {
+            UIView *button = Value(model,@"button");
+            if ([button isKindOfClass:UIView.class] && !button.hidden && button.alpha >= .05 &&
+                ![button isDescendantOfView:candidate]) { complete = NO; break; }
+        }
+        if (!complete) continue;
+        UIViewController *contentController = [contentControllers objectForKey:candidate];
+        YTKACEMenuNativeRow *row = contentController
+            ? [[YTKACEMenuNativeRow alloc] initWithContentController:contentController]
+            : [[YTKACEMenuNativeRow alloc] initWithView:candidate interactive:YES];
+        if (row) return row;
+    }
+    os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] native content fallback reason=no-safe-inner-content panel=%{public}@ children=%lu",
+        TraceClass(panel),(unsigned long)controller.childViewControllers.count);
+    return nil;
+}
+
 @interface YTKACENativeOutsideTap : NSObject <UIGestureRecognizerDelegate>
 @property(nonatomic, weak) UIViewController *native;
 @property(nonatomic, strong) UITapGestureRecognizer *gesture;
@@ -1278,22 +1333,28 @@ void YTKACEEnableNativeMenuOutsideDismissal(UIViewController *controller) {
 }
 @end
 
+// A borrowed child now belongs to the floating controller. Follow that shell's
+// presenting link to find its original native session, while keeping unrelated
+// modal stacks outside this routing bridge.
+static UIViewController *NativeContentOwner(UIViewController *presenter) {
+    UIViewController *candidate = presenter;
+    for (NSUInteger depth = 0; candidate && depth < 16; depth++,candidate = candidate.parentViewController) {
+        UIViewController *native = YTKACEIsPlayerPopover(candidate) ? candidate.presentingViewController : candidate;
+        YTKACENativeMenuSession *session = objc_getAssociatedObject(native,&NativeContentSessionKey);
+        if (session && !session.finished && YTKACEIsPlayerPopover(native.presentedViewController)) return native;
+    }
+    candidate = presenter.presentedViewController;
+    for (NSUInteger depth = 0; candidate && depth < 16; depth++,candidate = candidate.presentedViewController) {
+        YTKACENativeMenuSession *session = objc_getAssociatedObject(candidate,&NativeContentSessionKey);
+        if (session && !session.finished && YTKACEIsPlayerPopover(candidate.presentedViewController)) return candidate;
+    }
+    return nil;
+}
 static BOOL DeferNativeContentPresentation(UIViewController *presenter, UIViewController *presented,
     BOOL animated, dispatch_block_t completion) {
     if (YTKACEIsPlayerPopover(presented) || presented.presentingViewController) return NO;
-    UIViewController *native = presenter;
-    YTKACENativeMenuSession *session = nil;
-    for (NSUInteger depth = 0; native && depth < 16; depth++,native = native.parentViewController) {
-        session = objc_getAssociatedObject(native,&NativeContentSessionKey);
-        if (session && !session.finished) break;
-    }
-    if (!native) {
-        native = presenter.presentedViewController;
-        for (NSUInteger depth = 0; native && depth < 16; depth++,native = native.presentedViewController) {
-            session = objc_getAssociatedObject(native,&NativeContentSessionKey);
-            if (session && !session.finished) break;
-        }
-    }
+    UIViewController *native = NativeContentOwner(presenter);
+    YTKACENativeMenuSession *session = objc_getAssociatedObject(native,&NativeContentSessionKey);
     if (!native || !session || session.finished || !YTKACEIsPlayerPopover(native.presentedViewController)) return NO;
     session.finished = YES;
     YTKACEBeginSystemMenuTransition(native.presentedViewController);
@@ -1315,9 +1376,19 @@ static BOOL DeferNativeContentPresentation(UIViewController *presenter, UIViewCo
 
 BOOL YTKACEHandleNativeContentDismissal(UIViewController *native, BOOL animated, void (^completion)(void)) {
     (void)animated;
+    UIViewController *caller = native;
+    native = NativeContentOwner(caller);
     YTKACENativeMenuSession *session = objc_getAssociatedObject(native,&NativeContentSessionKey);
     UIViewController *wrapper = native.presentedViewController;
     if (!session || session.finished || !YTKACEIsPlayerPopover(wrapper)) return NO;
+    if (!ControllerWithin(caller,native)) {
+        BOOL borrowedContent = NO;
+        for (YTKACEMenuNativeRow *row in session.nativeRows)
+            if (row.interactive && [caller.viewIfLoaded isDescendantOfView:row.view]) { borrowedContent = YES; break; }
+        // The shell's X/Back/background paths must retain their own selected vs
+        // cancelled semantics and invoke the real owner through session.finish.
+        if (!borrowedContent) return NO;
+    }
     session.finished = YES;
     YTKACEBeginSystemMenuTransition(native.presentedViewController);
     for (YTKACEMenuNativeRow *row in session.nativeRows) [row restore];

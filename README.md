@@ -157,16 +157,18 @@ behind the replacement list and closes before the original action runs. Closing 
 tapping outside the list also closes that native session, so quality/submenu state
 can be released. Native content is never cropped into an estimated popover rectangle.
 
-Composite selectors with a recognized native content panel use that same floating
-container: the entire live panel is embedded, including sliders and native choices,
-instead of decoding only a sibling Auto row. Mixed switch/slider/input rows also
-use this live-content path, with metadata-only tweak actions retained alongside it. The native owner stays presented and
-masked; closing restores the panel's original parent, constraints and geometry.
-Only the old sheet's root drag gesture is suppressed; descendant slider/scroll
-gestures remain native. Text-entry alerts and share sheets retain their system
-presentation and are never flattened into action rows. Native close requests finish UIKit detachment without invoking an owner's override
-a second time. Interactive native pages close when the app resigns active rather
-than replacing usable controls with a frozen image.
+Composite selectors with recognized inner content use that same floating
+container, including sliders and native choices, with metadata-only tweak actions
+retained alongside them. The sheet's `YTDraggableView` and `YTSheetContainerView`
+remain in their original animator hierarchy. Only the inner content is borrowed;
+controller roots use UIKit child-controller containment, restored with their
+original parent, constraints and geometry before native callbacks or close.
+The native owner stays presented and masked. Sheet and descendant gestures keep
+their native state. Unidentified inner layouts retain the original native sheet.
+Text-entry alerts and share sheets keep their system presentation. Native close
+requests finish UIKit detachment without invoking an owner's override a second
+time. Interactive native pages close when the app resigns active instead of
+replacing usable controls with a frozen image.
 
 Unsupported/unidentifiable content and unavailable anchors retain the original
 sheet, styled by Liquid Glass → Menus and Sheets where supported.
@@ -250,10 +252,13 @@ the reused shell. Diagnostics record `submenu container=reused` and
 
 ELM submenu navigation preserves an outgoing popover snapshot while native
 owners change, then slides/fades the incoming content inside that menu frame.
-The incoming popover skips its separate presentation animation; Reduce Motion
-uses a short fade. A leaf action removes the cover without waiting for a child,
-and native fallback, rotation or a bounded timeout also removes it. The native
-command/owner lifecycle remains unchanged. Trace entries record
+The adapter requests presentation without an additional UIKit animation; Reduce
+Motion uses a short content fade. The visual cover is removed after 500 ms if no
+child has arrived, but the reusable shell survives the bounded native handoff.
+This accommodates the reported 823–847 ms child requests without allocating a
+new shell. A fresh touch, native fallback or handoff timeout cancels that retained
+state. Native command scheduling and UIKit dismissal can still add latency;
+container reuse does not establish that the entire transition is instantaneous. Trace entries record
 `submenu transition=waiting/content-slide/expired`.
 
 Short ELM rows wait for asynchronous layout just like zero-height rows. A row

@@ -87,14 +87,22 @@ static UIImage *RenderedNativeRow(UIView *view) {
 @property(nonatomic) BOOL mounted;
 @property(nonatomic) BOOL interactive;
 @property(nonatomic, copy) NSArray<NSLayoutConstraint *> *constraints;
-@property(nonatomic, copy) NSArray<NSDictionary *> *sheetGestures;
 @property(nonatomic, strong) NSMutableArray<NSDictionary *> *disclosures;
 @property(nonatomic, weak) UIView *host;
+@property(nonatomic, strong) UIViewController *contentController;
+@property(nonatomic, weak) UIViewController *controllerParent, *hostController;
 @property(nonatomic, strong) UIImage *rendering;
 @property(nonatomic, strong) UIImageView *retainedRendering;
 @property(nonatomic) BOOL renderingPreserved;
 @end
 @implementation YTKACEMenuNativeRow
+- (instancetype)initWithContentController:(UIViewController *)controller {
+    if (!controller.parentViewController) return nil;
+    if ((self = [self initWithView:controller.view interactive:YES])) {
+        _contentController = controller; _controllerParent = controller.parentViewController;
+    }
+    return self;
+}
 - (instancetype)initWithView:(UIView *)view { return [self initWithView:view interactive:NO]; }
 - (instancetype)initWithView:(UIView *)view interactive:(BOOL)interactive {
     if (!view.superview || !view.window || view.hidden || view.alpha < 0.05 ||
@@ -103,6 +111,22 @@ static UIImage *RenderedNativeRow(UIView *view) {
         view.bounds.size.width < 44 || view.bounds.size.height < 24 || view.bounds.size.height > (interactive ? 2048 : 240)) return nil;
     for (UIView *ancestor = view.superview; ancestor; ancestor = ancestor.superview)
         if (ancestor.hidden || ancestor.alpha < 0.05) return nil;
+    // A sheet's draggable item and animator reference hierarchy must never move
+    // into a table cell. Borrow only the inner content controller's view.
+    if (interactive) {
+        NSMutableArray<UIView *> *pending = [NSMutableArray arrayWithObject:view];
+        Class draggable = NSClassFromString(@"YTDraggableView");
+        Class reference = NSClassFromString(@"YTSheetContainerView");
+        for (NSUInteger index = 0; index < pending.count; index++) {
+            UIView *candidate = pending[index];
+            if ((draggable && [candidate isKindOfClass:draggable]) ||
+                (reference && [candidate isKindOfClass:reference])) return nil;
+            for (UIView *child in candidate.subviews) {
+                if (pending.count >= 256) return nil;
+                [pending addObject:child];
+            }
+        }
+    }
     if ((self = [super init])) {
         _interactive = interactive;
         _view = view; _height = MAX(44,view.bounds.size.height); _parent = view.superview;
@@ -121,16 +145,7 @@ static UIImage *RenderedNativeRow(UIView *view) {
         _constraints = constraints;
         _disclosureColor = UIColor.secondaryLabelColor;
         _disclosures = [NSMutableArray array];
-        if (interactive) {
-            NSMutableArray *gestures = [NSMutableArray array];
-            Class draggable = NSClassFromString(@"YTDraggableView");
-            if (draggable && [view isKindOfClass:draggable])
-                for (UIGestureRecognizer *gesture in view.gestureRecognizers)
-                    if ([gesture isKindOfClass:UIPanGestureRecognizer.class])
-                        [gestures addObject:@{@"gesture":gesture,@"enabled":@(gesture.enabled)}];
-            _sheetGestures = gestures;
-            return self;
-        }
+        if (interactive) return self;
         NSMutableArray<UIView *> *views = [NSMutableArray arrayWithObject:view];
         for (NSUInteger i = 0; i < views.count && i < 64; i++) {
             UIView *candidate = views[i];
@@ -168,8 +183,10 @@ static UIImage *RenderedNativeRow(UIView *view) {
     }
     return self;
 }
-- (void)mountInView:(UIView *)host {
-    self.host = host;
+- (void)mountInView:(UIView *)host { [self mountInView:host controller:self.hostController]; }
+- (void)mountInView:(UIView *)host controller:(UIViewController *)controller {
+    if (self.contentController && !controller) return;
+    self.host = host; self.hostController = controller;
     if (self.renderingPreserved) {
         if (!self.rendering) return;
         if (!self.retainedRendering) self.retainedRendering = [[UIImageView alloc] initWithImage:self.rendering];
@@ -205,15 +222,20 @@ static UIImage *RenderedNativeRow(UIView *view) {
     if (!self.interactive && !self.rendering) self.rendering = RenderedNativeRow(self.view);
     [NSLayoutConstraint deactivateConstraints:self.constraints];
     self.mounted = YES;
+    UIViewController *content = self.contentController;
+    BOOL movingController = content && content.parentViewController != controller;
+    if (movingController) {
+        [content willMoveToParentViewController:nil];
+        [content.view removeFromSuperview]; [content removeFromParentViewController];
+        [controller addChildViewController:content];
+    }
     self.view.translatesAutoresizingMaskIntoConstraints = YES;
     self.view.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     // The table restores and activates this control through one selected route.
     // Do not also deliver touches to the embedded button and dispatch it twice.
     self.view.userInteractionEnabled = self.interactive && self.interaction;
-    // The floating container owns dismissal. Keep slider/scroll gestures on
-    // descendants, but do not carry the old bottom-sheet drag gesture into it.
-    for (NSDictionary *entry in self.sheetGestures) [(UIGestureRecognizer *)entry[@"gesture"] setEnabled:NO];
     [host addSubview:self.view]; self.view.frame = host.bounds;
+    if (movingController) [content didMoveToParentViewController:controller];
     [self.view setNeedsLayout]; [self.view layoutIfNeeded];
 
 }
@@ -232,14 +254,19 @@ static UIImage *RenderedNativeRow(UIView *view) {
             [(CALayer *)entry[@"layer"] setOpacity:[entry[@"opacity"] floatValue]];
         }
     }
+    UIViewController *content = self.contentController, *original = self.controllerParent;
+    BOOL movingController = content && content.parentViewController != original;
+    if (movingController) [content willMoveToParentViewController:nil];
     [self.view removeFromSuperview];
+    if (movingController) {
+        [content removeFromParentViewController]; [original addChildViewController:content];
+    }
     UIView *parent = self.parent;
     if (parent) [parent insertSubview:self.view atIndex:MIN(self.index,parent.subviews.count)];
+    if (movingController) [content didMoveToParentViewController:original];
     self.view.translatesAutoresizingMaskIntoConstraints = self.translates;
     self.view.autoresizingMask = self.resizing; self.view.frame = self.frame;
     self.view.userInteractionEnabled = self.interaction;
-    for (NSDictionary *entry in self.sheetGestures)
-        [(UIGestureRecognizer *)entry[@"gesture"] setEnabled:[entry[@"enabled"] boolValue]];
     for (NSLayoutConstraint *constraint in self.constraints) {
         id first = constraint.firstItem, second = constraint.secondItem;
         UIView *a = [first isKindOfClass:UILayoutGuide.class] ? [first owningView] : first;
@@ -332,10 +359,12 @@ static void BeginMenuTransition(UIViewController *menu) {
     [cover addSubview:snapshot]; [window addSubview:cover]; transition.cover = cover;
     objc_setAssociatedObject(window,&MenuTransitionKey,transition,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] submenu transition=waiting");
-    // Leaf commands need no new menu. Never leave a frozen menu above the player.
+    // Leaf commands need no new menu. Remove their visual cover promptly, but
+    // retain the shell until the bounded handoff expires: real ELM children can
+    // arrive 850 ms after selection, well after this visual timeout.
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,500 * NSEC_PER_MSEC),dispatch_get_main_queue(),^{
         if (objc_getAssociatedObject(window,&MenuTransitionKey) != transition || transition.receivedChild) return;
-        RemoveMenuTransition(transition);
+        [transition.cover removeFromSuperview];
     });
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,2 * NSEC_PER_SEC),dispatch_get_main_queue(),^{
         if (objc_getAssociatedObject(window,&MenuTransitionKey) == transition) {
@@ -672,7 +701,7 @@ void YTKACESetSystemMenuBackAction(UIViewController *presenter, dispatch_block_t
         native.contentView.clipsToBounds = YES;
         native.userInteractionEnabled = !action[@"enabled"] || [action[@"enabled"] boolValue];
         nativeRow.disclosureColor = native.userInteractionEnabled ? UIColor.secondaryLabelColor : UIColor.tertiaryLabelColor;
-        [nativeRow mountInView:native.contentView];
+        [nativeRow mountInView:native.contentView controller:self];
         return native;
     }
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"SystemMenu"];

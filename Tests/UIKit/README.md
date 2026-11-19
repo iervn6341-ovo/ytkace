@@ -132,12 +132,26 @@ November 19 regressions:
 - `--composite-quality-regression` embeds a complete native selector in the same
   floating component, with a live slider and original choice handler. It checks
   one owner dismissal and one native dismissal override, restored geometry/masks,
-  exact-once selection, root sheet-pan suppression and retained slider gestures. Variants: `--native-content-speed`, `--content-cancel`,
+  exact-once selection and retained slider gestures. A real `UIDynamicAnimator`
+  continues to own the outer `YTDraggableView` inside `YTSheetContainerView`;
+  only the inner content controller joins the floating page, with its UIKit
+  parent restored before native callbacks. Variants: `--native-content-speed`, `--content-cancel`,
   `--content-no-model`, `--content-switch-form`, `--content-background`, `--content-text-input`, `--content-next-step` and
   `--content-tweak-source`. The next-step case requires reuse of the exact same
-  presentation instance. The switch-form case also retains a metadata-only tweak
+  presentation instance. `--content-self-presenter` exercises requests made by
+  the borrowed controller itself (combine with next-step or text-input);
+  `--content-self-dismiss` checks its own close request. `--content-short-shell`
+  keeps a 192pt content page inside a 44pt physics item; `--content-unsafe-shell`
+  removes the known inner boundary and requires an intact native fallback.
+  The switch-form case also retains a metadata-only tweak
   action alongside the complete native input panel. `--preview-native-content` holds the rendered selector
   and writes `Documents/native-content-preview.txt`.
+- `--device-late-child-regression` requests a submenu after 850 ms, matching the
+  device trace. Its floating shell, Back history and leaf callback must survive
+  the 500 ms snapshot timeout. The ordinary ELM suite includes this case too.
+- `--animated-owner-regression` preserves an original animated owner close and
+  its completion, without invoking that owner a second time. It does not assert
+  that UIKit dismissal or the native child request is instantaneous.
 - `--elm-command-regression --back-regression --other-controller-regression`
   checks a native settings controller outside the legacy sheet-class list. ELM
   children must reuse the existing container; a delayed tap on the retired list
@@ -146,7 +160,9 @@ November 19 regressions:
 
 Visual QA: the interactive speed fixture was rendered and inspected on the
   disposable iPhone 17 simulator (iOS 27.2). The shared header, close button,
-  native slider, choice and gear anchor were visible. This is a stand-in selector,
+  native slider, choice and gear anchor were visible. The physics regression
+  preview also retained the full 192pt content with a 44pt outer sheet item.
+  This is a stand-in selector,
   not a screenshot or timing certification of YouTube's private UI.
 - Controls `--direct-quality-regression` additionally removes the controls view's
   playerViewController, resolves the player through eventsDelegate.delegate, and
