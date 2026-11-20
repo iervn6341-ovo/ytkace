@@ -15,6 +15,12 @@ static const void *LastTouchKey = &LastTouchKey;
 static const void *GearAnchorKey = &GearAnchorKey;
 static const void *NativeSourceKey = &NativeSourceKey;
 static IMP OriginalSendAction, OriginalSendUIAction, OriginalPresent, OriginalWindowEvent, OriginalDismiss;
+static BOOL MenuApplicationSuspended;
+static char MenuSceneSuspendedKey;
+BOOL YTKACEPlayerMenuWindowActive(UIWindow *window) {
+    return window && UIApplication.sharedApplication.applicationState == UIApplicationStateActive &&
+        !MenuApplicationSuspended && ![objc_getAssociatedObject(window.windowScene,&MenuSceneSuspendedKey) boolValue];
+}
 
 @interface YTKACEPlayerMenuTap : NSObject
 @property(nonatomic, weak) UIView *source;
@@ -110,12 +116,21 @@ static BOOL Enabled(void) {
 void YTKACERememberPlayerMenuSource(UIView *source) {
     for (UIView *view = source; view; view = view.superview)
         if ([objc_getAssociatedObject(view,TweakSourceKey) boolValue] || [objc_getAssociatedObject(view,NativeGearKey) boolValue]) { source = view; break; }
-    if (!Enabled() || !YTKACEIsPlayerMenuSource(source)) return;
+    if (!Enabled() || !YTKACEIsPlayerMenuSource(source) || !YTKACEPlayerMenuWindowActive(SourceWindow(source))) return;
     YTKACEPlayerMenuTap *tap = [YTKACEPlayerMenuTap new];
     tap.source = source;
     tap.uptime = NSProcessInfo.processInfo.systemUptime;
     tap.pending = YES;
     objc_setAssociatedObject(SourceWindow(source), TapKey, tap, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+id YTKACEPlayerMenuSourceToken(UIWindow *window, UIView *source) {
+    YTKACEPlayerMenuTap *tap = objc_getAssociatedObject(window,TapKey);
+    return tap.source == source ? tap : nil;
+}
+void YTKACECancelPlayerMenuSourceToken(UIWindow *window, id token) {
+    if (token && objc_getAssociatedObject(window,TapKey) == token)
+        objc_setAssociatedObject(window,TapKey,nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
 static CGSize BoundedSize(UIWindow *window, CGSize size) {
@@ -166,7 +181,7 @@ UIView *YTKACEPlayerMenuSource(UIViewController *controller) {
 
 BOOL YTKACEConfigurePlayerPopover(UIViewController *controller, UIViewController *presenter,
                                    UIView *source, CGSize size) {
-    if (!NSThread.isMainThread || !Enabled() || !YTKACEIsPlayerMenuSource(source) ||
+    if (!NSThread.isMainThread || !Enabled() || !YTKACEPlayerMenuWindowActive(presenter.viewIfLoaded.window) || !YTKACEIsPlayerMenuSource(source) ||
         !EligibleSource(source, presenter.view.window)) return NO;
     UIModalPresentationStyle originalStyle = controller.modalPresentationStyle;
     id<UIViewControllerTransitioningDelegate> originalTransition = controller.transitioningDelegate;
@@ -309,7 +324,7 @@ static void Present(UIViewController *receiver, SEL selector, UIViewController *
     if (YTKACEDeferNativeELMPresentation(receiver,controller,animated,completion)) return;
     if (NSThread.isMainThread && ([controller isKindOfClass:UIAlertController.class] || [controller isKindOfClass:UIActivityViewController.class]))
         YTKACECancelSystemMenuTransition(SourceForPresenter(receiver));
-    if (NSThread.isMainThread && Enabled() && !YTKACEIsPlayerPopover(controller) && (IsYouTubeMenu(controller) || YTKACEIsNativePlayerSubmenu(controller))) {
+    if (NSThread.isMainThread && Enabled() && YTKACEPlayerMenuWindowActive(receiver.viewIfLoaded.window) && !YTKACEIsPlayerPopover(controller) && (IsYouTubeMenu(controller) || YTKACEIsNativePlayerSubmenu(controller))) {
         UIView *source = SourceForPresenter(receiver);
         if (source) {
             YTKACEContinueSystemMenuTransition(source);
@@ -339,6 +354,16 @@ static void Present(UIViewController *receiver, SEL selector, UIViewController *
 void YTKACEInstallPlayerMenuPresentation(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
+        for (NSNotificationName name in @[UIApplicationWillResignActiveNotification,UIApplicationDidBecomeActiveNotification,
+                                         UISceneWillDeactivateNotification,UISceneDidActivateNotification])
+            [NSNotificationCenter.defaultCenter addObserverForName:name object:nil queue:NSOperationQueue.mainQueue
+                usingBlock:^(NSNotification *notification) {
+                    if ([notification.name isEqual:UIApplicationWillResignActiveNotification]) MenuApplicationSuspended = YES;
+                    else if ([notification.name isEqual:UIApplicationDidBecomeActiveNotification]) MenuApplicationSuspended = NO;
+                    else if ([notification.object isKindOfClass:UIScene.class])
+                        objc_setAssociatedObject(notification.object,&MenuSceneSuspendedKey,
+                            @([notification.name isEqual:UISceneWillDeactivateNotification]),OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                }];
         YTKACEInstallNativePlayerMenuAdapter();
         YTKACEInstallInstanceHook(@"UIWindow", @"sendEvent:", (IMP)WindowEvent, &OriginalWindowEvent);
         YTKACEInstallInstanceHook(@"UIControl", @"sendAction:to:forEvent:", (IMP)SendAction, &OriginalSendAction);

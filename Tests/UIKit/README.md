@@ -203,6 +203,35 @@ Additional recheck cases:
   108pt and grows the surface from about 260pt to 304pt. These are fixture
   measurements, not device YouTube frame-rate or latency measurements.
 
+November 20 navigation lifecycle audit (launch each case separately):
+
+| Launch flag | Required behavior |
+| --- | --- |
+| `--flow-model-sync`, `--flow-model-async` | Original model callback runs after native close, once; detached-source child requests retain the saved presenter, shared container and Back history. |
+| `--flow-layout-generation` | Re-entering during presentation and pending layout preserves original alpha; retired retries cannot reveal the new sheet; cancellation closes once. |
+| `--flow-session-generation` | An old owner's delayed completion cannot unhide a freshly reopened session on the same controller. |
+| `--flow-mask-generation` | Cancelling an interactive session and reopening as metadata clears only its owned mask; the late completion cannot mutate the replacement. |
+| `--flow-retained-async` | A non-dismissing native command can request its child asynchronously with shared container and Back history. |
+| `--flow-background`, `--flow-retained-background` | Deactivation cancels pending origin/history and transition cover; original native teardown still completes once; late child requests do not revive adaptation. |
+| `--flow-windows` | Two independent windows request delayed ELM children from detached sources; each keeps its own presenter, anchor and completion. |
+
+With the same fixtures, revision `c0651a4` loses both model-handler children,
+allows old owner completions to change a replacement session, revives floating
+menus after deactivation, and mixes interleaved ELM windows. The retained-owner
+async case also serves as a preservation check. These are UIKit fixture results;
+they do not establish real-device YouTube transition latency or binary compatibility.
+The layout re-entry case passes the baseline too, so it is a preservation check,
+not evidence of a reproduced baseline failure. In a separate mutated build,
+inverting the session restoration generation check makes
+`--flow-session-generation` fail as expected; the unchanged implementation passes.
+During the broader matrix, native activation exceeded the unchanged 100 ms
+startup assertion once. Three isolated reruns passed; the failure diagnostic now
+includes mode and elapsed milliseconds. This does not certify a device latency
+bound or explain the unrepeatable timing outlier.
+The final audit also rendered the 850 ms child and the manual multiline content
+fixture: Back/close remained visible, the native grabber/outer root stayed out
+of the shared menu, and the full paragraph fit within its resized content page.
+
 Visual QA: the interactive speed fixture was rendered and inspected on the
   disposable iPhone 17 simulator (iOS 27.2). The shared header, close button,
   native slider, choice and gear anchor were visible. The physics regression

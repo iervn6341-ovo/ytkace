@@ -18,4 +18,9 @@ FOUNDATION_EXPORT void YTKACERememberPlayerMenuSource(UIView * _Nullable source)
 // Finish a native owner's already-requested close without invoking its override twice.
 FOUNDATION_EXPORT void YTKACEDetachNativePlayerMenu(UIViewController *controller, dispatch_block_t _Nullable completion);
 FOUNDATION_EXPORT void YTKACEInstallPlayerMenuPresentation(void);
+
+FOUNDATION_EXPORT BOOL YTKACEPlayerMenuWindowActive(UIWindow * _Nullable window);
+// Opaque pending-origin lease; cancelling an older lease cannot erase a newer tap.
+FOUNDATION_EXPORT id _Nullable YTKACEPlayerMenuSourceToken(UIWindow *window, UIView *source);
+FOUNDATION_EXPORT void YTKACECancelPlayerMenuSourceToken(UIWindow *window, id _Nullable token);
 NS_ASSUME_NONNULL_END

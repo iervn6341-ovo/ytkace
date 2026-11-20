@@ -126,8 +126,8 @@ and verified actions, without requiring their text to be decoded. It opens besid
 the actual gear and retains that window-space anchor if YouTube hides the controls
 during presentation. Native quality/speed submenus keep the same anchor. Original
 sheet lifecycle/owner dismissal still run; row hierarchy/layout is restored before
-actions. Zero-height native ELM rows wait for up to three additional layout passes
-(150 ms); rows still collapsed then are omitted, while visible siblings and late
+actions. Zero-height native ELM rows receive up to six additional layout retries
+scheduled 16 ms apart; rows still collapsed then are omitted, while visible siblings and late
 materialized rows remain available. No replacement labels or heights are invented.
 Actions appended by other tweaks can have no native button; their readable model
 or captured factory title, icon and verified handler become standard rows in the
@@ -243,6 +243,23 @@ navigation, reparenting requests from a dismissed source, self-dismissal,
 retained owners, late gesture binding, exact-once leaf selection, and
 unsupported-command fallback. This does not replace testing
 against the target YouTube binary.
+
+Ordinary model handlers keep their original post-dismissal execution order but
+share ELM's child-request queue, saved presenter and Back history. Both immediate
+and delayed requests from a detached native controller return to its saved
+presenter; non-dismissing commands can also request a delayed child. A pending
+navigation belongs to one window and one native-session generation. Reopening
+the same controller invalidates the older session's appearance restoration, so
+an old dismissal completion cannot reveal the new hidden sheet or remove its
+mask. Each asynchronous layout pass likewise has its own identity and preserves
+the source's original alpha across re-entry.
+
+A fresh touch or app/scene deactivation cancels only the pending navigation's
+origin and transition leases. Its native close still completes once. Late native
+requests during inactivity use UIKit's original route and cannot revive the
+floating menu or attach stale Back history. Independent windows retain separate
+pending presenters, origins and completions. This scope is required even after
+a native source loses its window during dismissal.
 
 Back reuses a preceding native page only while its presented owner still has
 valid actions. Dismissed owners are rebuilt through the registered gear control;

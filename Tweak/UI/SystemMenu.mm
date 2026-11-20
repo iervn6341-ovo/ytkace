@@ -392,7 +392,14 @@ void YTKACEContinueSystemMenuTransition(UIView *source) {
     YTKACEMenuTransition *transition = objc_getAssociatedObject(source.window,&MenuTransitionKey);
     if (transition.source == source) transition.receivedChild = YES;
 }
-static void BeginMenuTransition(UIViewController *menu) {
+id YTKACESystemMenuTransitionToken(UIWindow *window, UIView *source) {
+    YTKACEMenuTransition *transition = objc_getAssociatedObject(window,&MenuTransitionKey);
+    return transition.source == source ? transition : nil;
+}
+void YTKACECancelSystemMenuTransitionToken(id token) {
+    if ([token isKindOfClass:YTKACEMenuTransition.class]) RemoveMenuTransition(token);
+}
+static void BeginMenuTransition(UIViewController *menu, BOOL showCover = YES) {
     UIWindow *window = menu.view.window;
     UIView *source = YTKACEPlayerMenuSource(menu);
     if (!window || !source || !YTKACEIsPlayerMenuSource(source)) return;
@@ -400,8 +407,8 @@ static void BeginMenuTransition(UIViewController *menu) {
     RemoveMenuTransition(previous);
     UIView *container = menu.presentationController.containerView;
     CGRect rect = [menu.view convertRect:menu.view.bounds toView:container];
-    UIView *snapshot = [container resizableSnapshotViewFromRect:rect afterScreenUpdates:NO withCapInsets:UIEdgeInsetsZero];
-    if (!snapshot || CGRectIsEmpty(rect)) return;
+    UIView *snapshot = showCover ? [container resizableSnapshotViewFromRect:rect afterScreenUpdates:NO withCapInsets:UIEdgeInsetsZero] : nil;
+    if (showCover && (!snapshot || CGRectIsEmpty(rect))) return;
     YTKACEMenuTransition *transition = [YTKACEMenuTransition new];
     transition.window = window; transition.windowBounds = window.bounds; transition.outgoing = menu;
     transition.source = source; transition.snapshot = snapshot;
@@ -411,7 +418,7 @@ static void BeginMenuTransition(UIViewController *menu) {
     cover.userInteractionEnabled = NO; cover.clipsToBounds = YES;
     cover.layer.cornerRadius = 28; cover.layer.cornerCurve = kCACornerCurveContinuous;
     snapshot.frame = cover.bounds; snapshot.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    [cover addSubview:snapshot]; [window addSubview:cover]; transition.cover = cover;
+    if (snapshot) { [cover addSubview:snapshot]; [window addSubview:cover]; transition.cover = cover; }
     objc_setAssociatedObject(window,&MenuTransitionKey,transition,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] submenu transition=waiting");
     // Leaf commands need no new menu. Remove their visual cover promptly, but
@@ -430,6 +437,7 @@ static void BeginMenuTransition(UIViewController *menu) {
 }
 
 void YTKACEBeginSystemMenuTransition(UIViewController *menu) { BeginMenuTransition(menu); }
+void YTKACERetainSystemMenuForNavigation(UIViewController *menu) { BeginMenuTransition(menu,NO); }
 
 static void CompleteMenuTransition(UIViewController *menu, UIView *content) {
     UIWindow *window = menu.view.window;
@@ -830,6 +838,7 @@ void YTKACESetSystemMenuBackAction(UIViewController *presenter, dispatch_block_t
     BOOL (^submenuTransition)(void) = action[@"submenuTransition"];
     BOOL nativeCommand = submenuTransition && submenuTransition();
     if (nativeCommand) BeginMenuTransition(self.menuPresentation);
+    else if ([action[@"preserveNativeContainer"] boolValue]) YTKACERetainSystemMenuForNavigation(self.menuPresentation);
     ((YTKACEMenuPresentation *)self.menuPresentation).selectedAction = YES;
     ((YTKACEMenuPresentation *)self.menuPresentation).closing = YES;
     UIView *source = YTKACEPlayerMenuSource(self.menuPresentation);
@@ -856,7 +865,7 @@ BOOL YTKACEPresentSystemMenuWithDismissal(UIViewController *presenter, UIView *s
                              NSArray<NSDictionary *> *actions, void (^handler)(BOOL)) {
     if (![presenter isKindOfClass:UIViewController.class] ||
         !YTKACEFeatureEnabled(@"YTKACE.Preference.Interface.SystemMenus") ||
-        !presenter.view.window || presenter.presentedViewController || actions.count == 0) return NO;
+        !YTKACEPlayerMenuWindowActive(presenter.view.window) || presenter.presentedViewController || actions.count == 0) return NO;
     for (NSDictionary *action in actions) {
         BOOL nativeRow = [action[@"nativeRow"] isKindOfClass:YTKACEMenuNativeRow.class];
         if (!nativeRow && (![action[@"title"] isKindOfClass:NSString.class] || ![action[@"title"] length])) return NO;

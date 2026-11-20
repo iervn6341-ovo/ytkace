@@ -344,6 +344,27 @@ static NativeTestAction *VirtualAction(NSString *title, NSUInteger mode, dispatc
 }
 @end
 
+@interface NativeLateCompletionOwner : NativeTestOwner
+@property(nonatomic) NSTimeInterval completionDelay;
+@end
+@implementation NativeLateCompletionOwner
+- (void)dismissViewControllerAnimated:(BOOL)animated completion:(void (^)(void))completion {
+    NSTimeInterval delay = self.completionDelay;
+    [super dismissViewControllerAnimated:animated completion:^{
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(delay * NSEC_PER_SEC)),dispatch_get_main_queue(),^{
+            if (completion) completion();
+        });
+    }];
+}
+@end
+static void AfterNativeDetached(UIViewController *controller, NSUInteger attempt, dispatch_block_t completion) {
+    if (!controller.presentingViewController && !controller.isBeingDismissed) { completion(); return; }
+    Check(attempt < 120,@"native close must finish before reopening its controller");
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,16 * NSEC_PER_MSEC),dispatch_get_main_queue(),^{
+        AfterNativeDetached(controller,attempt + 1,completion);
+    });
+}
+
 static NSUInteger NativePresentations, NativeDismissals;
 @interface NativeTestPresentation : UIPresentationController @end
 @implementation NativeTestPresentation
@@ -443,6 +464,24 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
         if ([NSProcessInfo.processInfo.arguments containsObject:@"--preview-native-gear"]) {
             self.button.hidden = YES; self.qualityButton.hidden = YES;
             [self testGearPopover];
+        } else if ([NSProcessInfo.processInfo.arguments containsObject:@"--flow-retained-async"]) {
+            [self testELMCommandOrder:17];
+        } else if ([NSProcessInfo.processInfo.arguments containsObject:@"--flow-background"]) {
+            [self testELMCommandOrder:18];
+        } else if ([NSProcessInfo.processInfo.arguments containsObject:@"--flow-retained-background"]) {
+            [self testELMCommandOrder:19];
+        } else if ([NSProcessInfo.processInfo.arguments containsObject:@"--flow-windows"]) {
+            [self testIndependentMenuWindows];
+        } else if ([NSProcessInfo.processInfo.arguments containsObject:@"--flow-model-sync"]) {
+            [self testMenuFlow:0];
+        } else if ([NSProcessInfo.processInfo.arguments containsObject:@"--flow-model-async"]) {
+            [self testMenuFlow:1];
+        } else if ([NSProcessInfo.processInfo.arguments containsObject:@"--flow-layout-generation"]) {
+            [self testMenuFlow:2];
+        } else if ([NSProcessInfo.processInfo.arguments containsObject:@"--flow-session-generation"]) {
+            [self testMenuFlow:3];
+        } else if ([NSProcessInfo.processInfo.arguments containsObject:@"--flow-mask-generation"]) {
+            [self testMenuFlow:4];
         } else if ([NSProcessInfo.processInfo.arguments containsObject:@"--composite-quality-regression"]) {
             [self testCompositeQuality];
         } else if ([NSProcessInfo.processInfo.arguments containsObject:@"--rebuild-back-regression"]) {
@@ -1013,6 +1052,7 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
 
 #pragma clang diagnostic pop
 - (void)testELMCommandOrder:(NSUInteger)mode {
+    BOOL retainsSource = mode == 3 || mode == 17 || mode == 19;
     UIButton *gear = [UIButton buttonWithType:UIButtonTypeSystem];
     gear.frame = CGRectMake(240,140,44,44); [self.button.superview addSubview:gear];
     YTKACERegisterNativeGearMenuSource(gear);
@@ -1045,7 +1085,7 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
     GOODialogView *dialog = [GOODialogView new]; dialog.native = native;
     [button addTarget:dialog action:@selector(actionButtonDidTap:) forControlEvents:UIControlEventTouchUpInside];
     NativeTestAction *model = [NativeTestAction new]; model.button = button;
-    model.shouldDismissOnAction = mode != 3;
+    model.shouldDismissOnAction = !retainsSource;
     model.handler = ^{ Check(NO,@"an ELM content command must not invoke its placeholder model handler"); };
     __block NativeTestOwner *owner = [NativeTestOwner new]; owner.native = native; owner.actions = @[model];
     if (mode == 1) owner.dismissalDelay = 0.1;
@@ -1068,7 +1108,7 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
         UIViewController *parent = weakNative;
         Check(parent.presentingViewController != nil &&
             (weakOwner.dismissals == 0 || ([NSProcessInfo.processInfo.arguments containsObject:@"--back-regression"] && command.calls == 2)) &&
-            button.superview == panel && button.userInteractionEnabled && parent.view.alpha == 1 && (mode == 3 || parent.view.layer.mask != nil),
+            button.superview == panel && button.userInteractionEnabled && parent.view.alpha == 1 && (retainsSource || parent.view.layer.mask != nil),
             @"handleTap must execute once with its node graph restored and owner still presented");
         Check(TransitionCover(weak.window) != nil,@"the outgoing menu must remain visible while native owners change");
         Check(trailing.image == arrow && [trailing.tintColor isEqual:UIColor.whiteColor] && fabs(trailing.alpha - .6) < .01,
@@ -1113,14 +1153,18 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
             if (mode == 11 || mode == 12)
                 Check(!weakNative.presentingViewController && weakOwner != nil,
                     @"late child requests must retain their dismissed source owner until presentation");
-            UIViewController *presenter = (mode == 3 || mode == 7) ? weakNative : weak.root;
+            UIViewController *presenter = (retainsSource || mode == 7) ? weakNative : weak.root;
             [presenter presentViewController:child animated:YES completion:^{
                 completions++;
-                Check(mode == 3 ? weakNative.presentingViewController != nil : weakNative.presentingViewController == nil,
+                Check(retainsSource ? weakNative.presentingViewController != nil : weakNative.presentingViewController == nil,
                     @"child presentation completion must follow the required source dismissal");
             }];
         };
-        if (mode == 14)
+        if (mode == 17)
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW,80 * NSEC_PER_MSEC),dispatch_get_main_queue(),present);
+        else if ((mode == 18 || mode == 19))
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW,500 * NSEC_PER_MSEC),dispatch_get_main_queue(),present);
+        else if (mode == 14)
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW,850 * NSEC_PER_MSEC),dispatch_get_main_queue(),present);
         else if (mode == 13)
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW,500 * NSEC_PER_MSEC),dispatch_get_main_queue(),present);
@@ -1163,11 +1207,27 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
         [table.tableView.delegate tableView:table.tableView didSelectRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]];
         [table.tableView.delegate tableView:table.tableView didSelectRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]];
         if (mode == 12) { native.actionsController = nil; owner = nil; }
+        if ((mode == 18 || mode == 19)) dispatch_after(dispatch_time(DISPATCH_TIME_NOW,30 * NSEC_PER_MSEC),dispatch_get_main_queue(),^{
+            [NSNotificationCenter.defaultCenter postNotificationName:UIApplicationWillResignActiveNotification object:nil];
+        });
         if (mode == 13) dispatch_after(dispatch_time(DISPATCH_TIME_NOW,400 * NSEC_PER_MSEC),dispatch_get_main_queue(),^{
             Check(!weakNative.presentingViewController,@"fresh-touch history cancellation must occur after source dismissal");
             YTKACEUpdatePlayerMenuTouchSource(gear,self.window);
         });
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(mode == 14 ? 1600 : 1000) * NSEC_PER_MSEC),dispatch_get_main_queue(),^{
+            if ((mode == 18 || mode == 19)) {
+                Check(command.calls == 1 && owner.dismissals == (retainsSource ? 0u : 1u) && !TransitionCover(self.window) &&
+                    !YTKACEIsPlayerPopover(child.presentedViewController) && !YTKACEIsNativePlayerSubmenu(child),
+                    [NSString stringWithFormat:@"background teardown/capture: calls=%lu owner=%lu cover=%d menu=%d history=%d root=%@",
+                        (unsigned long)command.calls,(unsigned long)owner.dismissals,TransitionCover(self.window) != nil,
+                        YTKACEIsPlayerPopover(child.presentedViewController),YTKACEIsNativePlayerSubmenu(child),
+                        NSStringFromClass(self.root.presentedViewController.class)]);
+                [self.root dismissViewControllerAnimated:NO completion:^{
+                    [gear removeFromSuperview];
+                    [@"PASS: background cancels pending origin/history while native source teardown completes once\n"
+                        writeToFile:ResultPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
+                }]; return;
+            }
             if (mode == 8 || mode == 9 || mode == 10) {
                 Check(command.calls == 1 && dialog.closeCalls == 0 && owner.dismissals == 1 &&
                     !TransitionCover(self.window),@"leaf/fallback paths must remove the transition cover without duplicate commands");
@@ -1189,7 +1249,7 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
                 return;
             }
             Check(command.calls == 1 && dialog.closeCalls == 0 && completions == 1 &&
-                weakOwner.dismissals == (mode == 3 ? 0u : 1u),
+                weakOwner.dismissals == (retainsSource ? 0u : 1u),
                 @"ELM selection must dispatch the content command once and close through its owner at most once");
             Check(child && YTKACEIsPlayerPopover(child.presentedViewController) &&
                 child.presentedViewController.popoverPresentationController.sourceView == self.window,
@@ -1205,7 +1265,7 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
             [table.tableView.delegate tableView:table.tableView didSelectRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]];
             Check(command.calls == 1 && ![[child.presentedViewController valueForKey:@"closing"] boolValue],
                 @"a delayed tap on the retired page must not close or disable the reused container");
-            Check(self.root.presentedViewController == (mode == 3 ? native : child),
+            Check(self.root.presentedViewController == (retainsSource ? native : child),
                 @"a dismissed source must not remain as an invisible parent of the child menu");
             UITableViewController *leaf = (id)MenuNavigation(child.presentedViewController).topViewController;
             Check([leaf.tableView.dataSource tableView:leaf.tableView numberOfRowsInSection:0] == 2,
@@ -1233,7 +1293,7 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
                         UITableViewController *reopened = (id)MenuNavigation(child.presentedViewController).topViewController;
                         [reopened.tableView.delegate tableView:reopened.tableView didSelectRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]];
                         Later(^{
-                            Check(leafCalls == 1 && !(mode == 3 ? child.presentingViewController : self.root.presentedViewController),
+                            Check(leafCalls == 1 && !(retainsSource ? child.presentingViewController : self.root.presentedViewController),
                                 @"reopened child selection must execute once and honor the native owner's retention policy");
                             [@"PASS: submenu Back, parent reentry and exact-once reopened leaf selection\n"
                                 writeToFile:ResultPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
@@ -1248,6 +1308,10 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
                     @"the child leaf must remain selectable and close exactly once");
                 dispatch_block_t next = ^{
                     [gear removeFromSuperview];
+                    if (mode == 17) {
+                        [@"PASS: retained-owner asynchronous native child, shared container and Back history\n"
+                            writeToFile:ResultPath() atomically:YES encoding:NSUTF8StringEncoding error:nil]; return;
+                    }
                     if (mode == 16) {
                         [@"PASS: delayed native layout decodes ready handlers once, preserving late rows and original callbacks\n"
                             writeToFile:ResultPath() atomically:YES encoding:NSUTF8StringEncoding error:nil]; return;
@@ -1260,10 +1324,211 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
                         [@"PASS: 850 ms native child reuses the same shell, Back history and exact-once leaf\n"
                             writeToFile:ResultPath() atomically:YES encoding:NSUTF8StringEncoding error:nil]; return;
                     }
-                    [self testELMCommandOrder:mode == 3 ? 6 : (mode == 6 ? 7 : (mode == 7 ? 11 : (mode == 11 ? 12 : (mode == 12 ? 13 : (mode == 13 ? 14 : (mode == 14 ? 8 : mode + 1))))))];
+                    [self testELMCommandOrder:retainsSource ? 6 : (mode == 6 ? 7 : (mode == 7 ? 11 : (mode == 11 ? 12 : (mode == 12 ? 13 : (mode == 13 ? 14 : (mode == 14 ? 8 : mode + 1))))))];
                 };
                 if (self.root.presentedViewController) [self.root dismissViewControllerAnimated:NO completion:next];
                 else next();
+            });
+        });
+    });
+}
+- (void)testIndependentMenuWindows {
+    UIWindow *other = [[UIWindow alloc] initWithWindowScene:self.window.windowScene]; other.frame = self.window.bounds;
+    UIViewController *otherRoot = [UIViewController new]; other.rootViewController = otherRoot;
+    otherRoot.view.backgroundColor = UIColor.systemBackgroundColor;
+    YTMainAppControlsOverlayView *overlay = [[YTMainAppControlsOverlayView alloc] initWithFrame:otherRoot.view.bounds];
+    [otherRoot.view addSubview:overlay]; [other makeKeyAndVisible];
+    NSArray<UIWindow *> *windows = @[self.window,other];
+    NSArray<UIViewController *> *roots = @[self.root,otherRoot];
+    NSMutableArray *natives = [NSMutableArray array], *owners = [NSMutableArray array], *gears = [NSMutableArray array];
+    NSMutableArray *children = [NSMutableArray arrayWithArray:@[NSNull.null,NSNull.null]];
+    NSMutableArray *calls = [NSMutableArray arrayWithArray:@[@0,@0]], *completions = [NSMutableArray arrayWithArray:@[@0,@0]];
+    for (NSUInteger index = 0; index < 2; index++) {
+        UIButton *gear = [UIButton buttonWithType:UIButtonTypeSystem]; gear.frame = CGRectMake(240,140,44,44);
+        [(index ? overlay : self.button.superview) addSubview:gear]; YTKACERegisterNativeGearMenuSource(gear); [gears addObject:gear];
+        YTBottomSheetController *native = [YTBottomSheetController new];
+        native.modalPresentationStyle = UIModalPresentationCustom; native.transitioningDelegate = self;
+        YTDraggableView *panel = [[YTDraggableView alloc] initWithFrame:CGRectMake(8,80,320,100)]; [native.view addSubview:panel];
+        NativeTestAction *model = [NativeTestAction new]; model.title = @"Window option";
+        YTMenuItemElementsMDCButton *button = [[YTMenuItemElementsMDCButton alloc] initWithFrame:CGRectMake(0,0,320,56)];
+        [panel addSubview:button]; model.button = button;
+        UIView *element = [[UIView alloc] initWithFrame:button.bounds]; [button addSubview:element];
+        ELMTouchCommandPropertiesHandler *command = [ELMTouchCommandPropertiesHandler new]; InstallELMTap(element,command,YES);
+        model.handler = ^{ Check(NO,@"window routing must keep the verified native ELM command"); };
+        NativeTestOwner *owner = [NativeTestOwner new]; owner.native = native; owner.clearsActionsOnDismiss = YES;
+        owner.actions = @[model]; native.actionsController = owner;
+        __weak UIViewController *weakNative = native;
+        command.callback = ^{
+            calls[index] = @([calls[index] unsignedIntegerValue] + 1);
+            NativeSettingsPage *child = [NativeSettingsPage new]; child.title = @"Window child";
+            YTDraggableView *body = [[YTDraggableView alloc] initWithFrame:CGRectMake(8,80,320,100)]; [child.view addSubview:body];
+            NativeTestAction *leaf = [NativeTestAction new]; leaf.title = @"Window leaf"; leaf.handler = ^{};
+            UIButton *choice = [UIButton buttonWithType:UIButtonTypeSystem]; choice.frame = CGRectMake(0,0,320,56);
+            [choice setTitle:leaf.title forState:UIControlStateNormal]; [body addSubview:choice]; leaf.button = choice;
+            child.actions = @[leaf]; children[index] = child;
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW,600 * NSEC_PER_MSEC),dispatch_get_main_queue(),^{
+                [weakNative presentViewController:child animated:NO completion:^{
+                    completions[index] = @([completions[index] unsignedIntegerValue] + 1);
+                }];
+            });
+        };
+        [natives addObject:native]; [owners addObject:owner];
+        YTKACERememberPlayerMenuSource(gear);
+        [roots[index] presentViewController:native animated:NO completion:nil];
+    }
+    Later(^{
+        for (UIViewController *native in natives) {
+            Check(YTKACEIsPlayerPopover(native.presentedViewController),@"each window must start with its own menu");
+            UITableViewController *list = (id)MenuNavigation(native.presentedViewController).topViewController;
+            [list.tableView.delegate tableView:list.tableView didSelectRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]];
+        }
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,1600 * NSEC_PER_MSEC),dispatch_get_main_queue(),^{
+            for (NSUInteger index = 0; index < 2; index++) {
+                UIViewController *child = children[index];
+                Check([child isKindOfClass:UIViewController.class] && roots[index].presentedViewController == child &&
+                    YTKACEIsPlayerPopover(child.presentedViewController) &&
+                    child.presentedViewController.popoverPresentationController.sourceView == windows[index] &&
+                    [calls[index] unsignedIntegerValue] == 1 && [completions[index] unsignedIntegerValue] == 1,
+                    @"interleaved delayed navigation must retain the correct presenter, origin and completion in each window");
+                UITableViewController *list = (id)MenuNavigation(child.presentedViewController).topViewController;
+                UIBarButtonItem *close = list.navigationItem.rightBarButtonItem;
+                [UIApplication.sharedApplication sendAction:close.action to:close.target from:close forEvent:nil];
+            }
+            Later(^{
+                Check(!self.root.presentedViewController && !otherRoot.presentedViewController &&
+                    [(NativeTestOwner *)owners[0] dismissals] == 1 && [(NativeTestOwner *)owners[1] dismissals] == 1,
+                    @"window navigation must close each original owner once without cross-window teardown");
+                for (UIView *gear in gears) [gear removeFromSuperview]; other.hidden = YES; [self.window makeKeyAndVisible];
+                [@"PASS: interleaved delayed navigation is isolated by window, presenter, origin and completion\n"
+                    writeToFile:ResultPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            });
+        });
+    });
+}
+- (void)testMenuFlow:(NSUInteger)mode {
+    UIButton *gear = [UIButton buttonWithType:UIButtonTypeSystem];
+    gear.frame = CGRectMake(240,140,44,44); [self.button.superview addSubview:gear];
+    YTKACERegisterNativeGearMenuSource(gear);
+    YTBottomSheetController *native = [YTBottomSheetController new];
+    native.modalPresentationStyle = UIModalPresentationCustom; native.transitioningDelegate = self;
+    UIView *panel = mode == 4 ? [[GOODialogView alloc] initWithFrame:CGRectMake(0,0,320,180)]
+        : [[YTDraggableView alloc] initWithFrame:CGRectMake(8,80,320,180)];
+    if (mode == 4) {
+        YTDraggableView *outer = [[YTDraggableView alloc] initWithFrame:CGRectMake(8,80,320,180)];
+        [native.view addSubview:outer]; [outer addSubview:panel];
+    } else [native.view addSubview:panel];
+    UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem]; button.frame = CGRectMake(0,0,320,56);
+    [button setTitle:@"Native model option" forState:UIControlStateNormal]; [panel addSubview:button];
+    NativeTestAction *model = [NativeTestAction new]; model.title = @"Native model option"; model.button = button;
+    UISlider *input = [[UISlider alloc] initWithFrame:CGRectMake(16,8,280,44)];
+    if (mode == 4) [button addSubview:input];
+    NativeTestOwner *owner = mode >= 3 ? [NativeLateCompletionOwner new] : [NativeTestOwner new];
+    owner.native = native; owner.clearsActionsOnDismiss = YES;
+    if (mode >= 3) [(NativeLateCompletionOwner *)owner setCompletionDelay:.8];
+    __block NSUInteger calls = 0, leafCalls = 0, completions = 0;
+    __block UIViewController *child;
+    __weak UIViewController *weakNative = native;
+    model.handler = ^{
+        calls++;
+        if (mode >= 2) return;
+        Check(!weakNative.presentingViewController && owner.dismissals == 1 && button.superview == panel,
+            @"ordinary model handlers must retain their original post-dismissal order and restored controls");
+        NativeSettingsPage *page = [NativeSettingsPage new]; page.title = @"Model child";
+        YTDraggableView *body = [[YTDraggableView alloc] initWithFrame:CGRectMake(0,80,320,100)];
+        [page.view addSubview:body];
+        NativeTestAction *leaf = [NativeTestAction new]; leaf.title = @"Leaf"; leaf.handler = ^{ leafCalls++; };
+        UIButton *choice = [UIButton buttonWithType:UIButtonTypeSystem]; choice.frame = CGRectMake(0,0,320,56);
+        [choice setTitle:@"Leaf" forState:UIControlStateNormal]; [body addSubview:choice]; leaf.button = choice;
+        page.actions = @[leaf]; child = page;
+        dispatch_block_t present = ^{
+            [weakNative presentViewController:page animated:NO completion:^{ completions++; }];
+        };
+        if (mode == 1) dispatch_after(dispatch_time(DISPATCH_TIME_NOW,80 * NSEC_PER_MSEC),dispatch_get_main_queue(),present);
+        else present();
+    };
+    NativeTestAction *late = [NativeTestAction new]; late.handler = ^{};
+    late.button = [[YTMenuItemElementsMDCButton alloc] initWithFrame:CGRectMake(0,56,320,9)];
+    if (mode == 2) { [panel addSubview:late.button]; native.lateGeometryButton = late.button; }
+    owner.actions = mode == 2 ? @[model,late] : @[model]; native.actionsController = owner;
+    // A registered source can reconstruct the root for a child's Back route.
+    [gear addAction:[UIAction actionWithHandler:^(__unused UIAction *action) {
+        owner.actions = @[model]; native.actionsController = owner; native.view.alpha = 1;
+        YTKACERememberPlayerMenuSource(gear); [self.root presentViewController:native animated:NO completion:nil];
+    }] forControlEvents:UIControlEventTouchUpInside];
+    YTKACERememberPlayerMenuSource(gear);
+    [self.root presentViewController:native animated:NO completion:^{
+        if (mode == 2) {
+            native.lateGeometryButton = nil;
+            CGRect initial = [late.button frame]; initial.size.height = 9; [late.button setFrame:initial];
+            // Re-enter during the original presentation completion, before its
+            // own adapter call. Both pending passes must retain alpha == 1.
+            YTKACEPresentNativeGearMenu(native,gear);
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW,8 * NSEC_PER_MSEC),dispatch_get_main_queue(),^{
+                CGRect frame = [late.button frame]; frame.size.height = 56; [late.button setFrame:frame];
+                [late.button setNeedsDisplay]; YTKACEPresentNativeGearMenu(native,gear);
+            });
+        }
+    }];
+    Later(^{
+        UIViewController *menu = native.presentedViewController;
+        Check(YTKACEIsPlayerPopover(menu),@"flow audit must start with the common floating menu");
+        UITableViewController *list = (id)MenuNavigation(menu).topViewController;
+        if (mode == 2) {
+            Check(native.view.alpha == 0,@"a retired layout retry must not reveal a newly adapted native sheet");
+            UIBarButtonItem *close = list.navigationItem.rightBarButtonItem;
+            [UIApplication.sharedApplication sendAction:close.action to:close.target from:close forEvent:nil];
+            Later(^{
+                Check(!self.root.presentedViewController && native.view.alpha == 1 && owner.dismissals == 1,
+                    @"restarting layout must preserve the original alpha and close the owner once");
+                [gear removeFromSuperview];
+                [@"PASS: layout generations retire old retries and preserve native alpha/close\n"
+                    writeToFile:ResultPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            }); return;
+        }
+        if (mode == 4) {
+            Check(native.view.layer.mask != nil,@"interactive generation must start with its owned native mask");
+            UIBarButtonItem *close = list.navigationItem.rightBarButtonItem;
+            [UIApplication.sharedApplication sendAction:close.action to:close.target from:close forEvent:nil];
+        } else [list.tableView.delegate tableView:list.tableView didSelectRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]];
+        if (mode >= 3) {
+            AfterNativeDetached(native,0,^{
+                [input removeFromSuperview];
+                NativeTestOwner *freshOwner = [NativeTestOwner new]; freshOwner.native = native;
+                NativeTestAction *fresh = [NativeTestAction new]; fresh.button = button; fresh.title = @"Fresh option";
+                fresh.handler = ^{ leafCalls++; }; freshOwner.actions = @[fresh];
+                native.actionsController = freshOwner; native.view.alpha = 1;
+                YTKACERememberPlayerMenuSource(gear);
+                [self.root presentViewController:native animated:NO completion:nil];
+                Later(^{
+                    Check(YTKACEIsPlayerPopover(native.presentedViewController) && native.view.alpha == 0 && !native.view.layer.mask && calls == (mode == 4 ? 0u : 1u) && leafCalls == 0,
+                        @"an old owner's delayed completion must not restore appearance over the fresh session");
+                    UITableViewController *freshList = (id)MenuNavigation(native.presentedViewController).topViewController;
+                    UIBarButtonItem *close = freshList.navigationItem.rightBarButtonItem;
+                    [UIApplication.sharedApplication sendAction:close.action to:close.target from:close forEvent:nil];
+                    Later(^{
+                        Check(!self.root.presentedViewController && freshOwner.dismissals == 1 && owner.dismissals == 1 && calls == (mode == 4 ? 0u : 1u) && !native.view.layer.mask,
+                            @"fresh and retired sessions must each finish their own callback once");
+                        [gear removeFromSuperview];
+                        [@"PASS: late owner completion cannot mutate a replacement menu session\n"
+                            writeToFile:ResultPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
+                    });
+                });
+            }); return;
+        }
+        Later(^{
+            Check(calls == 1 && completions == 1 && child && self.root.presentedViewController == child &&
+                YTKACEIsPlayerPopover(child.presentedViewController),
+                @"post-dismissal model navigation must reroute sync/async requests from the detached native controller");
+            Check(child.presentedViewController == menu,@"model and ELM navigation must share container reuse");
+            UITableViewController *leaf = (id)MenuNavigation(child.presentedViewController).topViewController;
+            Check(leaf.navigationItem.leftBarButtonItem != nil,@"post-dismissal model children must retain Back history");
+            [leaf.tableView.delegate tableView:leaf.tableView didSelectRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]];
+            Later(^{
+                Check(leafCalls == 1 && !self.root.presentedViewController && owner.dismissals == 1,
+                    @"the rerouted model child leaf must execute once and close its own owner");
+                [gear removeFromSuperview];
+                [@"PASS: post-dismissal model navigation, sync/async native presenter rerouting, reuse and Back history\n"
+                    writeToFile:ResultPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
             });
         });
     });
@@ -1287,8 +1552,10 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
     __block NSTimeInterval selectedAt = 0;
     __weak UIViewController *weakNative = native;
     dispatch_block_t navigate = ^{
-        Check(NSProcessInfo.processInfo.systemUptime - selectedAt < .1,
-            @"native submenu handlers must start without waiting for the outgoing popover dismissal");
+        NSTimeInterval elapsed = NSProcessInfo.processInfo.systemUptime - selectedAt;
+        Check(elapsed < .1,[NSString stringWithFormat:
+            @"native submenu handlers must start without waiting for the outgoing popover dismissal (mode=%lu elapsedMs=%.1f)",
+            (unsigned long)mode,elapsed * 1000]);
         UIViewController *parent = weakNative;
         Check(parent.presentingViewController != nil && owner.dismissals == 0,
             @"native navigation must run before the native owner is dismissed");

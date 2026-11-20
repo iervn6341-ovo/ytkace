@@ -42,6 +42,10 @@ FOUNDATION_EXPORT void YTKACEMarkSystemMenuSelected(UIViewController *menu);
 FOUNDATION_EXPORT void YTKACENotifySystemMenuDismissed(UIViewController *menu);
 // Preserve the outgoing popover while native owners change underneath it.
 FOUNDATION_EXPORT void YTKACEBeginSystemMenuTransition(UIViewController *menu);
+// Preserve reuse without showing a frozen cover for post-dismissal model actions.
+FOUNDATION_EXPORT void YTKACERetainSystemMenuForNavigation(UIViewController *menu);
+FOUNDATION_EXPORT id _Nullable YTKACESystemMenuTransitionToken(UIWindow *window, UIView *source);
+FOUNDATION_EXPORT void YTKACECancelSystemMenuTransitionToken(id _Nullable token);
 FOUNDATION_EXPORT void YTKACEContinueSystemMenuTransition(UIView *source);
 FOUNDATION_EXPORT void YTKACECancelSystemMenuTransition(UIView *source);
 NS_ASSUME_NONNULL_END
