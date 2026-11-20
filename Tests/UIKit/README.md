@@ -158,12 +158,34 @@ November 19 regressions:
   must not dispatch another command or disable the new page. Native UIAction and
   target/selector navigation additionally check handler start within 100 ms.
 
+November 20 screenshot/layout and work regressions:
+
+- `--composite-quality-regression --content-sheet-chrome` wraps a 252pt native
+  dialog inside a 700pt controller root, with a grabber and background outside
+  the dialog. The adapter must borrow only the dialog, keep the native controller
+  in its original parent, size the menu below 400pt, and fit its multiline footer
+  at the actual content width. Combine with `--content-next-step` to verify
+  container reuse and exact-once selection after this narrower borrowing boundary.
+  Add `--content-dialog-discovery` to omit the `actionSheetView` getter and
+  exercise named inner-dialog discovery instead.
+- `--decode-work-regression` creates a ready ELM row followed by short rows,
+  including one that grows after 80 ms. The ready handler must be decoded once,
+  while the late row and original leaf callbacks remain available. The previous
+  revision (`598f552`) fails the same fixture with seven handler reads; it also
+  fails the sheet-chrome fixture by borrowing the whole controller root.
+- `gear layout-ready` now reports `elapsedMs` and `decodeMs`; the content route
+  includes selected bounds and original sheet bounds. No visible native text is
+  logged. The revision marker is `rowRenderer=tight-content-v4`.
+
 Visual QA: the interactive speed fixture was rendered and inspected on the
   disposable iPhone 17 simulator (iOS 27.2). The shared header, close button,
   native slider, choice and gear anchor were visible. The physics regression
   preview also retained the full 192pt content with a 44pt outer sheet item.
   This is a stand-in selector,
   not a screenshot or timing certification of YouTube's private UI.
+  On November 20 the sheet-chrome fixture was also rendered and inspected on
+  that simulator: the outer root/grabber was absent, the menu ended immediately
+  after the 252pt dialog content, and the Chinese footer wrapped within the panel.
 - Controls `--direct-quality-regression` additionally removes the controls view's
   playerViewController, resolves the player through eventsDelegate.delegate, and
   applies a real format constraint to its playerItem. Existing direct format,

@@ -20,6 +20,7 @@ static const void *NativeTextProbeKey = &NativeTextProbeKey;
 static const void *NativeOutsideTapKey = &NativeOutsideTapKey;
 static const void *NativeControlModelKey = &NativeControlModelKey;
 static const void *NativeRowsPendingKey = &NativeRowsPendingKey;
+static char NativeLayoutStartKey, NativeLayoutWorkKey;
 static IMP OriginalSetButton;
 static IMP OriginalActionsForRenderers;
 static IMP OriginalFactories[9];
@@ -661,6 +662,22 @@ static NSArray<NSDictionary *> *NativePlayerActions(UIViewController *controller
             return nil;
         }
     }
+    // Layout retries must not repeatedly traverse the already-ready ELM rows
+    // before reaching a later short row. Check geometry first; decode once when
+    // all visible rows are ready or the bounded layout wait has elapsed.
+    if (nativeViewsOnly && !settled) {
+        Class spacer = NSClassFromString(@"YTSpacerButton");
+        for (id model in models) {
+            UIView *button = Value(model,@"button");
+            if (![button isKindOfClass:UIControl.class] || (spacer && [button isKindOfClass:spacer]) ||
+                ![button isDescendantOfView:controller.view]) continue;
+            CGSize size = button.bounds.size;
+            if (isfinite(size.width) && size.width >= 44 && isfinite(size.height) && size.height >= 0 && size.height < 24) {
+                objc_setAssociatedObject(controller,NativeRowsPendingKey,@YES,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                return nil;
+            }
+        }
+    }
     NSMutableArray *actions = [NSMutableArray array];
     NSMutableDictionary<NSString *,NSNumber *> *titleSources = [NSMutableDictionary dictionary];
     NSUInteger spacers = 0, collapsed = 0;
@@ -845,6 +862,11 @@ NSArray<NSDictionary *> *YTKACENativePlayerRows(UIViewController *controller) { 
 static void PresentGearAfterLayout(UIViewController *controller, UIView *source, CGFloat alpha, NSUInteger attempt) {
     if (!controller.presentingViewController || controller.isBeingDismissed || controller.presentedViewController ||
         !YTKACEIsPlayerMenuSource(source)) { controller.view.alpha = alpha; return; }
+    NSTimeInterval workStart = NSProcessInfo.processInfo.systemUptime;
+    if (!attempt) {
+        objc_setAssociatedObject(controller,&NativeLayoutStartKey,@(workStart),OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(controller,&NativeLayoutWorkKey,@0,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
     controller.view.alpha = alpha;
     NSArray *rows = NativePlayerActions(controller,YTKACEIsNativeGearMenuSource(source),attempt >= 6);
     if (!rows && [objc_getAssociatedObject(controller,NativeTextRetryKey) boolValue] && attempt < 6)
@@ -876,13 +898,19 @@ static void PresentGearAfterLayout(UIViewController *controller, UIView *source,
                 [complete addObject:action];
             }
             rows = complete;
-            os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] native content route=shared-container class=%{public}@",TraceClass(panel));
+            os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] native content route=shared-container class=%{public}@ bounds=%{public}@ sheetBounds=%{public}@",
+                TraceClass(panel),NSStringFromCGRect(panel.bounds),NSStringFromCGRect(controller.view.bounds));
         } else if (attempt < 6) {
             objc_setAssociatedObject(controller,NativeRowsPendingKey,@YES,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         }
     }
+    NSTimeInterval work = [objc_getAssociatedObject(controller,&NativeLayoutWorkKey) doubleValue] +
+        NSProcessInfo.processInfo.systemUptime - workStart;
+    objc_setAssociatedObject(controller,&NativeLayoutWorkKey,@(work),OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     if (rows) {
-        os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] gear layout-ready attempts=%lu",(unsigned long)attempt + 1);
+        os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] gear layout-ready attempts=%lu elapsedMs=%.1f decodeMs=%.1f",
+            (unsigned long)attempt + 1,1000 * (NSProcessInfo.processInfo.systemUptime -
+            [objc_getAssociatedObject(controller,&NativeLayoutStartKey) doubleValue]),1000 * work);
         YTKACEPresentAdaptedPlayerMenu(controller,source,rows);
         return;
     }
@@ -900,7 +928,7 @@ static void PresentGearAfterLayout(UIViewController *controller, UIView *source,
         NSStringFromClass(controller.class),NSStringFromCGRect(controller.view.bounds));
 }
 void YTKACEPresentNativeGearMenu(UIViewController *controller, UIView *source) {
-    os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] gear revision=%{public}s youtube=%{public}@ rowRenderer=safe-content-v3",YTKACE_REVISION_STRING,
+    os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] gear revision=%{public}s youtube=%{public}@ rowRenderer=tight-content-v4",YTKACE_REVISION_STRING,
         NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"] ?: @"unknown");
     PresentGearAfterLayout(controller,source,controller.view.alpha,0);
 }
@@ -1137,33 +1165,52 @@ static UIView *NativePanel(UIViewController *controller) {
     return nil;
 }
 
-// Unlike the outside-hit panel, content borrowing must stop below the sheet's
-// physics hierarchy. Prefer a UIKit child-controller root; older dialog layouts
-// expose a named inner wrapper instead. Unknown layouts retain their native UI.
+// Unlike the outside-hit panel, borrowing must stop below sheet physics and
+// chrome. A child-controller root may include a full-screen background/grabber;
+// prefer its actionSheetView/dialog surface. Unknown layouts remain native.
 static YTKACEMenuNativeRow *NativeContentRow(UIViewController *controller) {
     UIView *panel = NativePanel(controller);
     if (!panel) return nil;
+    NSMutableArray<UIViewController *> *controllers = [NSMutableArray arrayWithObject:controller];
+    for (NSUInteger index = 0; index < controllers.count && index < 32; index++)
+        for (UIViewController *child in controllers[index].childViewControllers)
+            if (controllers.count < 32 && ![controllers containsObject:child]) [controllers addObject:child];
     NSMutableArray<UIView *> *candidates = [NSMutableArray array];
-    NSMapTable<UIView *,UIViewController *> *contentControllers = [NSMapTable strongToStrongObjectsMapTable];
-    NSMutableArray<UIViewController *> *controllers = [NSMutableArray arrayWithArray:controller.childViewControllers];
-    for (NSUInteger index = 0; index < controllers.count && index < 32; index++) {
-        UIViewController *child = controllers[index];
+    NSMapTable<UIView *,UIViewController *> *roots = [NSMapTable strongToStrongObjectsMapTable];
+    for (UIViewController *child in controllers) {
         UIView *view = child.viewIfLoaded;
-        if (view && view != controller.view && [view isDescendantOfView:panel]) {
-            [candidates addObject:view]; [contentControllers setObject:child forKey:view];
-        }
-        for (UIViewController *nested in child.childViewControllers)
-            if (controllers.count < 32) [controllers addObject:nested];
+        if (view) [roots setObject:child forKey:view];
+        id content = Value(child,@"actionSheetView");
+        if ([content isKindOfClass:UIView.class] && [content isDescendantOfView:panel] &&
+            ![candidates containsObject:content]) [candidates addObject:content];
     }
     NSMutableArray<UIView *> *views = [NSMutableArray arrayWithObject:panel];
-    NSArray *names = @[@"YTContextualWrapView",@"YTMinimumWidthDialogView",@"GOODialogView"];
-    for (NSUInteger index = 0; index < views.count && index < 256; index++) {
-        UIView *view = views[index];
-        for (NSString *name in names) {
-            Class cls = NSClassFromString(name);
+    for (NSUInteger index = 0; index < views.count && index < 256; index++)
+        for (UIView *child in views[index].subviews) if (views.count < 256) [views addObject:child];
+    // Prefer the actual dialog over contextual wrappers that may own sheet chrome.
+    for (NSString *name in @[@"GOODialogView",@"YTMinimumWidthDialogView",@"YTContextualWrapView"]) {
+        Class cls = NSClassFromString(name);
+        for (UIView *view in views)
             if (cls && [view isKindOfClass:cls] && ![candidates containsObject:view]) [candidates addObject:view];
+    }
+    for (UIViewController *child in controllers) {
+        UIView *view = child.viewIfLoaded;
+        if (child == controller || ![view isDescendantOfView:panel] || [candidates containsObject:view]) continue;
+        CGRect occupied = CGRectNull;
+        NSMutableArray<UIView *> *contents = [NSMutableArray arrayWithArray:view.subviews];
+        for (NSUInteger index = 0; index < contents.count && index < 256; index++) {
+            UIView *content = contents[index];
+            if (content.hidden || content.alpha < .05 || CGRectIsEmpty(content.bounds)) continue;
+            if ([content isKindOfClass:UIControl.class] || [content isKindOfClass:UILabel.class] ||
+                [content isKindOfClass:UIScrollView.class]) {
+                occupied = CGRectUnion(occupied,[content convertRect:content.bounds toView:view]);
+            } else for (UIView *nested in content.subviews) if (contents.count < 256) [contents addObject:nested];
         }
-        for (UIView *child in view.subviews) if (views.count < 256) [views addObject:child];
+        // Standalone form controllers can expose only a tight root. A root with
+        // screen-sized unused margins is not a content boundary; never crop it.
+        if (!CGRectIsNull(occupied) && CGRectGetMaxY(occupied) <= view.bounds.size.height &&
+            view.bounds.size.height - CGRectGetMaxY(occupied) <= 32 && CGRectGetMinY(occupied) <= 32)
+            [candidates addObject:view];
     }
     id owner = [(YTKACENativeMenuOwner *)objc_getAssociatedObject(controller,NativeOwnerKey) value];
     id models = Value(owner,@"actions");
@@ -1175,13 +1222,13 @@ static YTKACEMenuNativeRow *NativeContentRow(UIViewController *controller) {
                 ![button isDescendantOfView:candidate]) { complete = NO; break; }
         }
         if (!complete) continue;
-        UIViewController *contentController = [contentControllers objectForKey:candidate];
+        UIViewController *contentController = [roots objectForKey:candidate];
         YTKACEMenuNativeRow *row = contentController
             ? [[YTKACEMenuNativeRow alloc] initWithContentController:contentController]
             : [[YTKACEMenuNativeRow alloc] initWithView:candidate interactive:YES];
         if (row) return row;
     }
-    os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] native content fallback reason=no-safe-inner-content panel=%{public}@ children=%lu",
+    os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] native content fallback reason=no-tight-content panel=%{public}@ children=%lu",
         TraceClass(panel),(unsigned long)controller.childViewControllers.count);
     return nil;
 }

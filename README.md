@@ -160,8 +160,11 @@ can be released. Native content is never cropped into an estimated popover recta
 Composite selectors with recognized inner content use that same floating
 container, including sliders and native choices, with metadata-only tweak actions
 retained alongside them. The sheet's `YTDraggableView` and `YTSheetContainerView`
-remain in their original animator hierarchy. Only the inner content is borrowed;
-controller roots use UIKit child-controller containment, restored with their
+remain in their original animator hierarchy. The adapter resolves the native
+`actionSheetView` or inner dialog before considering a child-controller root;
+full-screen sheet backgrounds, grabbers and unused margins stay outside the
+floating menu. Only the inner content is borrowed. Tight standalone controller
+roots use UIKit child-controller containment, restored with their
 original parent, constraints and geometry before native callbacks or close.
 The native owner stays presented and masked. Sheet and descendant gestures keep
 their native state. Unidentified inner layouts retain the original native sheet.
@@ -261,8 +264,13 @@ state. Native command scheduling and UIKit dismissal can still add latency;
 container reuse does not establish that the entire transition is instantaneous. Trace entries record
 `submenu transition=waiting/content-slide/expired`.
 
-Short ELM rows wait for asynchronous layout just like zero-height rows. A row
-still below 24pt without text, an ELM command or an embedded control is treated
+Short ELM rows wait for asynchronous layout just like zero-height rows. A cheap
+geometry pass runs before callback/gesture decoding, so a later short row does
+not cause earlier ready rows to be decoded again on every retry. Diagnostics
+include per-open `elapsedMs` (including layout waits) and `decodeMs` (decoding
+and content discovery), alongside the existing command/request timestamps. This is not a
+measurement of device frame rate or a guarantee of instantaneous navigation.
+A row still below 24pt without text, an ELM command or an embedded control is treated
 as native structural spacing; a short actionable row remains available through
 metadata or native fallback.
 This covers the reported 9pt row in Other Settings without inventing a blank

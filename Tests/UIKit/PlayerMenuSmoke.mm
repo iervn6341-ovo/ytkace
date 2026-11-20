@@ -50,6 +50,12 @@ static UIView *TransitionCover(UIWindow *window) {
 @implementation NativeTestAction
 - (instancetype)init { if ((self = [super init])) _shouldDismissOnAction = YES; return self; }
 @end
+@interface NativeDecodeProbeAction : NativeTestAction
+@property(nonatomic) NSUInteger handlerReads;
+@end
+@implementation NativeDecodeProbeAction
+- (id)handler { self.handlerReads++; return [super handler]; }
+@end
 static NSUInteger NativeOriginReads;
 static NSUInteger GearExtensionCalls;
 @interface NativeOriginAction : NativeTestAction @end
@@ -125,6 +131,11 @@ static NSUInteger GearExtensionCalls;
     [self.native dismissViewControllerAnimated:NO completion:nil];
 }
 @end
+@interface NativeChromeContentController : UIViewController
+@property(nonatomic, strong) GOODialogView *actionSheetView;
+@end
+@implementation NativeChromeContentController @end
+
 static void InstallELMTap(UIView *view, ELMTouchCommandPropertiesHandler *handler, BOOL enabled) {
     UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:handler action:@selector(handleTap)];
     tap.delegate = handler; tap.enabled = enabled; [view addGestureRecognizer:tap];
@@ -419,6 +430,8 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
             [self testCompositeQuality];
         } else if ([NSProcessInfo.processInfo.arguments containsObject:@"--rebuild-back-regression"]) {
             [self testRebuiltBack];
+        } else if ([NSProcessInfo.processInfo.arguments containsObject:@"--decode-work-regression"]) {
+            [self testELMCommandOrder:16];
         } else if ([NSProcessInfo.processInfo.arguments containsObject:@"--animated-owner-regression"]) {
             [self testELMCommandOrder:15];
         } else if ([NSProcessInfo.processInfo.arguments containsObject:@"--device-late-child-regression"]) {
@@ -613,6 +626,7 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
     BOOL selfPresenter = [flags containsObject:@"--content-self-presenter"];
     BOOL selfDismiss = [flags containsObject:@"--content-self-dismiss"];
     BOOL unsafeShell = [flags containsObject:@"--content-unsafe-shell"];
+    BOOL chrome = [flags containsObject:@"--content-sheet-chrome"];
     BOOL navigate = [flags containsObject:@"--content-next-step"];
     BOOL textInput = [flags containsObject:@"--content-text-input"];
     BOOL switchForm = [flags containsObject:@"--content-switch-form"];
@@ -628,13 +642,27 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
     [native.view addSubview:reference];
     YTDraggableView *draggable = [[YTDraggableView alloc] initWithFrame:CGRectMake(8,120,340,192)];
     [reference addSubview:draggable];
-    UIViewController *contentController = [UIViewController new];
+    UIViewController *contentController = chrome ? [NativeChromeContentController new] : [UIViewController new];
     [native addChildViewController:contentController];
-    UIView *panel = contentController.view; panel.frame = CGRectMake(0,0,340,192);
+    UIView *panel = chrome ? [GOODialogView new] : contentController.view;
+    panel.frame = CGRectMake(0,0,340,192);
+    if (chrome) {
+        draggable.frame = CGRectMake(0,120,402,700);
+        contentController.view.frame = draggable.bounds;
+        contentController.view.backgroundColor = UIColor.secondarySystemBackgroundColor;
+        UIView *grabber = [[UIView alloc] initWithFrame:CGRectMake(180,8,40,4)];
+        grabber.backgroundColor = UIColor.grayColor; grabber.accessibilityIdentifier = @"Native.Sheet.Grabber";
+        [contentController.view addSubview:grabber];
+        panel.frame = CGRectMake(20,90,362,252);
+        panel.backgroundColor = UIColor.tertiarySystemBackgroundColor;
+        [contentController.view addSubview:panel]; [draggable addSubview:contentController.view];
+        if (![flags containsObject:@"--content-dialog-discovery"])
+            [(NativeChromeContentController *)contentController setActionSheetView:(id)panel];
+    }
     if ([flags containsObject:@"--content-short-shell"]) {
         CGRect frame = draggable.frame; frame.size.height = 44; draggable.frame = frame;
     }
-    panel.backgroundColor = UIColor.clearColor; [draggable addSubview:panel];
+    if (!chrome) { panel.backgroundColor = UIColor.clearColor; [draggable addSubview:panel]; }
     [contentController didMoveToParentViewController:native];
     // Reproduce the device dependency: the sheet continues to update dynamics
     // after the selector has been mounted in the floating wrapper.
@@ -664,6 +692,14 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
     [choice setTitle:navigate ? @"Advanced" : (speed ? @"Normal · 1×" : @"Auto (recommended)") forState:UIControlStateNormal];
     choice.frame = CGRectMake(16,116,300,52); choice.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     [panel addSubview:choice]; automatic.button = choice;
+    UILabel *footer = nil;
+    if (chrome) {
+        footer = [[UILabel alloc] initWithFrame:CGRectMake(16,180,330,56)];
+        footer.text = @"這項設定只會套用至這部影片。其他影片請至設定中的影片畫質偏好設定。";
+        footer.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote]; footer.numberOfLines = 0;
+        footer.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+        [panel addSubview:footer];
+    }
     NativeTestOwner *owner = [NativeTestOwner new]; owner.native = native;
     owner.clearsActionsOnDismiss = YES;
     owner.actions = [flags containsObject:@"--content-no-model"] ? nil : @[host,automatic];
@@ -705,6 +741,7 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
     }] forControlEvents:UIControlEventTouchUpInside];
     automatic.handler = ^{ Check(NO,@"the container must preserve original native controls, never dispatch a second model handler"); };
     CGRect originalFrame = panel.frame;
+    UIView *originalParent = panel.superview;
     if (unsafeShell) {
         // A layout without an identifiable inner content boundary must stay native.
         for (UIView *control in panel.subviews.copy) [draggable addSubview:control];
@@ -738,7 +775,16 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
             ![[YTKACEMenuNativeRow alloc] initWithView:reference interactive:YES],
             @"the sheet item and animator reference subtree must be rejected for interactive borrowing");
         [animator updateItemUsingCurrentState:draggable];
-        Check(contentController.parentViewController == list,@"the borrowed content controller must join the displayed UIKit container");
+        Check(contentController.parentViewController == (chrome ? native : list),
+            @"only a borrowed root controller must change its UIKit parent");
+        if (chrome) {
+            Check(![contentController.view isDescendantOfView:menu.view] &&
+                [panel isDescendantOfView:menu.view] && contentController.view.superview == draggable,
+                @"the inner option surface must exclude the screen-sized root, grabber and sheet background");
+            Check([list.tableView rectForRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]].size.height == 252 &&
+                menu.preferredContentSize.height < 400 && CGRectGetMaxX(footer.frame) <= panel.bounds.size.width,
+                @"the shared menu must use tight content height and fit the footer at its actual width");
+        }
         Check(sheetPan.enabled && sliderPan.enabled,@"sheet physics and inner slider gestures must retain their original state");
         Check(native.view.alpha == 1 && native.view.layer.mask != nil && owner.dismissals == 0,
             @"the native owner must stay alive and visually masked behind its shared content page");
@@ -767,7 +813,7 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
                     [NSString stringWithFormat:@"selector close must run once: root=%@ native=%lu owner=%lu choices=%lu leaves=%lu",
                         NSStringFromClass(self.root.presentedViewController.class),(unsigned long)native.closeRequests,
                         (unsigned long)owner.dismissals,(unsigned long)choices,(unsigned long)leaves]);
-                Check(panel.superview == draggable && [draggable isDescendantOfView:reference] && CGRectEqualToRect(panel.frame,originalFrame) && !native.view.layer.mask && sheetPan.enabled && sliderPan.enabled,
+                Check(panel.superview == originalParent && [draggable isDescendantOfView:reference] && CGRectEqualToRect(panel.frame,originalFrame) && !native.view.layer.mask && sheetPan.enabled && sliderPan.enabled,
                     @"closing must restore the original selector hierarchy, geometry and mask");
                 Check(contentController.parentViewController == native,@"closing must restore the original content controller parent");
                 [animator updateItemUsingCurrentState:draggable]; [animator removeAllBehaviors];
@@ -955,7 +1001,8 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
         if (mode == 8) return; // A leaf command closes without requesting a child.
         child = [NSProcessInfo.processInfo.arguments containsObject:@"--other-controller-regression"]
             ? (id)[NativeSettingsPage new] : [YTBottomSheetController new];
-        NativeTestAction *leaf = [NativeTestAction new]; leaf.title = @"ELM child leaf";
+        NativeTestAction *leaf = mode == 16 ? [NativeDecodeProbeAction new] : [NativeTestAction new];
+        leaf.title = @"ELM child leaf";
         leaf.handler = ^{ leafCalls++; };
         YTDraggableView *childPanel = [[YTDraggableView alloc] initWithFrame:CGRectMake(8,80,320,180)];
         [child.view addSubview:childPanel];
@@ -972,7 +1019,7 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
         child.actions = @[leaf,divider,delayed];
         if (mode == 10) {
             UIViewController *content = [UIViewController new]; [child addChildViewController:content];
-            content.view.frame = childPanel.bounds;
+            content.view.frame = CGRectMake(0,0,320,130);
             for (UIView *row in childPanel.subviews.copy) [content.view addSubview:row];
             [childPanel addSubview:content.view]; [content didMoveToParentViewController:child];
         }
@@ -1071,6 +1118,11 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
                 child.presentedViewController.popoverPresentationController.sourceView == self.window,
                 @"ELM child must open visibly at the original gear anchor");
             Check(!TransitionCover(self.window),@"submenu slide must remove its transition cover after the new page appears");
+            if (mode == 16) {
+                NativeDecodeProbeAction *probe = child.actions.firstObject;
+                Check(probe.handlerReads == 1,[NSString stringWithFormat:
+                    @"ready ELM callbacks must decode once after geometry settles, got %lu reads",(unsigned long)probe.handlerReads]);
+            }
             if (mode != 13) Check(child.presentedViewController == menu,
                 @"gear and native child pages must reuse the same floating container instance");
             [table.tableView.delegate tableView:table.tableView didSelectRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]];
@@ -1119,6 +1171,10 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
                     @"the child leaf must remain selectable and close exactly once");
                 dispatch_block_t next = ^{
                     [gear removeFromSuperview];
+                    if (mode == 16) {
+                        [@"PASS: delayed native layout decodes ready handlers once, preserving late rows and original callbacks\n"
+                            writeToFile:ResultPath() atomically:YES encoding:NSUTF8StringEncoding error:nil]; return;
+                    }
                     if (mode == 15) {
                         [@"PASS: animated native close preserves its completion, child routing and exact-once owner teardown\n"
                             writeToFile:ResultPath() atomically:YES encoding:NSUTF8StringEncoding error:nil]; return;
