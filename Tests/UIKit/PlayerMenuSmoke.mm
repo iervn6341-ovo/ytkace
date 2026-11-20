@@ -131,8 +131,25 @@ static NSUInteger GearExtensionCalls;
     [self.native dismissViewControllerAnimated:NO completion:nil];
 }
 @end
+// Older native dialogs lay out their paragraphs with sizeThatFits rather
+// than Auto Layout. The adapter must honor that native sizing contract too.
+@interface NativeManualDialog : GOODialogView
+@property(nonatomic, strong) UILabel *paragraph;
+@end
+@implementation NativeManualDialog
+- (CGSize)sizeThatFits:(CGSize)size {
+    CGFloat text = [self.paragraph sizeThatFits:CGSizeMake(MAX(1,size.width - 32),CGFLOAT_MAX)].height;
+    return CGSizeMake(size.width,196 + text);
+}
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    CGFloat width = MAX(1,self.bounds.size.width - 32);
+    self.paragraph.frame = CGRectMake(16,180,width,[self.paragraph sizeThatFits:CGSizeMake(width,CGFLOAT_MAX)].height);
+}
+@end
+
 @interface NativeChromeContentController : UIViewController
-@property(nonatomic, strong) GOODialogView *actionSheetView;
+@property(nonatomic, strong) UIView *actionSheetView;
 @end
 @implementation NativeChromeContentController @end
 
@@ -627,6 +644,7 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
     BOOL selfDismiss = [flags containsObject:@"--content-self-dismiss"];
     BOOL unsafeShell = [flags containsObject:@"--content-unsafe-shell"];
     BOOL chrome = [flags containsObject:@"--content-sheet-chrome"];
+    BOOL unknownInner = chrome && [flags containsObject:@"--content-unknown-inner"];
     BOOL navigate = [flags containsObject:@"--content-next-step"];
     BOOL textInput = [flags containsObject:@"--content-text-input"];
     BOOL switchForm = [flags containsObject:@"--content-switch-form"];
@@ -644,7 +662,8 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
     [reference addSubview:draggable];
     UIViewController *contentController = chrome ? [NativeChromeContentController new] : [UIViewController new];
     [native addChildViewController:contentController];
-    UIView *panel = chrome ? [GOODialogView new] : contentController.view;
+    BOOL manualReflow = chrome && [flags containsObject:@"--content-reflow-manual"];
+    UIView *panel = chrome ? (unknownInner ? [UIView new] : (manualReflow ? [NativeManualDialog new] : [GOODialogView new])) : contentController.view;
     panel.frame = CGRectMake(0,0,340,192);
     if (chrome) {
         draggable.frame = CGRectMake(0,120,402,700);
@@ -657,7 +676,8 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
         panel.backgroundColor = UIColor.tertiarySystemBackgroundColor;
         [contentController.view addSubview:panel]; [draggable addSubview:contentController.view];
         if (![flags containsObject:@"--content-dialog-discovery"])
-            [(NativeChromeContentController *)contentController setActionSheetView:(id)panel];
+            [(NativeChromeContentController *)contentController setActionSheetView:
+                [flags containsObject:@"--content-outer-wrapper"] ? contentController.view : panel];
     }
     if ([flags containsObject:@"--content-short-shell"]) {
         CGRect frame = draggable.frame; frame.size.height = 44; draggable.frame = frame;
@@ -684,7 +704,8 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
     [slider addGestureRecognizer:sliderPan];
     NativeTestAction *host = [NativeTestAction new];
     host.button = switchForm ? [UIControl new] : [YTSpacerButton new];
-    [(UIView *)host.button setFrame:CGRectMake(0,0,340,switchForm ? 56 : 1)]; [panel addSubview:host.button];
+    [(UIView *)host.button setFrame:CGRectMake(0,0,340,switchForm ? 56 : 1)];
+    [(chrome && [flags containsObject:@"--content-outside-spacer"] ? contentController.view : panel) addSubview:host.button];
     UISwitch *toggle = [UISwitch new]; toggle.frame = CGRectMake(240,10,52,32); toggle.on = YES;
     if (switchForm) [host.button addSubview:toggle];
     NativeTestAction *automatic = [NativeTestAction new]; automatic.title = @"Auto (recommended)";
@@ -740,8 +761,40 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
         [(selfPresenter ? contentController : self.root) presentViewController:child animated:NO completion:nil];
     }] forControlEvents:UIControlEventTouchUpInside];
     automatic.handler = ^{ Check(NO,@"the container must preserve original native controls, never dispatch a second model handler"); };
+    BOOL reflow = chrome && ([flags containsObject:@"--content-reflow"] || manualReflow);
+    if (reflow) {
+        CGRect wide = panel.frame; wide.size.width = 520; panel.frame = wide;
+        footer.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+        footer.text = @"這項設定只會套用至這部影片。如果要對所有影片指定畫質偏好，請前往設定中的影片畫質偏好設定。較長的說明也必須在浮動選單縮窄後完整換行顯示，不能被裁切或壓縮。";
+        CGSize size;
+        if (manualReflow) {
+            [(NativeManualDialog *)panel setParagraph:footer];
+            size = [panel sizeThatFits:CGSizeMake(panel.bounds.size.width,2048)];
+        } else {
+            footer.translatesAutoresizingMaskIntoConstraints = NO;
+            [NSLayoutConstraint activateConstraints:@[
+                [footer.leadingAnchor constraintEqualToAnchor:panel.leadingAnchor constant:16],
+                [footer.trailingAnchor constraintEqualToAnchor:panel.trailingAnchor constant:-16],
+                [footer.topAnchor constraintEqualToAnchor:panel.topAnchor constant:180],
+                [footer.bottomAnchor constraintEqualToAnchor:panel.bottomAnchor constant:-16]]];
+            size = [panel systemLayoutSizeFittingSize:CGSizeMake(panel.bounds.size.width,0)
+                withHorizontalFittingPriority:UILayoutPriorityRequired verticalFittingPriority:UILayoutPriorityFittingSizeLevel];
+        }
+        CGRect frame = panel.frame; frame.size.height = size.height; panel.frame = frame;
+        [panel layoutIfNeeded];
+    }
     CGRect originalFrame = panel.frame;
     UIView *originalParent = panel.superview;
+    NSArray<NSLayoutConstraint *> *originalContentConstraints = @[];
+    if (reflow && [flags containsObject:@"--content-reflow-constraints"]) {
+        panel.translatesAutoresizingMaskIntoConstraints = NO;
+        originalContentConstraints = @[
+            [panel.leadingAnchor constraintEqualToAnchor:originalParent.leadingAnchor constant:originalFrame.origin.x],
+            [panel.topAnchor constraintEqualToAnchor:originalParent.topAnchor constant:originalFrame.origin.y],
+            [panel.widthAnchor constraintEqualToConstant:originalFrame.size.width],
+            [panel.heightAnchor constraintEqualToConstant:originalFrame.size.height]];
+        [NSLayoutConstraint activateConstraints:originalContentConstraints];
+    }
     if (unsafeShell) {
         // A layout without an identifiable inner content boundary must stay native.
         for (UIView *control in panel.subviews.copy) [draggable addSubview:control];
@@ -752,9 +805,9 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
     [self.root presentViewController:native animated:NO completion:nil];
     Later(^{
         UIViewController *menu = native.presentedViewController;
-        if (unsafeShell) {
+        if (unsafeShell || unknownInner) {
             Check(!menu && native.presentingViewController && native.view.alpha == 1 && !native.view.layer.mask &&
-                draggable.superview == reference && choice.superview == draggable,
+                draggable.superview == reference && choice.superview == (unsafeShell ? draggable : panel),
                 @"unrecognized content must preserve its native hierarchy without borrowing the dynamics item");
             [animator updateItemUsingCurrentState:draggable];
             [owner dismissViewControllerAnimated:NO completion:^{
@@ -781,9 +834,26 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
             Check(![contentController.view isDescendantOfView:menu.view] &&
                 [panel isDescendantOfView:menu.view] && contentController.view.superview == draggable,
                 @"the inner option surface must exclude the screen-sized root, grabber and sheet background");
-            Check([list.tableView rectForRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]].size.height == 252 &&
-                menu.preferredContentSize.height < 400 && CGRectGetMaxX(footer.frame) <= panel.bounds.size.width,
+            Check((reflow || [list.tableView rectForRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]].size.height == 252) &&
+                (reflow || menu.preferredContentSize.height < 400) && CGRectGetMaxX(footer.frame) <= panel.bounds.size.width,
                 @"the shared menu must use tight content height and fit the footer at its actual width");
+            if (reflow) {
+                CGFloat needed = [footer sizeThatFits:CGSizeMake(footer.bounds.size.width,CGFLOAT_MAX)].height;
+                [[NSString stringWithFormat:@"footer=%.1f needed=%.1f width=%.1f content=%.1f original=%.1f\n",
+                    footer.bounds.size.height,needed,footer.bounds.size.width,panel.bounds.size.height,originalFrame.size.height]
+                    writeToFile:[NSHomeDirectory() stringByAppendingPathComponent:@"Documents/reflow_metrics.txt"]
+                    atomically:YES encoding:NSUTF8StringEncoding error:nil];
+                Check(originalFrame.size.height >= 240 && footer.bounds.size.width >= 100 &&
+                    footer.bounds.size.height + 1 >= needed && CGRectGetMaxY(footer.frame) <= panel.bounds.size.height &&
+                    panel.bounds.size.height > originalFrame.size.height,
+                    [NSString stringWithFormat:@"narrow content must grow for multiline text: footer=%.1f needed=%.1f content=%.1f original=%.1f",
+                        footer.bounds.size.height,needed,panel.bounds.size.height,originalFrame.size.height]);
+                YTKACEMenuNativeRow *row = [[list valueForKey:@"actions"] firstObject][@"nativeRow"];
+                CGFloat narrow = [row heightForWidth:220], wide = [row heightForWidth:400];
+                CGFloat actual = [row heightForWidth:panel.bounds.size.width];
+                Check(narrow > wide && fabs(actual - panel.bounds.size.height) < 1,
+                    @"width changes must refit multiline content and restore the displayed cell's measured height");
+            }
         }
         Check(sheetPan.enabled && sliderPan.enabled,@"sheet physics and inner slider gestures must retain their original state");
         Check(native.view.alpha == 1 && native.view.layer.mask != nil && owner.dismissals == 0,
@@ -816,6 +886,13 @@ static UINavigationController *MenuNavigation(UIViewController *presentation) {
                 Check(panel.superview == originalParent && [draggable isDescendantOfView:reference] && CGRectEqualToRect(panel.frame,originalFrame) && !native.view.layer.mask && sheetPan.enabled && sliderPan.enabled,
                     @"closing must restore the original selector hierarchy, geometry and mask");
                 Check(contentController.parentViewController == native,@"closing must restore the original content controller parent");
+                for (NSLayoutConstraint *constraint in originalContentConstraints)
+                    Check(constraint.active,@"fitting must restore the native surface's original external constraints on close");
+                if (reflow) {
+                    [panel layoutIfNeeded];
+                    Check(footer.bounds.size.height + 1 >= [footer sizeThatFits:CGSizeMake(footer.bounds.size.width,CGFLOAT_MAX)].height,
+                        @"the original native paragraph must also remain complete after restoring the wider sheet");
+                }
                 [animator updateItemUsingCurrentState:draggable]; [animator removeAllBehaviors];
                 [@"PASS: live sheet dynamics hierarchy, native selector controls, exact-once close and container reuse\n"
                     writeToFile:ResultPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];

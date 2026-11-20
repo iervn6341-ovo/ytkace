@@ -175,7 +175,33 @@ November 20 screenshot/layout and work regressions:
   fails the sheet-chrome fixture by borrowing the whole controller root.
 - `gear layout-ready` now reports `elapsedMs` and `decodeMs`; the content route
   includes selected bounds and original sheet bounds. No visible native text is
-  logged. The revision marker is `rowRenderer=tight-content-v4`.
+  logged. The latest revision marker is `rowRenderer=fitted-content-v5`.
+
+Additional recheck cases:
+
+- Add `--content-outer-wrapper` to the chrome fixture to make `actionSheetView`
+  return the outer 700pt controller root. A recognized inner dialog must still
+  take precedence. `--content-outside-spacer` places the unnamed, handler-less
+  one-point spacer outside the actual dialog; it must not prevent full native
+  content from appearing in the shared shell. Combine the outer-wrapper case
+  with `--content-unknown-inner` to remove the known inner class: the oversized
+  getter root must then retain the original native presentation, never bypass
+  the tight-root check. The ordinary plain-root selector still adapts normally.
+- `--content-reflow` starts with a 520pt surface and a constrained multiline
+  paragraph. At the actual narrower cell width, the paragraph must receive its
+  full fitted height and the row must grow, with the original geometry restored
+  on close. The test also fits successive narrow/wide widths and returns to the
+  displayed width. Add `--content-reflow-constraints` to pin the original surface
+  with external width/height/position constraints and verify their restoration.
+  `--content-reflow-manual` exercises an older frame-based dialog that supplies
+  `sizeThatFits` and lays out its paragraph manually; it must also grow for the
+  narrower width. Without honoring that method, the label receives its height
+  but overflows the unchanged surface and is clipped by the cell.
+- These three new conditions fail revision `aeb2fc8`: the outer wrapper is still
+  borrowed, the external spacer causes a native fallback, and the paragraph gets
+  about 64pt instead of the required 108pt. The corrected fitting case allocates
+  108pt and grows the surface from about 260pt to 304pt. These are fixture
+  measurements, not device YouTube frame-rate or latency measurements.
 
 Visual QA: the interactive speed fixture was rendered and inspected on the
   disposable iPhone 17 simulator (iOS 27.2). The shared header, close button,
@@ -186,6 +212,10 @@ Visual QA: the interactive speed fixture was rendered and inspected on the
   On November 20 the sheet-chrome fixture was also rendered and inspected on
   that simulator: the outer root/grabber was absent, the menu ended immediately
   after the 252pt dialog content, and the Chinese footer wrapped within the panel.
+  The recheck preview combined an outer getter wrapper, external spacer and fixed
+  source-size constraints with the longer paragraph, using both Auto Layout and
+  native `sizeThatFits` sizing. All text remained visible after the surface grew
+  to about 304pt, with no borrowed grabber or outer root.
 - Controls `--direct-quality-regression` additionally removes the controls view's
   playerViewController, resolves the player through eventsDelegate.delegate, and
   applies a real format constraint to its playerItem. Existing direct format,

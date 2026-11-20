@@ -9,6 +9,8 @@ FOUNDATION_EXPORT NSNotificationName const YTKACEPlayerMenuTouchSource;
 @interface YTKACEMenuNativeRow : NSObject
 @property(nonatomic, readonly) UIView *view;
 @property(nonatomic, readonly) CGFloat height;
+// Refit multiline Auto Layout/native sizeThatFits content at the cell width.
+- (CGFloat)heightForWidth:(CGFloat)width;
 @property(nonatomic, strong) UIColor *disclosureColor;
 - (nullable instancetype)initWithView:(UIView *)view;
 // Keep a complete native selector interactive inside the shared menu shell.

@@ -78,6 +78,8 @@ static UIImage *RenderedNativeRow(UIView *view) {
 @interface YTKACEMenuNativeRow ()
 @property(nonatomic, strong) UIView *view;
 @property(nonatomic) CGFloat height;
+@property(nonatomic) CGFloat fittingWidth;
+@property(nonatomic, copy) UIContentSizeCategory fittingCategory;
 @property(nonatomic, weak) UIView *parent;
 @property(nonatomic) NSUInteger index;
 @property(nonatomic) CGRect frame;
@@ -182,6 +184,53 @@ static UIImage *RenderedNativeRow(UIView *view) {
         }
     }
     return self;
+}
+- (CGFloat)heightForWidth:(CGFloat)width {
+    if (!self.interactive || !isfinite(width) || width < 44) return self.height;
+    UIContentSizeCategory category = self.view.traitCollection.preferredContentSizeCategory;
+    if (fabs(self.fittingWidth - width) < .5 && [self.fittingCategory isEqual:category]) return self.height;
+    self.fittingWidth = width; self.fittingCategory = category;
+    self.height = MAX(44,self.frame.size.height);
+    Method native = class_getInstanceMethod(self.view.class,@selector(sizeThatFits:));
+    Method standard = class_getInstanceMethod(UIView.class,@selector(sizeThatFits:));
+    // Prefer an explicit native sizing contract, including mixed frame/constraint
+    // layouts. UIView's default/material size is not a content measurement.
+    if (native && method_getImplementation(native) != method_getImplementation(standard)) {
+        CGSize fitting = [self.view sizeThatFits:CGSizeMake(width,2048)];
+        if (isfinite(fitting.width) && fitting.width > 0 && fitting.width <= width + 1 &&
+            isfinite(fitting.height) && fitting.height >= 24 && fitting.height <= 2048) {
+            self.height = MAX(44,fitting.height); return self.height;
+        }
+    }
+    BOOL hasContentConstraints = NO;
+    for (NSLayoutConstraint *constraint in self.view.constraints) {
+        id item = constraint.firstItem == self.view ? constraint.secondItem : constraint.firstItem;
+        if (!constraint.active || ![item isKindOfClass:UIView.class] || [item superview] != self.view ||
+            [item translatesAutoresizingMaskIntoConstraints]) continue;
+        if ([item isKindOfClass:UILabel.class] || [item isKindOfClass:UIStackView.class] ||
+            [item isKindOfClass:UIControl.class] || [item isKindOfClass:UIScrollView.class]) {
+            hasContentConstraints = YES; break;
+        }
+    }
+    // A pinned glass/background view is not a content sizing contract. Manual
+    // native forms retain their measured height rather than collapsing to the
+    // material view's minimum fitting size.
+    if (!hasContentConstraints) return self.height;
+    // Only the borrowed surface's original external/fixed-size constraints are
+    // suspended. Keep internal label/stack constraints for multiline fitting.
+    NSMutableArray<NSLayoutConstraint *> *active = [NSMutableArray array];
+    for (NSLayoutConstraint *constraint in self.constraints) if (constraint.active) [active addObject:constraint];
+    [NSLayoutConstraint deactivateConstraints:active];
+    CGSize fitting = CGSizeZero;
+    @try {
+        fitting = [self.view systemLayoutSizeFittingSize:CGSizeMake(width,UILayoutFittingCompressedSize.height)
+            withHorizontalFittingPriority:UILayoutPriorityRequired verticalFittingPriority:UILayoutPriorityFittingSizeLevel];
+    } @finally { [NSLayoutConstraint activateConstraints:active]; }
+    // Manually laid-out forms may expose no fitting height. Keep their native
+    // height; never invent a crop or scale their text/controls to fit the cell.
+    self.height = isfinite(fitting.height) && fitting.height >= 24 && fitting.height <= 2048
+        ? MAX(44,fitting.height) : MAX(44,self.frame.size.height);
+    return self.height;
 }
 - (void)mountInView:(UIView *)host { [self mountInView:host controller:self.hostController]; }
 - (void)mountInView:(UIView *)host controller:(UIViewController *)controller {
@@ -302,11 +351,17 @@ static UIImage *RenderedNativeRow(UIView *view) {
 
 @interface YTKACENativeRowCell : UITableViewCell
 @property(nonatomic, strong) YTKACEMenuNativeRow *nativeRow;
+@property(nonatomic, copy) dispatch_block_t sizeChanged;
 @end
 @implementation YTKACENativeRowCell
 - (void)layoutSubviews {
     [super layoutSubviews];
-    if (self.nativeRow.view.superview == self.contentView) self.nativeRow.view.frame = self.contentView.bounds;
+    if (self.nativeRow.view.superview == self.contentView) {
+        self.nativeRow.view.frame = self.contentView.bounds;
+        CGFloat previous = self.nativeRow.height;
+        [self.nativeRow heightForWidth:self.contentView.bounds.size.width];
+        if (fabs(previous - self.nativeRow.height) > .5 && self.sizeChanged) self.sizeChanged();
+    }
     if (!self.nativeRow.rendering) [self.nativeRow captureRendering];
 }
 @end
@@ -475,6 +530,7 @@ void YTKACESetSystemMenuBackAction(UIViewController *presenter, dispatch_block_t
 @property(nonatomic) BOOL playerPopover;
 @property(nonatomic) BOOL heightUpdatePending;
 @property(nonatomic) BOOL updatingSize;
+@property(nonatomic) BOOL nativeSizeUpdatePending;
 @property(nonatomic) BOOL nativeRowsSuspended, missingRendering, awaitingActivation;
 - (void)updateMenuHeight;
 @end
@@ -689,7 +745,9 @@ void YTKACESetSystemMenuBackAction(UIViewController *presenter, dispatch_block_t
 - (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath {
     (void)tableView;
     YTKACEMenuNativeRow *row = self.actions[indexPath.row][@"nativeRow"];
-    return row ? row.height : UITableViewAutomaticDimension;
+    CGFloat width = row.host.bounds.size.width;
+    if (width < 44) width = tableView.bounds.size.width - tableView.layoutMargins.left - tableView.layoutMargins.right;
+    return row ? [row heightForWidth:width] : UITableViewAutomaticDimension;
 }
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     NSDictionary *action = self.actions[indexPath.row];
@@ -697,6 +755,22 @@ void YTKACESetSystemMenuBackAction(UIViewController *presenter, dispatch_block_t
     if (nativeRow) {
         YTKACENativeRowCell *native = [[YTKACENativeRowCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
         native.nativeRow = nativeRow;
+        __weak YTKACESystemMenuController *weak = self;
+        native.sizeChanged = ^{
+            YTKACESystemMenuController *owner = weak;
+            if (!owner || owner.nativeSizeUpdatePending || owner.navigationController.topViewController != owner) return;
+            owner.nativeSizeUpdatePending = YES;
+            dispatch_async(dispatch_get_main_queue(),^{
+                YTKACESystemMenuController *current = weak;
+                if (!current) return;
+                current.nativeSizeUpdatePending = NO;
+                if (current.navigationController.topViewController != current || !current.viewIfLoaded.window ||
+                    ((YTKACEMenuPresentation *)current.menuPresentation).closing) return;
+                [UIView performWithoutAnimation:^{
+                    [current.tableView beginUpdates]; [current.tableView endUpdates]; [current updateMenuHeight];
+                }];
+            });
+        };
         native.backgroundColor = UIColor.clearColor;
         native.contentView.clipsToBounds = YES;
         native.userInteractionEnabled = !action[@"enabled"] || [action[@"enabled"] boolValue];

@@ -928,7 +928,7 @@ static void PresentGearAfterLayout(UIViewController *controller, UIView *source,
         NSStringFromClass(controller.class),NSStringFromCGRect(controller.view.bounds));
 }
 void YTKACEPresentNativeGearMenu(UIViewController *controller, UIView *source) {
-    os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] gear revision=%{public}s youtube=%{public}@ rowRenderer=tight-content-v4",YTKACE_REVISION_STRING,
+    os_log(OS_LOG_DEFAULT,"[YTKACE PlayerMenus] gear revision=%{public}s youtube=%{public}@ rowRenderer=fitted-content-v5",YTKACE_REVISION_STRING,
         NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"] ?: @"unknown");
     PresentGearAfterLayout(controller,source,controller.view.alpha,0);
 }
@@ -1176,26 +1176,33 @@ static YTKACEMenuNativeRow *NativeContentRow(UIViewController *controller) {
         for (UIViewController *child in controllers[index].childViewControllers)
             if (controllers.count < 32 && ![controllers containsObject:child]) [controllers addObject:child];
     NSMutableArray<UIView *> *candidates = [NSMutableArray array];
+    NSMutableArray<UIView *> *explicitSurfaces = [NSMutableArray array];
     NSMapTable<UIView *,UIViewController *> *roots = [NSMapTable strongToStrongObjectsMapTable];
     for (UIViewController *child in controllers) {
         UIView *view = child.viewIfLoaded;
         if (view) [roots setObject:child forKey:view];
         id content = Value(child,@"actionSheetView");
         if ([content isKindOfClass:UIView.class] && [content isDescendantOfView:panel] &&
-            ![candidates containsObject:content]) [candidates addObject:content];
+            ![explicitSurfaces containsObject:content]) [explicitSurfaces addObject:content];
     }
     NSMutableArray<UIView *> *views = [NSMutableArray arrayWithObject:panel];
     for (NSUInteger index = 0; index < views.count && index < 256; index++)
         for (UIView *child in views[index].subviews) if (views.count < 256) [views addObject:child];
-    // Prefer the actual dialog over contextual wrappers that may own sheet chrome.
-    for (NSString *name in @[@"GOODialogView",@"YTMinimumWidthDialogView",@"YTContextualWrapView"]) {
+    // An actionSheetView getter can return a screen-sized wrapper too. Prefer
+    // a recognized inner dialog before either that wrapper or controller roots.
+    for (NSString *name in @[@"GOODialogView",@"YTMinimumWidthDialogView"]) {
         Class cls = NSClassFromString(name);
         for (UIView *view in views)
             if (cls && [view isKindOfClass:cls] && ![candidates containsObject:view]) [candidates addObject:view];
     }
+    for (UIView *surface in explicitSurfaces) if (![candidates containsObject:surface]) [candidates addObject:surface];
+    Class contextual = NSClassFromString(@"YTContextualWrapView");
+    for (UIView *view in views)
+        if (contextual && [view isKindOfClass:contextual] && ![candidates containsObject:view]) [candidates addObject:view];
+    NSMutableSet<UIView *> *tightRoots = [NSMutableSet set];
     for (UIViewController *child in controllers) {
         UIView *view = child.viewIfLoaded;
-        if (child == controller || ![view isDescendantOfView:panel] || [candidates containsObject:view]) continue;
+        if (child == controller || ![view isDescendantOfView:panel]) continue;
         CGRect occupied = CGRectNull;
         NSMutableArray<UIView *> *contents = [NSMutableArray arrayWithArray:view.subviews];
         for (NSUInteger index = 0; index < contents.count && index < 256; index++) {
@@ -1209,20 +1216,34 @@ static YTKACEMenuNativeRow *NativeContentRow(UIViewController *controller) {
         // Standalone form controllers can expose only a tight root. A root with
         // screen-sized unused margins is not a content boundary; never crop it.
         if (!CGRectIsNull(occupied) && CGRectGetMaxY(occupied) <= view.bounds.size.height &&
-            view.bounds.size.height - CGRectGetMaxY(occupied) <= 32 && CGRectGetMinY(occupied) <= 32)
-            [candidates addObject:view];
+            view.bounds.size.height - CGRectGetMaxY(occupied) <= 32 && CGRectGetMinY(occupied) <= 32) {
+            [tightRoots addObject:view];
+            if (![candidates containsObject:view]) [candidates addObject:view];
+        }
     }
     id owner = [(YTKACENativeMenuOwner *)objc_getAssociatedObject(controller,NativeOwnerKey) value];
     id models = Value(owner,@"actions");
+    NSMutableSet<UIView *> *spacing = [NSMutableSet set];
+    Class spacer = NSClassFromString(@"YTSpacerButton");
+    if ([models isKindOfClass:NSArray.class]) for (id model in models) {
+        UIView *button = Value(model,@"button");
+        if (!spacer || ![button isKindOfClass:spacer] || !isfinite(button.bounds.size.height) ||
+            button.bounds.size.height < 0 || button.bounds.size.height >= 24 || ActionHandler(model) || ContainsNativeInput(button)) continue;
+        NSString *titleSource = nil;
+        if (!Nonempty(ActionTitle(model,button,&titleSource))) [spacing addObject:button];
+    }
     for (UIView *candidate in candidates) {
+        UIViewController *contentController = [roots objectForKey:candidate];
+        // A getter must not bypass the tight-root check merely by returning
+        // its controller's screen-sized root when no known inner surface exists.
+        if (contentController && ![tightRoots containsObject:candidate]) continue;
         BOOL complete = YES;
         if ([models isKindOfClass:NSArray.class]) for (id model in models) {
             UIView *button = Value(model,@"button");
-            if ([button isKindOfClass:UIView.class] && !button.hidden && button.alpha >= .05 &&
-                ![button isDescendantOfView:candidate]) { complete = NO; break; }
+            if ([button isKindOfClass:UIView.class] && ![spacing containsObject:button] &&
+                !button.hidden && button.alpha >= .05 && ![button isDescendantOfView:candidate]) { complete = NO; break; }
         }
         if (!complete) continue;
-        UIViewController *contentController = [roots objectForKey:candidate];
         YTKACEMenuNativeRow *row = contentController
             ? [[YTKACEMenuNativeRow alloc] initWithContentController:contentController]
             : [[YTKACEMenuNativeRow alloc] initWithView:candidate interactive:YES];

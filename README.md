@@ -163,9 +163,17 @@ retained alongside them. The sheet's `YTDraggableView` and `YTSheetContainerView
 remain in their original animator hierarchy. The adapter resolves the native
 `actionSheetView` or inner dialog before considering a child-controller root;
 full-screen sheet backgrounds, grabbers and unused margins stay outside the
-floating menu. Only the inner content is borrowed. Tight standalone controller
+floating menu. A recognized inner dialog takes priority even if the getter
+returns an outer wrapper. Unnamed, handler-less short spacers outside that dialog
+are excluded from the content boundary; meaningful external actions still require
+complete native content. Only the inner content is borrowed. Tight standalone controller
 roots use UIKit child-controller containment, restored with their
 original parent, constraints and geometry before native callbacks or close.
+Multiline content is fitted to the cell's actual width, using an explicit native
+`sizeThatFits` contract or its Auto Layout content constraints instead of retaining
+the former wide-sheet height. Width/content-size changes trigger a
+coalesced row-height update; a background material alone never determines a manual
+form's height. Original external width/height constraints return on close.
 The native owner stays presented and masked. Sheet and descendant gestures keep
 their native state. Unidentified inner layouts retain the original native sheet.
 Text-entry alerts and share sheets keep their system presentation. Native close
